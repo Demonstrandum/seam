@@ -1,0 +1,27 @@
+(uuid "abc-123")
+(students [  ;; [...] means an array.
+	(
+		:id 0x000020f1   ;; Style 1
+		:name "Tohma"
+		:gender :male
+	)
+	;; Parens loosly indicate an object grouping.
+	(
+		(id 0o00023721)  ;; Style 2
+		(name "Julia")
+		(gender :female)
+	)
+]
+(techers [
+	((id 123
+	 (name "Bellers")
+	 (gender :female)))])
+
+;; One can imagine that this document is implicitly
+;;  wrapped in a pair of parenthesis.
+;;  (This indicates it is an object grouping)
+;;  If we explicitly use square brackets [...]
+;;  at top-level, then that's a replacement for the
+;;  implicit parenthesis. i.e. we've explicitly stated
+;;  we want an array instead of an object (default).
+

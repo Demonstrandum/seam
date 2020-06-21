@@ -1,0 +1,19 @@
+[package]
+name = "seam"
+description = "Symbolic Expressions As Markup."
+keywords = ["markup", "lisp", "macro", "symbolic-expression", "sexp"]
+version = "0.1.0"
+authors = ["Demonstrandum <moi@knutsen.co>"]
+edition = "2018"
+
+
+[lib]
+name = "seam"
+path = "src/lib.rs"
+
+[[bin]]
+name = "seam"
+path = "src/bin.rs"
+
+[dependencies]
+colored = "1.8"

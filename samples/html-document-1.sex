@@ -1,0 +1,10 @@
+(!DOCTYPE html)
+(html
+(head
+	(title Example HTML Document))
+(body
+	(p :id hello Hello, World!)
+	(p something text...)
+    (h1 "A (big) Header!")
+    (p Yet some more (span :style "color: red" text))))
+
