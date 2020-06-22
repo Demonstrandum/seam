@@ -15,6 +15,10 @@ impl fmt::Display for LexError {
 
 impl Error for LexError { }
 
+fn is_whitespace(character : char) -> bool {
+    ['\n', '\r', '\t', ' '].contains(&character)
+}
+
 fn character_kind(character : char, prev : Option<tokens::Kind>)
     -> Option<tokens::Kind> {
     let kind = match character {
@@ -47,7 +51,7 @@ pub fn lex<P: AsRef<Path>>(string : String, _source : Option<P>)
     let mut line_bytes : usize = 0;
 
     let mut accumulator : Vec<u8> = Vec::new();
-    let mut tokens = Vec::new();
+    let mut tokens : TokenStream = Vec::new();
 
     let mut token_start : usize = 0;
     let mut current_kind = None;
@@ -65,31 +69,72 @@ pub fn lex<P: AsRef<Path>>(string : String, _source : Option<P>)
 
         let character = current_byte as char;
 
+        if character == ';' {  // EON Comment
+            let mut i = 0;
+            while string.as_bytes()[bytes + i] != '\n' as u8 {
+                i += 1;
+            }
+            bytes += i;
+            continue;
+        }
+
         let mut prev_kind = current_kind;
         current_kind = character_kind(character, current_kind);
 
         let string_start = character == '"'
-        && prev_kind != Some(tokens::Kind::String);
+            && prev_kind != Some(tokens::Kind::String);
         if string_start {
             current_kind = None;
         }
 
-        let mut peek_kind = if bytes == eof - 1 {
+        let peek_char = if bytes == eof - 1 {
             None
         } else {
             let peek_char = string.as_bytes()[bytes + 1] as char;
-            character_kind(peek_char, current_kind)
+            Some(peek_char)
         };
+        let mut peek_kind = if let Some(peeked) = peek_char {
+            character_kind(peeked, current_kind)
+        } else { None };
 
-        let was_lparen = current_kind == Some(tokens::Kind::LParen);
-        let was_rparen = current_kind == Some(tokens::Kind::RParen);
-        let peek_rparen = peek_kind == Some(tokens::Kind::RParen);
+        let some_lparen = Some(tokens::Kind::LParen);
+        let some_rparen = Some(tokens::Kind::RParen);
+
+        let was_lparen = current_kind == some_lparen;
+        let was_rparen = current_kind == some_rparen;
+
+        let peek_string = peek_char == Some('"');
+        let peek_lparen = peek_kind == some_lparen;
+        let peek_rparen = peek_kind == some_rparen;
+
         if was_lparen || was_rparen {
             peek_kind = None;
             prev_kind = None;
-        }
-        if peek_rparen {
+        } else if peek_rparen || peek_lparen {
             peek_kind = None;
+        } else if peek_string {
+            peek_kind = None;
+        }
+
+        // If we're on a whitespace, and there's a bracket (or quote) ahead,
+        // we need to explicitly say there's whitespace between the
+        // last token and the next bracket/quotation.
+        // (Ignore the whitespace, if it is consecutive to another whitespace)
+        match tokens.last() {
+            Some(token) if token.kind != tokens::Kind::Whitespace
+                        && token.kind != tokens::Kind::Keyword
+                        && is_whitespace(character)
+                        && (peek_rparen
+                         || peek_lparen
+                         || peek_char == Some('"')
+                         || token.kind == tokens::Kind::String
+                         || token.kind == tokens::Kind::RParen) => {
+                let kind = tokens::Kind::Whitespace;
+                let site = tokens::Site::from_line(lines, line_bytes, 1);
+                let value = character.to_string();
+                tokens.push(Token::new(kind, value, site));
+            },
+            Some(_) | None => (),
         }
 
         if let Some(kind_current) = current_kind {

@@ -16,7 +16,7 @@ impl HTMLFormatter {
 }
 
 pub const DEFAULT : &str =
-    "<!DOCTYPE>\n\
+    "<!DOCTYPE html>\n\
     <html>\n\
         <head></head>\n\
         <body></body>\n\
@@ -43,7 +43,7 @@ impl Documentise for HTMLFormatter {
         if has_declaration {
             current_node = &self.tree[1];
         } else {
-            doc += "<!DOCTYPE html>"
+            doc += "<!DOCTYPE html>\n"
         }
         // Check if <html></html> root object exists.
         // Check if head exits, if not, make an empty one.
@@ -69,11 +69,21 @@ impl Documentise for HTMLFormatter {
 /// Converting the tree to an HTML string.
 impl Display for HTMLFormatter {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
-        for node in &self.tree {
+        let mut tree_iter = self.tree.iter().peekable();
+        while let Some(node) = tree_iter.next() {
             match node {
-                ParseNode::Symbol(node) => write!(f, " {}", node.value)?,
-                ParseNode::Number(node) => write!(f, " {}", node.value)?,
-                ParseNode::String(node) => write!(f, " {}", node.value)?,
+                ParseNode::Symbol(node)
+                | ParseNode::Number(node) => {
+                    // If symbol ahead is so-called "symbolic", we can
+                    // infere there was a space between them.
+                    write!(f, "{}", node.value)?;
+                    if let Some(peek) = tree_iter.peek() {
+                        if peek.symbolic().is_some() {
+                            write!(f, " ")?
+                        }
+                    }
+                },
+                ParseNode::String(node) => write!(f, "{}", node.value)?,
                 ParseNode::List(list) => {
                     let head = list.first();
                     let mut tag = "";
@@ -92,9 +102,12 @@ impl Display for HTMLFormatter {
 
                     // Declarations behave differently.
                     if tag.as_bytes()[0] == '!' as u8 {
-                        // TODO: Following can only be symbols.
                         while !rest.is_empty() {
-                            write!(f, " {}", rest[0])?;
+                            if let Some(node) = rest[0].symbolic() {
+                                write!(f, " {}", node.value)?;
+                            } else {
+                                // TODO: Make and send error (can only be symbolic).
+                            }
                             rest = &rest[1..];
                         }
                         write!(f, ">")?;
@@ -109,13 +122,13 @@ impl Display for HTMLFormatter {
                             // Error! Cannot be non atomic.
                         }
                     }
-                    writeln!(f, ">")?;
+                    write!(f, ">")?;
 
                     let html_fmt = HTMLFormatter::new(rest.to_owned());
-                    writeln!(f, "{}", html_fmt)?;
+                    write!(f, "{}", html_fmt)?;
                     write!(f, "</{}>", tag)?;
                 },
-                _ => write!(f, "hi")?,
+                _ => panic!("Uh {:?}", node),
             }
         }
         write!(f, "")

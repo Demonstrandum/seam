@@ -36,6 +36,7 @@ pub enum Kind {
     String,
     Number,
     Keyword,
+    Whitespace,
 }
 
 #[derive(Debug, Clone)]

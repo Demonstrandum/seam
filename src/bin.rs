@@ -50,9 +50,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for file in files {
         let tree = seam::parse_file(&file)?;
-        /*eprintln!("{}", &tree
+        #[cfg(feature="debug")]
+        eprintln!("{}", &tree
             .iter().fold(String::new(),
-            |acc, s| acc + "\n" + &s.to_string()));*/
+            |acc, s| acc + "\n" + &s.to_string()));
         if target == "html" {
             let fmt = seam::assemble::html::HTMLFormatter::new(tree);
             let result = fmt.document();

@@ -32,6 +32,13 @@ pub enum ParseNode {
 }
 
 impl ParseNode {
+    pub fn symbolic(&self) -> Option<Node> {
+        match self {
+            Self::Symbol(node)
+            | Self::Number(node) => Some(node.to_owned()),
+            _ => None
+        }
+    }
     pub fn atomic(&self) -> Option<Node> {
         match self {
             Self::Symbol(node)
@@ -62,6 +69,7 @@ fn parse_atomic(token : &Token) -> Result<ParseNode, ParseError> {
         Kind::Symbol => Ok(ParseNode::Symbol(node)),
         Kind::String => Ok(ParseNode::String(node)),
         Kind::Number => Ok(ParseNode::Number(node)),
+        Kind::Whitespace => Ok(ParseNode::String(node)),
         _ => Err(ParseError(
             String::from("Atomic token not found here."),
             token.site.clone()))
@@ -96,11 +104,17 @@ pub fn parse(tokens : &[Token])
         },
         Kind::Keyword => {
             // Parse second token, make attribute.
-            let (node, slice) = parse(&tokens[1..])?;
+            let (node, mut slice) = parse(&tokens[1..])?;
             let attribute = AttributeNode {
                 keyword: token.value[1..].to_owned(),
                 node: Box::new(node)
             };
+            // White space after attributes don't count.
+            if let Some(next) = slice.first() {
+                if next.kind == Kind::Whitespace {
+                    slice = &slice[1..];
+                }
+            }
             Ok((ParseNode::Attribute(attribute), slice))
         },
         Kind::RParen => {
@@ -127,12 +141,19 @@ pub fn parse_stream(tokens: tokens::TokenStream)
 }
 
 /// Pretty printing for parse nodes.
+#[cfg(feature="debug")]
 impl fmt::Display for ParseNode {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseNode::Symbol(node)
             | ParseNode::Number(node)  => write!(f, "{}", &node.value),
-            ParseNode::String(node)    => write!(f, "\"{}\"", &node.value),
+            ParseNode::String(node)    => {
+                if node.value.trim().is_empty() {
+                    write!(f, "")
+                } else {
+                    write!(f, "\"{}\"", &node.value)
+                }
+            },
             ParseNode::Attribute(attr) => write!(f, ":{} {}",
                 &attr.keyword, &*attr.node),
             ParseNode::List(list) => write!(f, "({}{})", &list[0],

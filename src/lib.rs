@@ -11,6 +11,8 @@ pub const VERSION : (u8, u8, u8) = (0, 1, 0);
 pub fn parse<P: AsRef<Path>>(string : String, source : Option<P>)
     -> Result<parser::ParseTree, Box<dyn Error>> {
     let tokens = lexer::lex(string, source)?;
+    #[cfg(feature="debug")]
+    eprintln!("{:#?}", &tokens);
     let tree = parser::parse_stream(tokens)?;
     Ok(tree)
 }
