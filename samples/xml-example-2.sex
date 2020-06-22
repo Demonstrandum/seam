@@ -10,7 +10,7 @@
 		(name "French(-style) Toast")
 		(price $4.50)
 		(description """
-			Thick slices made from our homemade
+			Thick slices made from our "homemade"
 			sourdough bread.
 		""")
 		(calories 600))
@@ -21,6 +21,6 @@
 			Two eggs, bacon or sausage, toast,
 			and our ever-popular hash browns.)
 		(calories "950")))
-			
+
 
 

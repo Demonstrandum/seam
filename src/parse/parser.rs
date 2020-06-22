@@ -83,9 +83,21 @@ pub fn parse(tokens : &[Token])
         Kind::LParen => {
             // Parse list.
             let mut slice = &tokens[1..];
+            if slice.is_empty() {
+                return Err(ParseError(
+                    "Expected `)' (closing parenthesis), got EOF."
+                    .to_owned(), token.site.clone()));
+            }
+            // Ignore leading white space in head of list.
+            if slice[0].kind == Kind::Whitespace {
+                slice = &slice[1..];
+            }
             let mut elements = Vec::new();
             let mut token = &slice[0];
+
+            let mut i = 0;
             loop {
+                i += 1;
                 if slice.is_empty() {
                     return Err(ParseError(
                         "Expected `)' (closing parenthesis), got EOF."
@@ -93,7 +105,12 @@ pub fn parse(tokens : &[Token])
                 }
                 token = &slice[0];
                 if token.kind == Kind::RParen
-                    { break; }
+                    { break; }  // End of list.
+                if token.kind == Kind::Whitespace && i == 2 {
+                    // Skip whitespace immediately after head.
+                    slice = &slice[1..];
+                    continue;
+                }
 
                 let (element, left) = parse(&slice)?;
                 elements.push(element);

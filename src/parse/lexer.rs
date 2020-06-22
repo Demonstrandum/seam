@@ -4,7 +4,7 @@ use std::path::Path;
 use std::{fmt, error::Error};
 
 #[derive(Debug, Clone)]
-pub struct LexError(Token, String);
+pub struct LexError(tokens::Site, String);
 
 impl fmt::Display for LexError {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,7 +42,7 @@ fn character_kind(character : char, prev : Option<tokens::Kind>)
     }
 }
 
-pub fn lex<P: AsRef<Path>>(string : String, _source : Option<P>)
+pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
     -> Result<TokenStream, LexError> {
 
     let eof = string.len();
@@ -56,6 +56,7 @@ pub fn lex<P: AsRef<Path>>(string : String, _source : Option<P>)
     let mut token_start : usize = 0;
     let mut current_kind = None;
     let mut old_kind = None;
+    let mut escaped = false;
 
     while bytes < eof {
         let current_byte = string.as_bytes()[bytes];
@@ -69,9 +70,71 @@ pub fn lex<P: AsRef<Path>>(string : String, _source : Option<P>)
 
         let character = current_byte as char;
 
-        if character == ';' {  // EON Comment
+        // Tripple quoted string:
+        if character == '"' && &string[bytes..bytes + 3] == "\"\"\"" {
+            token_start = line_bytes;
+            let start_line = lines;
+            bytes += 3;
+            line_bytes += 3;
+            while &string[bytes..bytes + 3] != "\"\"\"" {
+                if string[bytes..].is_empty() {
+                    let mut site = tokens::Site::from_line(
+                        lines, line_bytes, 1);
+                    site.source = source
+                        .map(|e| e.as_ref().display().to_string());
+                    return Err(LexError(site,
+                        String::from("Unclosed tripple-quoted string.")));
+                }
+                let c = string.as_bytes()[bytes];
+                if c == '\n' as u8 {
+                    lines += 1;
+                    line_bytes = 0;
+                }
+                accumulator.push(c);
+                bytes += 1;
+                line_bytes += 1;
+            }
+            bytes += 3;
+            line_bytes += 3;
+            current_kind = None;
+
+            let span = accumulator.len() + 3 + 3;
+            tokens.push(Token::new(tokens::Kind::String,
+                String::from_utf8(accumulator).unwrap(),
+                tokens::Site::from_line(start_line,
+                    token_start, span)));
+            accumulator = Vec::new();
+            continue;
+        }
+
+        if character == '\\' {  // Escapes
+            if current_kind == Some(tokens::Kind::String) {
+                // How escapes work in strings:
+            } else {
+                // How they work outside strings:
+                if bytes + 1 == eof {
+                    continue;
+                }
+                match string.as_bytes()[bytes + 1] as char {
+                    '\n' | '\r' | ' ' | '\t' => {
+                        current_kind = None;
+                        bytes += 1;
+                        line_bytes += 1;
+                    },
+                    _ => ()
+                }
+                escaped = true;
+                bytes += 1;
+                line_bytes += 1;
+                continue;
+            }
+        }
+
+        // EON Comments:
+        if character == ';' && current_kind != Some(tokens::Kind::String) {
             let mut i = 0;
-            while string.as_bytes()[bytes + i] != '\n' as u8 {
+            while bytes < eof
+            && string.as_bytes()[bytes + i] != '\n' as u8 {
                 i += 1;
             }
             bytes += i;
@@ -80,9 +143,13 @@ pub fn lex<P: AsRef<Path>>(string : String, _source : Option<P>)
 
         let mut prev_kind = current_kind;
         current_kind = character_kind(character, current_kind);
+        if escaped {
+            current_kind = Some(tokens::Kind::Symbol);
+        }
 
         let string_start = character == '"'
-            && prev_kind != Some(tokens::Kind::String);
+            && prev_kind != Some(tokens::Kind::String)
+            && !escaped;
         if string_start {
             current_kind = None;
         }
@@ -185,6 +252,7 @@ pub fn lex<P: AsRef<Path>>(string : String, _source : Option<P>)
             old_kind = current_kind;
             token_start = line_bytes - 1;
         }
+        escaped = false;
     }
 
     Ok(tokens)
