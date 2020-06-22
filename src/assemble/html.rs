@@ -1,6 +1,6 @@
 //! Assembles an expanded tree into valid HTML.
 use super::Documentise;
-use crate::parse::parser::{ParseNode, ParseTree};
+use crate::parse::parser::{self, ParseNode, ParseTree};
 
 use std::fmt::{self, Display};
 
@@ -24,16 +24,17 @@ pub const DEFAULT : &str =
 
 impl Documentise for HTMLFormatter {
     fn document(&self) -> String {
-        // Check if <!DOCTYPE html> exists.
         let mut doc = String::new();
         if self.tree.is_empty() {
             return String::from(DEFAULT);
         }
-        let mut current_node = &self.tree[0];
-        let mut has_declaration = false;
+        let stripped = parser::strip(&self.tree);
+        let mut current_node = stripped.get(0);
 
-        if let ParseNode::List(list) = &current_node {
-            if let Some(ParseNode::Symbol(declaration)) = &list.get(0) {
+        // Check if <!DOCTYPE html> exists.
+        let mut has_declaration = false;
+        if let Some(ParseNode::List(list)) = current_node.as_ref() {
+            if let Some(ParseNode::Symbol(declaration)) = list.get(0) {
                 if declaration.value.to_lowercase() == "!doctype" {
                     has_declaration = true;
                 }
@@ -41,16 +42,69 @@ impl Documentise for HTMLFormatter {
         }
 
         if has_declaration {
-            current_node = &self.tree[1];
+            current_node = stripped.get(1);
         } else {
             doc += "<!DOCTYPE html>\n"
         }
-        // Check if <html></html> root object exists.
-        // Check if head exits, if not, make an empty one.
-        // Check if body exists, if not, make it, and put everything
-        // in there.
 
+        // Check if <html></html> root object exists.
+        let mut html_tag = false;
+        if let Some(ParseNode::List(list)) = current_node.as_ref() {
+            if let Some(ParseNode::Symbol(root_tag)) = &list.get(0) {
+                if root_tag.value.to_lowercase() == "html" {
+                    html_tag = true;
+                }
+            }
+        }
+
+        if !html_tag {
+            doc += "<html>\n";
+        }
+
+        // Check if <head></head> exists.
+        let mut head_tag = false;
+        if let Some(ParseNode::List(list)) = current_node.as_ref() {
+            if let Some(ParseNode::List(head_list)) = &list.get(1) {
+                if let Some(ParseNode::Symbol(head)) = &head_list.get(0) {
+                    if head.value.to_lowercase() == "head" {
+                        head_tag = true;
+                    }
+                }
+            }
+        }
+
+        if !head_tag {
+            doc += "<head></head>\n";
+        }
+
+        // Check if body exists, if not, make it, and populate it.
+        let mut body_tag = false;
+        if let Some(ParseNode::List(list)) = current_node.as_ref() {
+            if let Some(ParseNode::List(body_list)) = &list.get(2) {
+                if let Some(ParseNode::Symbol(body)) = &body_list.get(0) {
+                    if body.value.to_lowercase() == "body" {
+                        body_tag = true;
+                    }
+                }
+            }
+        }
+
+        if !body_tag {
+            doc += "<body>\n";
+        }
+
+        // Populate.
+        doc += "<!-- Generated from symbolic-expressions \
+                     into HTML. -->\n";
         doc += &self.to_string();
+
+        // Cloes all new tags.
+        if !body_tag {
+            doc += "</body>\n";
+        }
+        if !html_tag {
+            doc += "</html>";
+        }
 
         doc
     }
