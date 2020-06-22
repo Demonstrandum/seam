@@ -157,18 +157,19 @@ pub fn parse_stream(tokens: tokens::TokenStream)
     Ok(tree)
 }
 
-/// Strip any pure whitespace nodes from the tree.
-pub fn strip(tree : &ParseTree) -> ParseTree {
+/// Strip any pure whitespace (and annotation) nodes from the tree.
+pub fn strip(tree : &ParseTree, strip_attributes : bool) -> ParseTree {
     let mut stripped = tree.to_owned();
     stripped.retain(|branch| {
         match branch {
-            ParseNode::String(node) => !node.value.trim().is_empty(),
+            ParseNode::String(node)  => !node.value.trim().is_empty(),
+            ParseNode::Attribute(_) => !strip_attributes,
             _ => true
         }
     });
     for branch in stripped.iter_mut() {
         if let ParseNode::List(ref mut list) = branch {
-            *list = strip(list);
+            *list = strip(list, strip_attributes);
         }
     }
     stripped

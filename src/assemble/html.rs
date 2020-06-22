@@ -28,7 +28,7 @@ impl Documentise for HTMLFormatter {
         if self.tree.is_empty() {
             return String::from(DEFAULT);
         }
-        let stripped = parser::strip(&self.tree);
+        let stripped = parser::strip(&self.tree, true);
         let mut current_node = stripped.get(0);
 
         // Check if <!DOCTYPE html> exists.
