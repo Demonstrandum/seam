@@ -14,7 +14,7 @@ fn argument_fatal(msg : &str) -> ! {
     std::process::exit(1)
 }
 
-const SUPPORTED_TARGETS : [&str; 1] = ["html"];
+const SUPPORTED_TARGETS : [&str; 2] = ["html", "xml"];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let (major, minor, tiny) = seam::VERSION;
@@ -54,14 +54,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("{}", &tree
             .iter().fold(String::new(),
             |acc, s| acc + "\n" + &s.to_string()));
-        if target == "html" {
-            let fmt = seam::assemble::html::HTMLFormatter::new(tree);
-            let result = fmt.document();
-            println!("{}", result);
-        }
+        let result = match target {
+            "html" => {
+                let fmt = seam::assemble::html::HTMLFormatter::new(tree);
+                fmt.document()
+            },
+            "xml"  => {
+                let fmt = seam::assemble::xml::XMLFormatter::new(tree);
+                fmt.document()
+            },
+            _ => continue
+        };
+        print!("{}", result);
     }
 
-    eprintln!("All files read and converted.");
 
     Ok(())
 }

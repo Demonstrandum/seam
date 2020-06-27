@@ -1,0 +1,57 @@
+
+;; Example JavaScript:
+
+;import * as BC from '../lib/BasicCanvas.js';
+;import {grid, ellipse} from '../lib/BasicShapes.js';
+;
+;use(BC);
+;
+;const sketch = canvas_id('sketch');
+;
+;sketch.dimensions(400, 400);
+;sketch.translate(200, 200);
+;sketch.scale(30, -30);
+;
+;sketch.fill = Color`transparent`;
+;sketch.stroke = Color`black`;
+;
+;const gaussian = (mean = 0, σ = 1) => {
+;  const ϑ = Math.random() * Math.TAU;
+;  const ρ = Math.sqrt(-2 * Math.log(1 - Math.random()));
+;  const radius = σ * ρ;
+;
+;  return Polar(radius, ϑ, P(mean, mean));
+;};
+;
+;const points = [];
+;const r = 0.4;
+
+
+(import * as BC from "../lib/BasicCanvas.js")
+(import { grid, ellipse } from "../lib/BasicCanvas.js")
+
+(use BC)
+
+(const sketch (canvas_id "sketch"))
+
+;; We have toistinguish operators from function calls.
+((. sketch dimensions) 400 400)
+(sketch.translate 200 200)  ;; Alternative (won't work with spaces).
+((. sketch scale) 30 -30)
+
+(= (. sketch fill) (Color `transparent`))
+(= sketch.stroke (Color `black`))
+
+(const gaussian (=> (= mean 0) (= σ 1)
+    (const ϑ (* (. Math TAU) ((. Math random)))
+    (const ρ (Math.sqrt (* -2 (Math.log (- 1 (Math.random))))))
+    (const radius (* σ ρ))
+
+    (Polar radius ϑ (P mean mean)))))
+
+(const points [])
+(const r 0.4)
+
+
+
+

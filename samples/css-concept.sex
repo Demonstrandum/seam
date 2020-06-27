@@ -1,0 +1,26 @@
+;; Very generally:
+;a b c {
+;    x: y;
+;    z: w;
+;}
+
+;; Becomes:
+(a b c :x y
+       :z w)
+
+;; Take a proper example:
+
+;p #para-id {
+;    width: calc(3em + 6px);
+;    color: green;
+;    margin: 3px, auto, 4px, 2px;
+;    position: absolute;
+;}
+
+;; Becomes:
+(p #para-id
+    :width (calc (+ 3em 6px))
+    :color "green"
+    :margin (3px auto 4px 2px)
+    :position absolute)
+
