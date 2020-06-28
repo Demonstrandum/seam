@@ -8,8 +8,8 @@ pub struct LexError(tokens::Site, String);
 
 impl fmt::Display for LexError {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[**] Lexical Error: `{}'.\nAt: {:#?}",
-            self.1, self.0)
+        write!(f, "[**] Lexical Error {}: {}",
+            self.0, self.1)
     }
 }
 
@@ -42,6 +42,9 @@ fn character_kind(character : char, prev : Option<tokens::Kind>)
     }
 }
 
+// TODO: Post-tokeniser parenthesis balancer, give
+// nice and exact error messages.
+
 pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
     -> Result<TokenStream, LexError> {
 
@@ -56,6 +59,7 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
     let mut token_start : usize = 0;
     let mut current_kind = None;
     let mut old_kind = None;
+    let mut string_open = false;
     let mut escaped = false;
 
     while bytes < eof {
@@ -71,20 +75,21 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
         let character = current_byte as char;
 
         // Tripple quoted string:
-        if character == '"' && &string[bytes..bytes + 3] == "\"\"\"" {
+        if character == '"'
+        && string.get(bytes..bytes + 3) == Some("\"\"\"") {
             token_start = line_bytes;
             let start_line = lines;
             bytes += 3;
             line_bytes += 3;
-            while &string[bytes..bytes + 3] != "\"\"\"" {
-                if string[bytes..].is_empty() {
-                    let mut site = tokens::Site::from_line(
-                        lines, line_bytes, 1);
-                    site.source = source
-                        .map(|e| e.as_ref().display().to_string());
-                    return Err(LexError(site,
-                        String::from("Unclosed tripple-quoted string.")));
+
+            let mut found_end_quote = false;
+
+            while let Some(quote) = string.get(bytes..bytes + 3) {
+                if quote == "\"\"\"" {
+                    found_end_quote = true;
+                    break;
                 }
+
                 let c = string.as_bytes()[bytes];
                 if c == '\n' as u8 {
                     lines += 1;
@@ -94,6 +99,17 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
                 bytes += 1;
                 line_bytes += 1;
             }
+
+            if !found_end_quote {
+                let mut site = tokens::Site::from_line(
+                    lines, line_bytes, 1);
+                site.source = source
+                    .map(|e| e.as_ref().display().to_string());
+                return Err(LexError(site,
+                    String::from("Unclosed tripple-quoted string.")));
+            }
+
+
             bytes += 3;
             line_bytes += 3;
             current_kind = None;
@@ -151,6 +167,7 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
             && prev_kind != Some(tokens::Kind::String)
             && !escaped;
         if string_start {
+            string_open = true;
             current_kind = None;
         }
 
@@ -181,6 +198,7 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
             peek_kind = None;
         } else if peek_string {
             peek_kind = None;
+            string_open = false;
         }
 
         // If we're on a whitespace, and there's a bracket (or quote) ahead,
@@ -254,6 +272,11 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
         }
         escaped = false;
     }
-
+    if string_open {
+        let mut site = tokens::Site::from_line(lines, line_bytes, 1);
+        site.source = source.map(|p| p.as_ref().display().to_string());
+        return Err(LexError(site,
+            "Unclosed double-quoted string.".to_string()))
+    }
     Ok(tokens)
 }

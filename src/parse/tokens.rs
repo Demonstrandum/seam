@@ -1,3 +1,5 @@
+use std::fmt::{self, Display};
+
 #[derive(Debug, Clone)]
 pub struct Site {
     pub source : Option<String>,
@@ -17,6 +19,15 @@ impl Site {
         }
     }
 
+    pub fn fake() -> Self {
+        Self {
+            source: None,
+            line: 0,
+            bytes_from_start: 0,
+            bytes_span: 0
+        }
+    }
+
     pub fn from_line(line : usize,
                      bytes_from_start : usize,
                      bytes_span : usize) -> Self {
@@ -25,6 +36,16 @@ impl Site {
             line, bytes_from_start,
             bytes_span
         }
+    }
+}
+
+impl Display for Site {
+    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(")?;
+        if let Some(source) = &self.source {
+            write!(f, "`{}':", source)?;
+        }
+        write!(f, "{}:{})", self.line, self.bytes_from_start + 1)
     }
 }
 

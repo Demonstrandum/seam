@@ -19,7 +19,8 @@ impl Node {
 #[derive(Debug, Clone)]
 pub struct AttributeNode {
     pub keyword : String,
-    pub node : Box<ParseNode>
+    pub node : Box<ParseNode>,
+    pub site : Site
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,21 @@ impl ParseNode {
             _ => None
         }
     }
+    pub fn site(&self) -> Site {
+        match self {
+            Self::Symbol(node)
+            | Self::Number(node)
+            | Self::String(node) => node.site.to_owned(),
+            Self::List(list) => {
+                if let Some(head) = list.first() {
+                    head.site()
+                } else {
+                    panic!("No empty lists should be allowed.")
+                }
+            },
+            Self::Attribute(attr) => attr.site.to_owned(),
+        }
+    }
 }
 
 pub type ParseTree = Vec<ParseNode>;
@@ -56,8 +72,8 @@ pub struct ParseError(pub String, pub Site);
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[**] Parse Error: `{}',\nAt: {:#?}",
-            self.0, self.1)
+        write!(f, "[**] Parse Error {}: {}",
+            self.1, self.0)
     }
 }
 
@@ -82,6 +98,7 @@ pub fn parse(tokens : &[Token])
     match token.kind {
         Kind::LParen => {
             // Parse list.
+            let open_paren = token.site.clone();
             let mut slice = &tokens[1..];
             if slice.is_empty() {
                 return Err(ParseError(
@@ -117,6 +134,11 @@ pub fn parse(tokens : &[Token])
                 slice = left;
             }
             slice = &slice[1..];  // Ignore last r-paren.
+            if elements.is_empty() {
+                // Empty lists have an invisible empty symbol in them.
+                let node = Node::new("", &open_paren);
+                elements.push(ParseNode::Symbol(node));
+            }
             Ok((ParseNode::List(elements), slice))
         },
         Kind::Keyword => {
@@ -124,7 +146,8 @@ pub fn parse(tokens : &[Token])
             let (node, mut slice) = parse(&tokens[1..])?;
             let attribute = AttributeNode {
                 keyword: token.value[1..].to_owned(),
-                node: Box::new(node)
+                node: Box::new(node),
+                site: token.site.to_owned()
             };
             // White space after attributes don't count.
             if let Some(next) = slice.first() {
