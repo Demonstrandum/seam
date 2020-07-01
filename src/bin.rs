@@ -14,7 +14,7 @@ fn argument_fatal(msg : impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
-const SUPPORTED_TARGETS : [&str; 2] = ["html", "xml"];
+const SUPPORTED_TARGETS : [&str; 3] = ["html", "xml", "css"];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args();
@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut target = "";
 
     for arg in args {
+        if arg.chars().nth(0) == Some('-') {
         if let Some(opt) = arg.split("--").nth(1) {
             if SUPPORTED_TARGETS.contains(&opt) {
                 target = Box::leak(opt.to_owned().into_boxed_str());
@@ -40,6 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 _ => argument_fatal(
                     format!("Unknown argument (`-{}').", opt))
             }
+        }
         }
         let path = PathBuf::from(&arg);
         if path.exists() {
@@ -73,6 +75,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
             "xml"  => {
                 let fmt = seam::assemble::xml::XMLFormatter::new(tree);
+                fmt.document()
+            },
+            "css" => {
+                let fmt = seam::assemble::css::CSSFormatter::new(tree);
                 fmt.document()
             },
             _ => {

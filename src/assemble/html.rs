@@ -11,9 +11,7 @@ pub struct HTMLFormatter {
 
 impl HTMLFormatter {
     pub fn new(tree : ParseTree) -> Self {
-        Self {
-            tree,
-        }
+        Self { tree }
     }
 }
 
