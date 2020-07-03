@@ -18,7 +18,7 @@ impl CSSFormatter {
 pub const DEFAULT : &str = "\n";
 
 /// All CSS functions, I might have missed a few.
-const CSS_FUNCTIONS : [&str; 52] = [
+const CSS_FUNCTIONS : [&str; 53] = [
     "attr", "blur", "brightness", "calc", "circle", "contrast",
     "counter", "counters", "cubic-bezier", "drop-shadow", "ellipse",
     "grayscale", "hsl", "hsla", "hue-rotate", "hwb", "image", "inset",
@@ -28,7 +28,7 @@ const CSS_FUNCTIONS : [&str; 52] = [
     "rotateX", "rotateY", "rotateZ", "saturate", "sepia", "scale", "scale3d",
     "scaleX", "scaleY", "scaleZ", "skew", "skewX", "skewY", "symbols",
     "translate", "translate3d", "translateX", "translateY", "translateZ",
-    "url",
+    "url", "var"
 ];
 
 /// The only four math operations supported by CSS calc(...),
@@ -98,6 +98,7 @@ impl MarkupDisplay for CSSFormatter {
             return Ok(String::from(DEFAULT));
         }
         self.generate(&mut doc)?;
+        doc += "/* Generated from symbolic-expressions, with SEAM */\n";
         Ok(doc)
     }
 

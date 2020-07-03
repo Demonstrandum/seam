@@ -16,6 +16,11 @@ Mainly this should be used as a library, such as from within a server,
 generating HTML (or any other supported markup) before it is served to the
 client.
 
+### Current Formats
+ - XML
+ - HTML
+ - CSS
+
 ### Using The Binary
 
 (Providing you have cloned this repo, and `cd`'d into it)
