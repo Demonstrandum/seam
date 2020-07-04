@@ -1,5 +1,7 @@
 //! Assembles an expanded tree into valid HTML.
 use super::{GenerationError, MarkupDisplay};
+use super::css::CSSFormatter;
+
 use crate::parse::parser::{self, ParseNode, ParseTree};
 
 use std::fmt;
@@ -172,12 +174,21 @@ impl MarkupDisplay for HTMLFormatter {
                     }
                     write!(f, ">")?;
 
-                    let html_fmt = HTMLFormatter::new(rest.to_owned());
-                    html_fmt.generate(f)?;
+                    // <style /> tag needs to generate CSS.
+                    if tag == "style" {
+                        writeln!(f, "")?;
+                        let css_fmt = CSSFormatter::new(rest.to_owned());
+                        css_fmt.generate(f)?;
+                    } else {
+                        let html_fmt = HTMLFormatter::new(rest.to_owned());
+                        html_fmt.generate(f)?;
+                    }
                     write!(f, "</{}>", tag)?;
                 },
-                _ => return Err(GenerationError::new("HTML",
-                    "Unknown node encountered.", &node.site()))
+                ParseNode::Attribute(_attr) =>
+                    return Err(GenerationError::new("HTML",
+                        "Unexpected attribute encountered.",
+                        &node.site()))
             }
         }
         Ok(())

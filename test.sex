@@ -1,7 +1,8 @@
 (!DOCTYPE html)
 (html :lang en
   (head
-    (title Example HTML Document))
+    (title Example HTML Document)
+    (style (%include "./test-css.sex")))
   (body
     (p :id hello Hello, World!)
     (p something something text...)

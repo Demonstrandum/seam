@@ -1,15 +1,16 @@
+use std::rc::Rc;
 use std::fmt::{self, Display};
 
 #[derive(Debug, Clone)]
 pub struct Site {
-    pub source : Option<String>,
+    pub source : Option<Rc<str>>,
     pub line : usize,
     pub bytes_from_start : usize,
     pub bytes_span : usize,
 }
 
 impl Site {
-    pub fn new(source : String, line : usize,
+    pub fn new(source : Rc<str>, line : usize,
             bytes_from_start : usize,
             bytes_span : usize) -> Self {
         Self {
@@ -43,7 +44,9 @@ impl Display for Site {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "(")?;
         if let Some(source) = &self.source {
-            write!(f, "`{}':", source)?;
+            write!(f, "{}:", source)?;
+        } else {
+            write!(f, "no-file:")?;
         }
         write!(f, "{}:{})", self.line, self.bytes_from_start + 1)
     }

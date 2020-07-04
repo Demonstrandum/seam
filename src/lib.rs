@@ -1,7 +1,7 @@
 pub mod parse;
 pub mod assemble;
 
-use parse::{parser, lexer};
+use parse::{expander, parser, lexer};
 
 use std::error::Error;
 use std::{fs, path::Path};
@@ -14,7 +14,8 @@ pub fn parse<P: AsRef<Path>>(string : String, source : Option<P>)
     #[cfg(feature="debug")]
     eprintln!("{:#?}", &tokens);
     let tree = parser::parse_stream(tokens)?;
-    Ok(tree)
+    let expanded = expander::expand(tree)?;
+    Ok(expanded)
 }
 
 pub fn parse_file(path : &Path)

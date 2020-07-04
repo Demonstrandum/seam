@@ -214,13 +214,19 @@ impl fmt::Display for ParseNode {
             },
             ParseNode::Attribute(attr) => write!(f, ":{} {}",
                 &attr.keyword, &*attr.node),
-            ParseNode::List(list) => write!(f, "({}{})", &list[0],
+            ParseNode::List(list) => if list.len() == 0 {
+                write!(f, "()")
+            } else if let [ single ] = list.as_slice() {
+                write!(f, "({})", single)
+            } else {
+                write!(f, "({}{})", &list[0],
                 list[1..].iter().fold(String::new(), |acc, elem| {
                     let nested = elem.to_string().split('\n')
                         .fold(String::new(), |acc, e|
                             acc + "\n  " + &e);
                     acc + &nested
                 }))
+            }
         }
     }
 }

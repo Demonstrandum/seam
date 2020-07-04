@@ -1,10 +1,11 @@
-use super::tokens::{self, Token, TokenStream};
+use super::tokens::{self, Site, Token, TokenStream};
 
+use std::rc::Rc;
 use std::path::Path;
 use std::{fmt, error::Error};
 
 #[derive(Debug, Clone)]
-pub struct LexError(tokens::Site, String);
+pub struct LexError(Site, String);
 
 impl fmt::Display for LexError {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,6 +53,9 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
     let mut lines : usize = 1;
     let mut bytes : usize = 0;
     let mut line_bytes : usize = 0;
+
+    let source_str = source.map(
+        |e| Rc::from(e.as_ref().display().to_string()));
 
     let mut accumulator : Vec<u8> = Vec::new();
     let mut tokens : TokenStream = Vec::new();
@@ -101,10 +105,9 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
             }
 
             if !found_end_quote {
-                let mut site = tokens::Site::from_line(
+                let mut site = Site::from_line(
                     lines, line_bytes, 1);
-                site.source = source
-                    .map(|e| e.as_ref().display().to_string());
+                site.source = source_str.clone();
                 return Err(LexError(site,
                     String::from("Unclosed tripple-quoted string.")));
             }
@@ -115,10 +118,12 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
             current_kind = None;
 
             let span = accumulator.len() + 3 + 3;
+            let mut site = Site::from_line(start_line,
+                token_start, span);
+            site.source = source_str.clone();
             tokens.push(Token::new(tokens::Kind::String,
                 String::from_utf8(accumulator).unwrap(),
-                tokens::Site::from_line(start_line,
-                    token_start, span)));
+                site));
             accumulator = Vec::new();
             continue;
         }
@@ -215,7 +220,8 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
                          || token.kind == tokens::Kind::String
                          || token.kind == tokens::Kind::RParen) => {
                 let kind = tokens::Kind::Whitespace;
-                let site = tokens::Site::from_line(lines, line_bytes, 1);
+                let mut site = Site::from_line(lines, line_bytes, 1);
+                site.source = source_str.clone();
                 let value = character.to_string();
                 tokens.push(Token::new(kind, value, site));
             },
@@ -244,7 +250,8 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
                 }
 
                 let value = String::from_utf8(accumulator).unwrap();
-                let site = tokens::Site::from_line(lines, token_start, span);
+                let mut site = Site::from_line(lines, token_start, span);
+                site.source = source_str.clone();
                 tokens.push(Token::new(kind, value, site));
                 accumulator = Vec::new();
 
@@ -273,8 +280,8 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
         escaped = false;
     }
     if string_open {
-        let mut site = tokens::Site::from_line(lines, line_bytes, 1);
-        site.source = source.map(|p| p.as_ref().display().to_string());
+        let mut site = Site::from_line(lines, line_bytes, 1);
+        site.source = source_str.clone();
         return Err(LexError(site,
             "Unclosed double-quoted string.".to_string()))
     }

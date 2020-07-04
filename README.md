@@ -21,6 +21,15 @@ client.
  - HTML
  - CSS
 
+## TODO
+ - More supported formats (`JSON`, `JS`, `TOML`, &c.).
+ - Add more helpful macros.
+ - Add user defined macros.
+ - Allow for arbitrary embedding of code, that can be run by
+   a LISP interpreter, for example.  (e.g. `(%chez (+ 1 2))` executes
+   `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source
+   (i.e. `3`).
+
 ### Using The Binary
 
 (Providing you have cloned this repo, and `cd`'d into it)

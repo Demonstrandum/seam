@@ -18,17 +18,24 @@ impl CSSFormatter {
 pub const DEFAULT : &str = "\n";
 
 /// All CSS functions, I might have missed a few.
-const CSS_FUNCTIONS : [&str; 53] = [
-    "attr", "blur", "brightness", "calc", "circle", "contrast",
+const CSS_FUNCTIONS : [&str; 56] = [
+    "attr", "blur", "brightness", "calc", "circle", "color", "contrast",
     "counter", "counters", "cubic-bezier", "drop-shadow", "ellipse",
     "grayscale", "hsl", "hsla", "hue-rotate", "hwb", "image", "inset",
-    "invert", "linear-gradient", "matrix", "matrix3d", "opacity",
-    "perspective", "polygon", "radial-gradient", "repeating-linear-gradient",
-    "repeating-radial-gradient", "rgb", "rgba", "rotate", "rotate3d",
-    "rotateX", "rotateY", "rotateZ", "saturate", "sepia", "scale", "scale3d",
+    "invert", "lab", "lch", "linear-gradient", "matrix", "matrix3d",
+    "opacity", "perspective", "polygon", "radial-gradient",
+    "repeating-linear-gradient", "repeating-radial-gradient",
+    "rgb", "rgba", "rotate", "rotate3d", "rotateX",
+    "rotateY", "rotateZ", "saturate", "sepia", "scale", "scale3d",
     "scaleX", "scaleY", "scaleZ", "skew", "skewX", "skewY", "symbols",
     "translate", "translate3d", "translateX", "translateY", "translateZ",
     "url", "var"
+];
+
+/// Some CSS functions use commas as an argument delimiter,
+/// some use spaces!  Why not!
+const CSS_COMMA_DELIM : [&str; 2] = [
+    "rgba", "hsla"
 ];
 
 /// The only four math operations supported by CSS calc(...),
@@ -49,8 +56,12 @@ fn convert_value(node : &ParseNode) -> Result<String, GenerationError> {
                     }
                     let tail = tail_tmp.as_slice();
 
-                    let args = tail.iter()
-                        .fold(String::new(), |acc, s| acc + " " + &s);
+                    let delim = if CSS_COMMA_DELIM.contains(&head.as_str()) {
+                        ", "
+                    } else {
+                        " "
+                    };
+                    let args = tail.join(delim);
                     let args = args.trim();
                     if CSS_FUNCTIONS.contains(&head.as_str()) {
                         format!("{}({})", head, args)
@@ -62,7 +73,7 @@ fn convert_value(node : &ParseNode) -> Result<String, GenerationError> {
                         format!("{} {}", head, args)
                     }
                 },
-                _ => String::from("")
+                [] => String::from("")
             };
             Ok(result)
         },
@@ -111,6 +122,7 @@ impl MarkupDisplay for CSSFormatter {
                     let stripped = parser::strip(list, false);
                     let iter = stripped.iter();
                     let mut prop_i = 0; // Index of first property.
+                    // TODO: Selector functions such as nth-child(...), etc.
                     let mut selectors = iter.clone()
                         .take_while(|n| { prop_i += 1; n.atomic().is_some() })
                         .map(|n| n.atomic().unwrap()) // We've checked.
@@ -145,7 +157,7 @@ impl MarkupDisplay for CSSFormatter {
                                  &property.site()));
                         }
                     }
-                    writeln!(f, "}}\n")?;
+                    writeln!(f, "}}")?;
 
                 },
                 ParseNode::Attribute(attr) => {
