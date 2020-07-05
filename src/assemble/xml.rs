@@ -137,7 +137,7 @@ impl MarkupDisplay for XMLFormatter {
 }
 
 
-// TODO: Convert special characters to HTML compatible ones.
+// TODO: Convert special characters to XML compatible ones.
 // e.g.
 //      <  =>  &lt;
 //      >  =>  &gt;

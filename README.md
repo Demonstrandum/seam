@@ -22,11 +22,15 @@ client.
  - CSS
 
 ## TODO
- - More supported formats (`JSON`, `JS`, `TOML`, &c.).
- - Add more helpful macros.
- - Add user defined macros.
+ - HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
+ - HTML `<style>` tag should allow for *normal* CSS syntax if just given a string.
+ - Allow for, and handle special `@` syntax in CSS, such as `@import` and `@media`.
+ - Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
+ - Add more helpful/generic macros (e.g. `(%include ...)`, which already exists).
+ - Add user defined macros system (e.g. `(%define (red-para txt) (p :style "color: red" %txt))`)
+ - Then add variadic macros.
  - Allow for arbitrary embedding of code, that can be run by
-   a LISP interpreter, for example.  (e.g. `(%chez (+ 1 2))` executes
+   a LISP interpreter (or any other langauge), for example.  (e.g. `(%chez (+ 1 2))` executes
    `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source
    (i.e. `3`).
 

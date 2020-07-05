@@ -130,9 +130,10 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
 
         if character == '\\' {  // Escapes
             if current_kind == Some(tokens::Kind::String) {
-                // How escapes work in strings:
+                // How escapes work in strings (TODO)
             } else {
                 // How they work outside strings:
+                // TODO: add more escapes.
                 if bytes + 1 == eof {
                     continue;
                 }
