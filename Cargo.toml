@@ -2,7 +2,7 @@
 name = "seam"
 description = "Symbolic Expressions As Markup."
 keywords = ["markup", "lisp", "macro", "symbolic-expression", "sexp"]
-license-file = LICENSE
+license-file = "LICENSE"
 homepage = "https://git.knutsen.co/seam"
 version = "0.1.2"
 authors = ["Demonstrandum <moi@knutsen.co>"]
