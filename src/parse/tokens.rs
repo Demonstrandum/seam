@@ -46,7 +46,7 @@ impl Display for Site {
         if let Some(source) = &self.source {
             write!(f, "{}:", source)?;
         } else {
-            write!(f, "no-file:")?;
+            write!(f, "<stdin>:")?;
         }
         write!(f, "{}:{})", self.line, self.bytes_from_start + 1)
     }

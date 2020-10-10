@@ -2,11 +2,12 @@ pub mod parse;
 pub mod assemble;
 
 use parse::{expander, parser, lexer};
+pub use parse::parse_stream;
 
 use std::error::Error;
 use std::{fs, path::Path};
 
-pub const VERSION : (u8, u8, u8) = (0, 1, 2);
+pub const VERSION : (u8, u8, u8) = (0, 1, 3);
 
 pub fn parse<P: AsRef<Path>>(string : String, source : Option<P>)
     -> Result<parser::ParseTree, Box<dyn Error>> {
