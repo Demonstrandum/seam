@@ -1,0 +1,13 @@
+(!DOCTYPE html)
+(html :lang en
+  (head
+    (title Blog Concept))
+  (body
+    (h1 My Blog)
+    (h2 Index)
+    (%define blog-dir (%sort :by date (%dir "./blog/*.sex")))
+    (ul
+      (%for file in %blog-dir
+        (%let ((short-title (%basename %file)))
+          (li (a :href (%concat "./blog"%short-title".html") %short-title)))))
+    (p What interests you?)))

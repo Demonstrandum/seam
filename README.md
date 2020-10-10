@@ -22,6 +22,7 @@ client.
  - CSS
 
 ## TODO
+ - Caching or checking time-stamps as to not regenerate unmodified source files.
  - HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
  - HTML `<style>` tag should allow for *normal* CSS syntax if just given a string.
  - Allow for, and handle special `@` syntax in CSS, such as `@import` and `@media`.

@@ -88,6 +88,29 @@ impl ExpansionContext {
                 }
                 Ok(expanded_tree)
             },
+            "date" => {
+                let date_format = if let [ p ] = params.as_slice() {
+                    p
+                } else {
+                    return Err(ExpansionError::new(
+                        &format!("`{}' macro only expects one formatting argument.",
+                                 name),
+                        site))
+                };
+
+                let (date_format, site) = if let Some(node) = date_format.atomic() {
+                    (node.value, node.site)
+                } else {
+                    return Err(ExpansionError::new(
+                        &format!("`{}' macro needs string (or atomic) \
+                                  formatting argument.", name),
+                        site))
+                };
+
+                let now = chrono::Local::now();
+                let formatted = now.format(&date_format).to_string();
+                Ok(vec![ParseNode::String(Node::new(&formatted, &site))])
+            },
             _ => Err(ExpansionError::new(
                     &format!("Macro not found (`{}').", name),
                     site))

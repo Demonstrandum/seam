@@ -1,0 +1,13 @@
+(%define title "My Blog Entry No. 1")
+
+(head
+  (title %title)
+  (%include "./includes/head.sex"))
+(body
+  (%include "./includes/header.sex")
+  (h1 %title)
+  (p Hello, World!)
+  (p
+    Some content goes here...)
+
+  (%include "./includes/footer.sex"))

@@ -1,0 +1,4 @@
+(meta :name copyright :content "No, it's copyleft.")
+(meta :name description :conetent "A blog page.")
+(style (%include "./style.sex"))
+(meta :name keywords :content "blog,personal,concept,information")
