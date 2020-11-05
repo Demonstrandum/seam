@@ -71,7 +71,7 @@ impl ExpansionContext {
                 };
 
                 // Open file, and parse contents!
-                let tree = match super::parse_file(&Path::new(&path)) {
+                let tree = match super::parse_file_noexpand(&Path::new(&path)) {
                     Ok(tree) => tree,
                     Err(error) => {
                         eprintln!("{}", error);
@@ -82,6 +82,9 @@ impl ExpansionContext {
                     }
                 };
 
+                // Build new (expanded) tree, with result of previous
+                // parse, while recursively expanding each branch in the
+                // tree too, as they are added.
                 let mut expanded_tree = Vec::with_capacity(tree.len());
                 for branch in tree {
                     expanded_tree.extend(self.expand_node(branch)?);

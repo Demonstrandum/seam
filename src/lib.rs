@@ -2,10 +2,9 @@ pub mod parse;
 pub mod assemble;
 
 use parse::{expander, parser, lexer};
-pub use parse::parse_stream;
 
 use std::error::Error;
-use std::{fs, path::Path};
+use std::{fs, io, path::Path};
 
 pub const VERSION : (u8, u8, u8) = (0, 1, 3);
 
@@ -23,6 +22,13 @@ pub fn parse_file(path : &Path)
     -> Result<parser::ParseTree, Box<dyn Error>> {
     let contents = fs::read_to_string(&path)?;
     parse(contents, Some(&path))
+}
+
+pub fn parse_stream(stream : &mut impl io::Read)
+    -> Result<parser::ParseTree, Box<dyn Error>> {
+    let mut contents = String::new();
+    stream.read_to_string(&mut contents)?;
+    parse(contents, Option::<&Path>::None)
 }
 
 pub fn main() {
