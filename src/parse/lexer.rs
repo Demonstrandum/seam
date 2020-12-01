@@ -131,6 +131,17 @@ pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
         if character == '\\' {  // Escapes
             if current_kind == Some(tokens::Kind::String) {
                 // How escapes work in strings (TODO)
+                let new_char = match string.as_bytes()[bytes + 1] as char {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '0' => '\0',
+                     c  => c,
+                };
+                accumulator.push(new_char as u8);
+                bytes += 2;
+                line_bytes += 2;
+                continue;
             } else {
                 // How they work outside strings:
                 // TODO: add more escapes.
