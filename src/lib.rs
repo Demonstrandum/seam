@@ -6,7 +6,7 @@ use parse::{expander, parser, lexer};
 use std::error::Error;
 use std::{fs, io, path::Path};
 
-pub const VERSION : (u8, u8, u8) = (0, 1, 5);
+pub const VERSION : (u8, u8, u8) = (0, 1, 6);
 
 pub fn parse<P: AsRef<Path>>(string : String, source : Option<P>)
     -> Result<parser::ParseTree, Box<dyn Error>> {
