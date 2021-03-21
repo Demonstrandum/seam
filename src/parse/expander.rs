@@ -310,7 +310,8 @@ impl ExpansionContext {
                         let name = &sym.value[1..];
                         let Node { site, .. } = sym;
                         // Clean macro arguments from whitespace tokens.
-                        let params = parser::strip(&call.collect(), false);
+                        let call_vec: ParseTree = call.collect();
+                        let params = parser::strip(&call_vec, false);
                         return self.expand_invocation(name, site, params);
                     }
                 }

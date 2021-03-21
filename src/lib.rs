@@ -1,3 +1,7 @@
+#![allow(incomplete_features)]
+#![feature(associated_type_defaults)]
+#![feature(generic_associated_types)]
+
 pub mod parse;
 pub mod assemble;
 
@@ -6,7 +10,7 @@ use parse::{expander, parser, lexer};
 use std::error::Error;
 use std::{fs, io, path::Path};
 
-pub const VERSION : (u8, u8, u8) = (0, 1, 6);
+pub const VERSION : (u8, u8, u8) = (0, 1, 7);
 
 pub fn parse<P: AsRef<Path>>(string : String, source : Option<P>)
     -> Result<parser::ParseTree, Box<dyn Error>> {

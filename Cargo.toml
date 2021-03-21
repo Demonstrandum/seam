@@ -4,7 +4,7 @@ description = "Symbolic Expressions As Markup."
 keywords = ["markup", "lisp", "macro", "symbolic-expression", "sexp"]
 license-file = "LICENSE"
 homepage = "https://git.knutsen.co/seam"
-version = "0.1.6"
+version = "0.1.7"
 authors = ["Demonstrandum <moi@knutsen.co>"]
 edition = "2018"
 
@@ -22,3 +22,4 @@ path = "src/bin.rs"
 [dependencies]
 colored = "1.8"
 chrono = "0.4"
+

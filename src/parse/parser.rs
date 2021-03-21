@@ -67,6 +67,85 @@ impl ParseNode {
 
 pub type ParseTree = Vec<ParseNode>;
 
+pub trait SearchTree {
+    type Constructor<T> = fn(T) -> ParseNode;
+    /// Search the parse-tree for a specific node with a specific value.
+    /// if `kind == ParseNode::List`, then check if the list has
+    /// first value (head/caller) equal to `value`, etc.
+    fn search_node<T>(&self, kind : Self::Constructor<T>,
+                             value : &str,
+                             case_insensitive : bool,
+                             level : usize) -> Option<ParseNode>;
+}
+
+impl SearchTree for ParseTree {
+    fn search_node<T>(&self, kind : Self::Constructor<T>, value : &str,
+                      insensitive : bool, level: usize) -> Option<ParseNode> {
+        if level == 0 {
+            return None;
+        }
+
+        let fnptr = kind as usize;
+
+        let is_equal = |string: &str| if insensitive {
+            string.to_lowercase() == value.to_lowercase()
+        } else {
+            string == value
+        };
+
+        for node in self {
+            let found = match node {
+                ParseNode::List(nodes) => {
+                    if fnptr == ParseNode::List as usize {
+                        if let Some(Some(caller)) = nodes.get(0).map(ParseNode::atomic) {
+                            if is_equal(&caller.value) {
+                                return Some(node.clone());
+                            }
+                        }
+                    }
+                    nodes.search_node(kind, value, insensitive, level - 1)
+                },
+                ParseNode::Symbol(name) => {
+                    if fnptr == ParseNode::Symbol as usize && is_equal(&name.value) {
+                        Some(node.clone())
+                    } else {
+                        None
+                    }
+                },
+                ParseNode::String(name) => {
+                    if fnptr == ParseNode::String as usize && is_equal(&name.value) {
+                        Some(node.clone())
+                    } else {
+                        None
+                    }
+                },
+                ParseNode::Number(name) => {
+                    if fnptr == ParseNode::Number as usize && is_equal(&name.value) {
+                        Some(node.clone())
+                    } else {
+                        None
+                    }
+                },
+                ParseNode::Attribute(attr) => {
+                    if kind as usize == ParseNode::Attribute as usize {
+                        if is_equal(&attr.keyword) {
+                            return Some(node.clone());
+                        }
+                    }
+                    let singleton : ParseTree = vec![*attr.node.clone()];
+                    singleton.search_node(kind, value, insensitive, level - 1)
+                }
+            };
+
+            if found.is_some() {
+                return found;
+            }
+        }
+
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParseError(pub String, pub Site);
 
@@ -181,7 +260,7 @@ pub fn parse_stream(tokens: tokens::TokenStream)
 }
 
 /// Strip any pure whitespace (and annotation) nodes from the tree.
-pub fn strip(tree : &ParseTree, strip_attributes : bool) -> ParseTree {
+pub fn strip(tree : &[ParseNode], strip_attributes : bool) -> ParseTree {
     let mut stripped = tree.to_owned();
     stripped.retain(|branch| {
         match branch {

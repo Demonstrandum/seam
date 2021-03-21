@@ -59,6 +59,8 @@ impl convert::From<fmt::Error> for GenerationError {
     }
 }
 
+pub type Formatter<'a> = &'a mut dyn fmt::Write;
+
 /// Trait for all structs that can generate specific markup
 /// for the s-expression tree.
 pub trait MarkupDisplay {
@@ -66,7 +68,7 @@ pub trait MarkupDisplay {
     /// Similar to fmt in Display/Debug traits, takes in a
     /// mutable writable buffer, returns success or a specifc
     /// error while generating the markup.
-    fn generate(&self, buf : &mut dyn fmt::Write)
+    fn generate(&self, buf : Formatter)
         -> Result<(), GenerationError>;
     /// Documentises the input, that's to say, it adds any
     /// extra meta-information to the generated markup, if
@@ -77,15 +79,16 @@ pub trait MarkupDisplay {
     /// Directly converts the s-expressions into a string
     /// containing the markup, unless there was an error.
     fn display(&self) -> Result<String, GenerationError> {
-        let mut s_buf = String::new();
-        self.generate(&mut s_buf).map(|_| s_buf)
+        let mut buf = String::new();
+        self.generate(&mut buf)?;
+        Ok(buf)
     }
 }
 
 /// Automatically implement fmt::Display as a wrapper around
 /// MarkupDisplay::generate, but throws away the useful error message.
 impl fmt::Display for dyn MarkupDisplay {
-    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f : &mut fmt::Formatter) -> fmt::Result {
         self.generate(f).map_err(|_| fmt::Error)
     }
 }
