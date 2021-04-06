@@ -2,7 +2,7 @@
 use super::{GenerationError, MarkupDisplay, Formatter};
 use super::css::CSSFormatter;
 
-use crate::parse::parser::{ParseNode, ParseTree, SearchTree};
+use crate::parse::parser::{ParseNode, ParseTree, SearchTree, SearchType};
 
 #[derive(Debug, Clone)]
 pub struct HTMLFormatter {
@@ -33,18 +33,19 @@ impl MarkupDisplay for HTMLFormatter {
 
         // Check if top-level <!DOCTYPE html> exists.
         let doctype_tag
-            = self.tree.search_node(ParseNode::List, "!DOCTYPE", true, 1);
+            = self.tree.search_node(SearchType::ListHead, "!doctype", true, 1);
         // Check if top-level <html></html> root object exists.
         let html_tag
-            = self.tree.search_node(ParseNode::List, "html", true, 1);
+            = self.tree.search_node(SearchType::ListHead, "html", true, 1);
         // Check if <head></head> tag object exists.
         let head_tag
-            = self.tree.search_node(ParseNode::List, "head", true, 2);
+            = self.tree.search_node(SearchType::ListHead, "head", true, 2);
         // Check if <body></body> tag object exists.
         let body_tag
-            = self.tree.search_node(ParseNode::List, "body", true, 2);
+            = self.tree.search_node(SearchType::ListHead, "body", true, 2);
 
         if doctype_tag.is_none() {
+            eprintln!("no doctype found");
             doc += "<!DOCTYPE html>\n";
             if html_tag.is_none() {
                 doc += "<html>\n";
