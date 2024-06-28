@@ -195,7 +195,9 @@ impl<'a> Lexer {
             }
             // Characters that fit in a symbol or number are valid idents.
             match kind {
-                tokens::Kind::Symbol | tokens::Kind::Number => {},
+                tokens::Kind::Symbol
+              | tokens::Kind::Number
+              | tokens::Kind::Keyword => {},
                 _ => break
             }
             let _ = self.consume_char();
