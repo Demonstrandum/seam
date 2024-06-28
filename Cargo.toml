@@ -4,12 +4,12 @@ description = "Symbolic Expressions As Markup."
 keywords = ["markup", "lisp", "macro", "symbolic-expression", "sexp"]
 license-file = "LICENSE"
 homepage = "https://git.knutsen.co/seam"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Demonstrandum <samuel@knutsen.co>"]
 edition = "2021"
 
 [features]
-default = ["debug"]
+# default = ["debug"]
 debug = []
 
 [lib]
