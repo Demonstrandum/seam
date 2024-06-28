@@ -14,42 +14,52 @@ fn argument_fatal(msg : impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
-const SUPPORTED_TARGETS : [&str; 3] = ["html", "xml", "css"];
+const SUPPORTED_TARGETS : [&str; 4] = ["sexp", "html", "xml", "css"];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args();
-    args.next();  // Discard.
+    let _ = args.next();  // Discard.
 
     let mut files = Vec::new();
     let mut target = "";
     let mut from_stdin = false;
+    let mut is_doc = true;
 
     for arg in args {
         if arg.chars().nth(0) == Some('-') {
-        if let Some(opt) = arg.split("--").nth(1) {
-            if SUPPORTED_TARGETS.contains(&opt) {
-                target = Box::leak(opt.to_owned().into_boxed_str());
+            if let Some(opt) = arg.split("--").nth(1) {
+                if SUPPORTED_TARGETS.contains(&opt) {
+                    target = Box::leak(opt.to_owned().into_boxed_str());
+                    continue;
+                }
+                match opt {
+                   "nodocument" | "nodoc" => is_doc = false,
+                   _ => argument_fatal(
+                       format!("Unknown argument: `--{}'.", opt))
+                }
+            } else if let Some(opt) = arg.split("-").nth(1) {
+                match opt {
+                    "v" => {
+                        let (major, minor, tiny) = seam::VERSION;
+                        eprintln!("{}", format!("SEAM v{}.{}.{}",
+                            major, minor, tiny).bold());
+                        std::process::exit(0);
+                    },
+                    "" => {
+                        from_stdin = true;
+                    },
+                    _ => argument_fatal(
+                        format!("Unknown argument: `-{}'.", opt))
+                }
             }
-            continue;
-        } else if let Some(opt) = arg.split("-").nth(1) {
-            match opt {
-                "v" => {
-                    let (major, minor, tiny) = seam::VERSION;
-                    eprintln!("{}", format!("SEAM v{}.{}.{}",
-                        major, minor, tiny).bold());
-                    std::process::exit(0);
-                },
-                "" => {
-                    from_stdin = true;
-                },
-                _ => argument_fatal(
-                    format!("Unknown argument (`-{}').", opt))
+        } else {
+            // Otherwise its a file path.
+            let path = PathBuf::from(&arg);
+            if path.exists() {
+                files.push(path);
+            } else {
+                argument_fatal(format!("File not found: `{}'.", path.to_string_lossy()));
             }
-        }
-        }
-        let path = PathBuf::from(&arg);
-        if path.exists() {
-            files.push(path);
         }
     }
 
@@ -63,60 +73,48 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if from_stdin {
         let mut stdin = io::stdin();
-        let tree = match seam::parse_stream(&mut stdin) {
-            Ok(tree) => tree,
-            Err(e) =>  {
-                eprintln!("{}", e);
-                std::process::exit(1)
-            }
-        };
-        print_generated(tree, target);
+        let builder = seam::tree_builder_stream(&mut stdin)?;
+        generate_and_print(&builder, target, is_doc);
     }
 
     for file in files {
-        let tree = match seam::parse_file(&file) {
-            Ok(tree) => tree,
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1)
-            }
-        };
-        #[cfg(feature="debug")]
-        eprintln!("{}", &tree
-            .iter().fold(String::new(),
-            |acc, s| acc + "\n" + &s.to_string()));
-        print_generated(tree, target);
+        let builder = seam::tree_builder_file(&file)?;
+        generate_and_print(&builder, target, is_doc);
     }
 
 
     Ok(())
 }
 
-fn print_generated(tree : seam::parse::ParseTree, target : &str) {
-    let result = match target {
-    "html" => {
-        let fmt = seam::assemble::html::HTMLFormatter::new(tree);
+fn generate_and_print<'a>(expander: &'a seam::parse::expander::Expander<'a>, target: &str, is_doc: bool) {
+    let tree = match expander.expand() {
+        Ok(tree) => tree,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    let fmt: Box<dyn MarkupDisplay> = match target {
+        "sexp" => Box::new(seam::assemble::sexp::SExpFormatter::new(tree)),
+        "html" => Box::new(seam::assemble::html::HTMLFormatter::new(tree)),
+        "xml"  => Box::new(seam::assemble::xml::XMLFormatter::new(tree)),
+        "css"  => Box::new(seam::assemble::css::CSSFormatter::new(tree)),
+        _ => {
+            argument_fatal(
+                format!("Target `{}', does not exist.", target))
+        }
+    };
+    let result = if is_doc {
         fmt.document()
-    },
-    "xml"  => {
-        let fmt = seam::assemble::xml::XMLFormatter::new(tree);
-        fmt.document()
-    },
-    "css" => {
-        let fmt = seam::assemble::css::CSSFormatter::new(tree);
-        fmt.document()
-    },
-    _ => {
-        argument_fatal(
-            format!("Target `{}', does not exist.", target))
-    }};
+    } else {
+        fmt.display()
+    };
 
     match result {
-        Ok(generated) => print!("{}", generated),
+        Ok(generated) => println!("{}", generated),
         Err(e) => {
             eprintln!("{}", e);
             std::process::exit(1)
         }
     }
 }
-

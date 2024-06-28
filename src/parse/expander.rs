@@ -1,286 +1,387 @@
-use super::parser::{self, ParseNode, ParseTree, Node};
+use super::parser::{Parser, ParseNode, ParseTree, Node};
 use super::tokens::Site;
 
-use std::{fmt, path::{Path, PathBuf}, ffi::OsString, error::Error};
+use std::{
+    fmt,
+    cell::RefCell,
+    path::{
+        Path,
+        PathBuf
+    },
+    ffi::OsString,
+    error::Error,
+    rc::Rc,
+};
 
 use colored::*;
+use unicode_width::UnicodeWidthStr;
 
 /// Error type for errors while expanding macros.
 #[derive(Debug, Clone)]
-pub struct ExpansionError(pub String, pub Site);
+pub struct ExpansionError<'a>(pub String, pub Site<'a>);
 
-impl ExpansionError {
+impl<'a> ExpansionError<'a> {
     /// Create a new error given the ML, the message, and the site.
-    pub fn new(msg : &str, site : &Site) -> Self {
+    pub fn new(msg: &str, site: &Site<'a>) -> Self {
         Self(msg.to_owned(), site.to_owned())
     }
 }
 
 /// Implement fmt::Display for user-facing error output.
-impl fmt::Display for ExpansionError {
-    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<'a> fmt::Display for ExpansionError<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ExpansionError(msg, site) = self;
+        let line_prefix = format!("  {} |", site.line);
+        let line_view = site.line_slice();
+        writeln!(f, "{} {}", line_prefix, line_view)?;
+        writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
+            prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
+            text_offset=site.line_column() - 1,
+            length=site.width())?;
         write!(f, "[{}] Error Expanding Macro {}: {}",
-            "**".red().bold(), self.1, self.0)
+            "**".red().bold(), site, msg)
     }
 }
 
-/// Implements std::error::Error.
-impl Error for ExpansionError { }
+/// Implements std::error::Error for macro expansion error.
+impl<'a> Error for ExpansionError<'a> { }
 
 use std::collections::HashMap;
 
-#[derive(Clone)]
-struct Macro {
-    name : String,
-    params : Vec<String>,
-    body : Vec<ParseNode>
+/// A macro consists of:
+/// - its name;
+/// - its argument list (if any);
+/// - and its defintion (i.e. *body*).
+#[derive(Debug, Clone)]
+pub struct Macro<'a> {
+    name: String,
+    params: Box<[String]>,
+    body: Box<[ParseNode<'a>]>
 }
+// TODO: Macro to also store its own scope (at place of definition)
+// in order to implement lexical scoping.
 
-impl Macro {
-    fn new(name : &str) -> Macro {
+impl<'a> Macro<'a> {
+    pub fn new(name : &str) -> Macro {
         Macro {
             name: name.to_string(),
-            params: Vec::new(),
-            body:   Vec::new()
+            params: Box::new([]),
+            body:   Box::new([]),
         }
     }
 }
 
-#[derive(Clone)]
-struct ExpansionContext {
-    definitions : HashMap<String, Macro>
+/// Type of variable scope owned by an `Expander` instance.
+pub type Scope<'a> = RefCell<HashMap<String, Rc<Macro<'a>>>>; // Can you believe this type?
+
+#[derive(Debug, Clone)]
+pub struct Expander<'a> {
+    parser: Parser,
+    definitions: Scope<'a>,
 }
 
-impl ExpansionContext {
-    pub fn new() -> Self { Self { definitions: HashMap::new() } }
+impl<'a> Expander<'a> {
+    pub fn new(parser: Parser) -> Self {
+        Self {
+            parser,
+            definitions: RefCell::new(HashMap::new())
+        }
+    }
 
-    fn expand_invocation(&mut self, name : &str,
-                         site : &Site,
-                         params : Vec<ParseNode>)
-    -> Result<ParseTree, ExpansionError> { match name {
+    /// Get underlying source-code of the active parser for current unit.
+    pub fn get_source(&'a self) -> &'a str {
+        self.parser.get_source()
+    }
+
+    /// Update variable (macro) for this scope.
+    fn insert_variable(&'a self, name: String, var: Rc<Macro<'a>>) {
+        let mut defs = self.definitions.borrow_mut();
+        defs.insert(name, var);
+    }
+
+    /// Check if macro exists in this scope.
+    fn has_variable(&'a self, name: &str) -> bool {
+        let defs = self.definitions.borrow();
+        defs.contains_key(name)
+    }
+
+    fn get_variable(&'a self, name: &str) -> Option<Rc<Macro<'a>>> {
+        self.definitions.borrow().get(name).map(|m| m.clone())
+    }
+
+    /// Define a macro with `(%define a b)` --- `a` is a symbol or a list `(c ...)` where `c` is a symbol.
+    /// macro definitions will eliminate any preceding whitespace, so make sure trailing whitespace provides
+    /// the whitespace you need.
+    fn expand_define_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let [head, nodes@..] = &*params else {
+            return Err(ExpansionError(
+                format!("`%define` macro takes at least \
+                    two (2) arguments ({} were given.", params.len()),
+                node.site().to_owned()));
+        };
+
+        // If head is atomic, we assign to a 'variable'.
+        let def_macro = if let Some(variable) = head.atomic() {
+            Rc::new(Macro {
+                name: variable.value.clone(),
+                params: Box::new([]),
+                body: nodes.to_owned().into_boxed_slice(),
+            })
+        } else {  // Otherwise, we are assigning to a 'function'.
+            let ParseNode::List { nodes: defn_nodes, .. } = head else {
+                return Err(ExpansionError(
+                    "First argument of `%define` macro must be a list \
+                        or variable name/identifier.".to_owned(),
+                    node.site().to_owned()));
+            };
+            let [name, params@..] = &**defn_nodes else {
+                return Err(ExpansionError(
+                    "`%define` macro definition must at \
+                        least have a name.".to_owned(),
+                    node.site().to_owned()));
+            };
+            let mut arguments: Vec<String> = Vec::with_capacity(params.len());
+            for param_node in params {  // Verify arguments are symbols.
+                if let ParseNode::Symbol(param) = param_node {
+                    arguments.push(param.value.clone());
+                } else {
+                    return Err(ExpansionError(
+                        "`define` function arguments must be \
+                            symbols/identifers.".to_owned(),
+                        node.site().to_owned()));
+                };
+            }
+            let ParseNode::Symbol(name_node) = name else {
+                return Err(ExpansionError(
+                    "`define` function name must be \
+                        a symbol/identifier.".to_owned(),
+                    node.site().to_owned()));
+            };
+            let name = name_node.value.clone();
+
+            Rc::new(Macro {
+                name,
+                params: arguments.into_boxed_slice(),
+                body: nodes.to_owned().into_boxed_slice(),
+            })
+        };
+
+        self.insert_variable(def_macro.name.to_owned(), def_macro);
+        Ok(Box::new([]))
+    }
+
+    /// `(%ifdef symbol a b)` --- `b` is optional, however, if not provided *and*
+    /// the symbol is not defined, it will erase the whole expression, and whitespace will not
+    /// be preseved before it. If that's a concern, provide `b` as the empty string `""`.
+    fn expand_ifdef_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        if params.len() < 2 || params.len() > 3 {
+            return Err(ExpansionError(format!("`ifdef` takes one (1) \
+                    condition and one (1) consequent, a third optional \
+                    alternative expression may also be provided, but \
+                    `ifdef` was given {} arguments.", params.len()),
+                node.site().to_owned()));
+        }
+        let symbol = if let Some(node) = params[0].atomic() {
+            node.value
+        } else {
+            // FIXME: Borrow-checker won't let me use params[0].site() as site!
+            return Err(ExpansionError(
+                "The first argument to `ifdef` must be a symbol/name.".to_string(),
+                node.site().clone()));
+        };
+
+        let mut expanded = if self.has_variable(&symbol) {
+            self.expand_node(params[1].clone())?
+        } else {
+            if let Some(alt) = params.get(2) {
+                self.expand_node(alt.clone())?
+            } else {
+                Box::new([])
+            }
+        };
+        if let Some(first_node) = expanded.get_mut(0) {
+            first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
+        }
+        Ok(expanded)
+    }
+
+    fn expand_include_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
+        let [path_node] = &*params else {
+            return Err(ExpansionError(
+                format!("Incorrect number of arguments \
+                    to `%include' macro. Got {}, expected {}.",
+                    params.len(), 1),
+                node.site().to_owned()));
+        };
+
+        let Some(Node { value: path, .. }) = path_node.atomic()  else {
+            return Err(ExpansionError(
+                "Bad argument to `%include' macro.\n\
+                    Expected a path, but did not get any value
+                    that could be interpreted as a path.".to_string(),
+                node.site().to_owned()))
+        };
+
+        // Open file, and parse contents!
+        let path = Path::new(&path);
+        let parser = match super::parser_for_file(&path) {
+            Ok(parser) => parser,
+            Err(error) => {
+                let err = ExpansionError(
+                    format!("{}", error), node.site().to_owned());
+                // Try with `.sex` extensions appended.
+                let mut with_ext = PathBuf::from(path);
+                let filename = path.file_name().ok_or(err.clone())?;
+                with_ext.pop();
+
+                let mut new_filename = OsString::new();
+                new_filename.push(filename);
+                new_filename.push(".sex");
+
+                with_ext.push(new_filename);
+                match super::parser_for_file(&with_ext) {
+                    Ok(parser) => parser,
+                    Err(_)   => return Err(err)
+                }
+            }
+        };
+        // FIXME: Whatever! I tried to indicate with life-times that these
+        // live for the entier duration that the lex->parse->expand phases.
+        // Might as well just leak it, since it's going to live that long anyway.
+        let leaked_parser = Box::leak(Box::new(parser));  // Keep a Vec<Box<Parser>>?
+        let tree = match leaked_parser.parse() {
+            Ok(tree) => tree,
+            Err(error) => return Err(ExpansionError(
+                format!("{}", error), node.site().to_owned()))
+        };
+
+        // Build new (expanded) tree, with result of previous
+        // parse, while recursively expanding each branch in the
+        // tree too, as they are added.
+        let mut expanded_tree = Vec::with_capacity(tree.len());
+        for branch in tree {
+            expanded_tree.extend(self.expand_node(branch)?);
+        }
+        // First node should inherit leading whitespace from (%include ...) list.
+        if expanded_tree.len() != 0 {
+            expanded_tree[0].set_leading_whitespace(node.leading_whitespace().to_owned());
+        }
+        Ok(expanded_tree.into_boxed_slice())
+    }
+
+    fn expand_date_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let [date_format] = &*params else {
+            return Err(ExpansionError::new(
+                "`%date' macro only expects one formatting argument.",
+                node.site()))
+        };
+
+        let Some(Node { value: date_format, .. }) = date_format.atomic() else {
+            return Err(ExpansionError::new(
+                "`%date' macro needs string (or atomic) \
+                formatting argument.", node.site()))
+        };
+
+        let now = chrono::Local::now();
+        let formatted = now.format(&date_format).to_string();
+        let date_string_node = ParseNode::String(Node {
+            value: formatted,
+            site: node.site().clone(),
+            leading_whitespace: node.leading_whitespace().to_string(),
+        });
+        Ok(Box::new([date_string_node]))
+    }
+
+    /// `(%log ...)` logs to `STDERR` when called and leaves *no* node behind.
+    /// This means whitespace preceeding `(%log ...)` will be removed!
+    fn expand_log_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut words = Vec::with_capacity(params.len());
+        for param in self.expand_nodes(params)? {
+            if let Some(word) = param.atomic() {
+                words.push(word.value.clone());
+            } else {
+                return Err(ExpansionError::new("`log` should only take \
+                    arguments that are either symbols, strings or numbers.",
+                    node.site()));
+            }
+        }
+
+        eprintln!("{} {} {}: {}", "[#]".bold(), "log".bold().yellow(),
+            node.site(), words.join(" "));
+        Ok(Box::new([]))
+    }
+
+    fn expand_macro(&'a self, name: &str, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        // Eagerly evaluate parameters passed to macro invocation.
+        let params = self.expand_nodes(params)?;
+
+        let Some(mac) = self.get_variable(name) else {
+            return Err(ExpansionError::new(
+                &format!("Macro not found (`{}').", name), node.site()))
+        };
+
+        // Instance of expansion subcontext.
+        // FIXME: Leaking again, maybe track subcontexts in superior context?
+        let subcontext = Box::leak(Box::new(self.clone()));  // TODO: Create a stack Vec<Rc<Context>> and clone it here.
+        // Check enough arguments were given.
+        if params.len() != mac.params.len() {
+            return Err(ExpansionError(
+                format!("`%{}` macro expects {} arguments, \
+                        but {} were given.", &mac.name, mac.params.len(),
+                        params.len()), node.site().to_owned()));
+        }
+        // Define arguments for body.
+        for i in 0..params.len() {
+            let arg_macro = Macro {
+                name: mac.params[i].to_owned(),
+                params: Box::new([]),
+                body: Box::new([params[i].clone()]), //< Argument as evaluated at call-site.
+            };
+            subcontext.insert_variable(mac.params[i].to_string(), Rc::new(arg_macro));
+        }
+        // Expand body.
+        let mut expanded = subcontext.expand_nodes(mac.body.clone())?.to_vec();
+        // Inherit leading whitespace of invocation.
+        if let Some(first_node) = expanded.get_mut(0) {
+            first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
+    fn expand_invocation(&'a self,
+                         name: &str, //< Name of macro (e.g. %define).
+                         node: &'a ParseNode<'a>, //< Node for `%'-macro invocation.
+                         params: Box<[ParseNode<'a>]> //< Passed in arguments.
+    ) -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Some macros are lazy (e.g. `ifdef`), so each macro has to
         //   expand the macros in its arguments individually.
-        "define" => {
-            let (head, nodes) = if let [head, nodes@..] = params.as_slice() {
-                (head, nodes)
-            } else {
-                return Err(ExpansionError::new(
-                    &format!("`define` macro takes at least \
-                        two (2) arguments ({} were given.", params.len()),
-                    site));
-            };
-
-            // If head is atomic, we assign to a 'variable'.
-            let def_macro = if let Some(variable) = head.atomic() {
-                let mut definition = Macro::new(&variable.value);
-                for node in nodes {
-                    definition.body.push(node.clone());
-                }
-                definition
-            } else {  // Otherwise, we are assigning to a 'function'.
-                let (name, params) = if let ParseNode::List(call) = head {
-                    let (name, params) = if let [name, params@..] = call.as_slice() {
-                        (name, params)
-                    } else {
-                        return Err(ExpansionError::new(
-                            "`define` function definition must at \
-                             least have a name.", site));
-                    };
-                    let mut arguments = Vec::with_capacity(params.len());
-                    for node in params {  // Verify params are symbols.
-                        if let ParseNode::Symbol(param) = node {
-                            arguments.push(param.value.clone());
-                        } else {
-                            return Err(ExpansionError::new(
-                                "`define` function arguments must be \
-                                 symbols/identifers.", site));
-                        };
-                    }
-                    if let ParseNode::Symbol(name) = name {
-                        (name.value.clone(), arguments)
-                    } else {
-                        return Err(ExpansionError::new(
-                            "`define` function name must be \
-                             a symbol/identifier.", site));
-                    }
-                } else {
-                    return Err(ExpansionError::new(
-                        "First argument of `define` macro must be a list \
-                         or variable name/identifier.", site));
-                };
-
-                let mut definition = Macro::new(&name);
-                definition.params = params;
-                for node in nodes {
-                    definition.body.push(node.clone());
-                }
-                definition
-            };
-
-            self.definitions.insert(def_macro.name.clone(), def_macro);
-
-            Ok(vec![])
-        },
-        "ifdef" => {
-            if params.len() < 2 || params.len() > 3 {
-                eprintln!("{:?}", params);
-                return Err(ExpansionError::new(&format!("`ifdef` takes one (1) \
-                        condition and one (1) consequent, a third optional \
-                        alternative expression may also be provided, but \
-                        `ifdef` was given {} arguments.", params.len()),
-                    site));
-            }
-            let symbol = if let Some(node) = params[0].atomic() {
-                node.value
-            } else {
-                return Err(ExpansionError::new("The first argument to \
-                    `ifdef` must be a symbol/name.", &params[0].site()));
-            };
-
-            if self.definitions.contains_key(&symbol) {
-                Ok(self.expand_node(params[1].clone())?)
-            } else {
-                if let Some(alt) = params.get(2) {
-                    Ok(self.expand_node(alt.clone())?)
-                } else {
-                    Ok(vec![])
-                }
-            }
-        },
-        "include" => {
-            let params = self.expand_nodes(params)?;
-            let path_node = if let [ p ] = params.as_slice() {
-                p
-            } else {
-                return Err(ExpansionError::new(
-                    &format!("Incorrect number of arguments \
-                        to `{}' macro. Got {}, expected {}.",
-                        name, params.len(), 1),
-                    site));
-            };
-
-            let path = if let Some(node) = path_node.atomic() {
-                node.value
-            } else {
-                return Err(ExpansionError::new(
-                    &format!("Bad argument to `{}' macro.\n\
-                        Expected a path, but did not get any value
-                        that could be interpreted as a path.", name),
-                    site))
-            };
-
-            // Open file, and parse contents!
-            let path = Path::new(&path);
-            let tree = match super::parse_file_noexpand(&path) {
-                Ok(tree) => tree,
-                Err(error) => {
-                    let err = ExpansionError::new(
-                        &format!("{}", error), site);
-                    // Try with `.sex` extensions appended.
-                    let mut with_ext = PathBuf::from(path);
-                    let filename = path.file_name().ok_or(err.clone())?;
-                    with_ext.pop();
-
-                    let mut new_filename = OsString::new();
-                    new_filename.push(filename);
-                    new_filename.push(".sex");
-
-                    with_ext.push(new_filename);
-                    match super::parse_file_noexpand(&with_ext) {
-                        Ok(tree) => tree,
-                        Err(_)   => return Err(err)
-                    }
-                }
-            };
-
-            // Build new (expanded) tree, with result of previous
-            // parse, while recursively expanding each branch in the
-            // tree too, as they are added.
-            let mut expanded_tree = Vec::with_capacity(tree.len());
-            for branch in tree {
-                expanded_tree.extend(self.expand_node(branch)?);
-            }
-            Ok(expanded_tree)
-        },
-        "date" => {
-            let params = self.expand_nodes(params)?;
-            let date_format = if let [ p ] = params.as_slice() {
-                p
-            } else {
-                return Err(ExpansionError::new(
-                    &format!("`{}' macro only expects one formatting argument.",
-                             name),
-                    site))
-            };
-
-            let (date_format, site) = if let Some(node) = date_format.atomic() {
-                (node.value, node.site)
-            } else {
-                return Err(ExpansionError::new(
-                    &format!("`{}' macro needs string (or atomic) \
-                              formatting argument.", name),
-                    site))
-            };
-
-            let now = chrono::Local::now();
-            let formatted = now.format(&date_format).to_string();
-            Ok(vec![ParseNode::String(Node::new(&formatted, &site))])
-        },
-        "log" => {
-            let mut words = Vec::with_capacity(params.len());
-            for param in self.expand_nodes(params)? {
-                if let Some(word) = param.atomic() {
-                    words.push(word.value.clone());
-                } else {
-                    return Err(ExpansionError::new("`log` should only take \
-                        arguments that are either symbols, strings or numbers.",
-                        &param.site()));
-                }
-            }
-
-            eprintln!("{} {} {}: {}", "[#]".bold(), "log".bold().yellow(),
-                site, words.join(" "));
-            Ok(vec![])
+        match name {
+            "define"  => self.expand_define_macro(node, params),
+            "ifdef"   => self.expand_ifdef_macro(node, params),
+            "include" => self.expand_include_macro(node, params),
+            "date"    => self.expand_date_macro(node, params),
+            "log"     => self.expand_log_macro(node, params),
+            _         => self.expand_macro(name, node, params),
         }
-        name => {
-            let params = self.expand_nodes(params)?;
+    }
 
-            let mac = if let Some(mac) = self.definitions.get(name) {
-                mac
-            } else {
-                return Err(ExpansionError::new(
-                    &format!("Macro not found (`{}').", name), site))
-            };
-
-            // Instance of expansion subcontext.
-            let mut subcontext = self.clone();
-            // Check enough arguments were given.
-            if params.len() != mac.params.len() {
-                return Err(ExpansionError::new(
-                    &format!("`%{}` macro expects {} arguments, \
-                             but {} were given.", &mac.name, mac.params.len(),
-                             params.len()), site));
-            }
-            // Define arguments for body.
-            for i in 0..params.len() {
-                let mut arg_macro = Macro::new(&mac.params[i]);
-                arg_macro.body.push(params[i].clone());
-                subcontext.definitions.insert(mac.params[i].clone(), arg_macro);
-            }
-            // Expand body.
-            subcontext.expand_nodes(mac.body.clone())
-        }
-    }}
-
-    pub fn expand_node(&mut self, node : ParseNode)
-    -> Result<ParseTree, ExpansionError> {
+    pub fn expand_node(&'a self, node: ParseNode<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
         match node {
             ParseNode::Symbol(ref sym) => {
                 // Check if symbol starts with %... and replace it
                 // with it's defined value.
                 if sym.value.starts_with("%") {
                     let name = &sym.value[1..];
-                    if let Some(def) = self.definitions.get(name) {
+                    if let Some(def) = self.get_variable(name) {
                         if !def.params.is_empty() {  // Should not be a function.
                             return Err(ExpansionError::new(
                                 &format!("`{}` is a macro that takes arguments, \
@@ -289,65 +390,75 @@ impl ExpansionContext {
                         }
                         Ok(def.body.clone())
                     } else {  // Not found.
-                        Err(ExpansionError::new(
-                            &format!("No such macro, `{}`.", name),
-                            &sym.site))
+                        Err(ExpansionError(
+                            format!("No such macro, `{}`.", name),
+                            sym.site.to_owned()))
                     }
                 } else {
-                    Ok(vec![node])
+                    Ok(Box::new([node]))
                 }
             },
-            ParseNode::List(list) => {
+            ParseNode::List { ref nodes, ref site, ref end_token, ref leading_whitespace } => {
                 // Check for macro invocation (%_ _ _ _).
                 // Recurse over every element.
-                let len = list.len();
-                let mut call = list.into_iter();
+                let len = nodes.len();
+                let mut call = nodes.to_vec().into_iter();
                 let head = call.next();
 
-                if let Some(ParseNode::Symbol(ref sym)) = head {
-                    if sym.value.starts_with("%") {
+                // Pathway: (%_ _ _) macro invocation.
+                if let Some(ref symbol@ParseNode::Symbol(..)) = head {
+                    // FIXME: This is just really bad...
+                    let list_node = Box::leak(Box::new(node.clone()));
+                    let name = symbol.atomic().unwrap().value;
+                    if name.starts_with("%") {
                         // Rebuild node...
-                        let name = &sym.value[1..];
-                        let Node { site, .. } = sym;
+                        let name = &name[1..];
                         // Clean macro arguments from whitespace tokens.
-                        let call_vec: ParseTree = call.collect();
-                        let params = parser::strip(&call_vec, false);
-                        return self.expand_invocation(name, site, params);
+                        let params: Vec<ParseNode> = call.collect();
+                        return self.expand_invocation(name, list_node, params.into_boxed_slice());
                     }
                 }
-
-                // Rebuild node...
+                // Otherwise, if not a macro, just expand child nodes incase they are macros.
                 let mut expanded_list = Vec::with_capacity(len);
-                expanded_list.extend(self.expand_node(head.unwrap())?);
+                expanded_list.extend(self.expand_node(head.clone().unwrap())?);
                 for elem in call {
                     expanded_list.extend(self.expand_node(elem)?);
                 }
 
-                Ok(vec![ParseNode::List(expanded_list)])
+                Ok(Box::new([ParseNode::List {
+                    nodes: expanded_list.into_boxed_slice(),
+                    site: site.clone(),
+                    end_token: end_token.clone(),
+                    leading_whitespace: leading_whitespace.clone(),
+                }]))
             },
-            ParseNode::Attribute(mut attr) => {
-                let mut expanded_nodes = self.expand_node(*attr.node)?;
-                attr.node = Box::new(expanded_nodes[0].clone());
-                expanded_nodes[0] = ParseNode::Attribute(attr);
+            ParseNode::Attribute { keyword, node, site, leading_whitespace } => {
+                let mut expanded_nodes = self.expand_node(*node)?;
+                let new_node = Box::new(expanded_nodes[0].clone());
+                expanded_nodes[0] = ParseNode::Attribute {
+                    keyword,
+                    node: new_node,
+                    site,
+                    leading_whitespace,
+                };
                 Ok(expanded_nodes)
             },
-            _ => Ok(vec![node])
+            _ => Ok(Box::new([node]))
         }
     }
 
-    fn expand_nodes(&mut self, tree : ParseTree) -> Result<ParseTree, ExpansionError> {
+    pub fn expand_nodes(&'a self, tree: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let mut expanded = Vec::with_capacity(tree.len());
-        for branch in tree {
+        for branch in tree.into_vec() {
             expanded.extend(self.expand_node(branch)?);
         }
+        Ok(expanded.into_boxed_slice())
+    }
+
+    pub fn expand(&'a self) -> Result<ParseTree<'a>, Box<dyn 'a + std::error::Error>> {
+        let tree = self.parser.parse()?;
+        let expanded = self.expand_nodes(tree)?;
         Ok(expanded)
     }
-}
-
-
-/// Macro-expansion phase.
-/// Macros start with `%...'.
-pub fn expand(tree : ParseTree) -> Result<ParseTree, ExpansionError> {
-    let mut context = ExpansionContext::new();
-    context.expand_nodes(tree)
 }

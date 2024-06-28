@@ -1,301 +1,356 @@
-use super::tokens::{self, Site, Token, TokenStream};
+use super::tokens::{self, Site, Token};
 
-use std::rc::Rc;
-use std::path::Path;
+use std::str::pattern::Pattern;
 use std::{fmt, error::Error};
+use std::cell::Cell;
+
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone)]
-pub struct LexError(Site, String);
+pub struct LexError<'a>(pub String, pub Site<'a>);
 
-impl fmt::Display for LexError {
+impl<'a> fmt::Display for LexError<'a> {
     fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[**] Lexical Error {}: {}",
-            self.0, self.1)
+        let LexError(msg, site) = self;
+        let line_prefix = format!("  {} |", site.line);
+        let line_view = site.line_slice();
+        writeln!(f, "{} {}", line_prefix, line_view)?;
+        writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
+            prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
+            text_offset=site.line_column() - 1,
+            length=site.width())?;
+        write!(f, "[**] Lexical Error {}: {}", site, msg)
     }
 }
 
-impl Error for LexError { }
+impl<'a> Error for LexError<'a> { }
 
-fn is_whitespace(character : char) -> bool {
+fn is_whitespace(character: char) -> bool {
     ['\n', '\r', '\t', ' '].contains(&character)
 }
 
-fn character_kind(character : char, prev : Option<tokens::Kind>)
+fn character_kind(character: char)
     -> Option<tokens::Kind> {
-    let kind = match character {
+    match character {
         '\n' | '\r' | ' ' | '\t' => None,
-        '(' => Some(tokens::Kind::LParen),
-        ')' => Some(tokens::Kind::RParen),
+        '('       => Some(tokens::Kind::LParen),
+        ')'       => Some(tokens::Kind::RParen),
         '0'..='9' => Some(tokens::Kind::Number),
-        ':' => Some(tokens::Kind::Keyword),
-        '"' => Some(tokens::Kind::String),
-        _ => Some(tokens::Kind::Symbol)
-    };
-
-    if prev == Some(tokens::Kind::String) {
-        if character == '"' {
-            None
-        } else {
-            prev
-        }
-    } else {
-        kind
+        '-'       => Some(tokens::Kind::Number),
+        ':'       => Some(tokens::Kind::Keyword),
+        '"'       => Some(tokens::Kind::String),
+        _         => Some(tokens::Kind::Symbol)
     }
 }
 
-// TODO: Post-tokeniser parenthesis balancer, give
-// nice and exact error messages.
+/// Lexer moves source-code string into itself,
+/// and references it when generating tokens.
+#[derive(Debug, Clone)]
+pub struct Lexer {
+    pub source_path: String,
+    pub source: String,
+    line: Cell<usize>,
+    byte_offset: Cell<usize>,
+    byte_offset_line: Cell<usize>,
+}
 
-pub fn lex<P: AsRef<Path>>(string : String, source : Option<P>)
-    -> Result<TokenStream, LexError> {
 
-    let eof = string.len();
-    let mut lines : usize = 1;
-    let mut bytes : usize = 0;
-    let mut line_bytes : usize = 0;
-
-    let source_str = source.map(
-        |e| Rc::from(e.as_ref().display().to_string()));
-
-    let mut accumulator : Vec<u8> = Vec::new();
-    let mut tokens : TokenStream = Vec::new();
-
-    let mut token_start : usize = 0;
-    let mut current_kind = None;
-    let mut old_kind = None;
-    let mut string_open = false;
-    let mut escaped = false;
-
-    while bytes < eof {
-        let current_byte = string.as_bytes()[bytes];
-
-        if !string.is_char_boundary(bytes) {
-            accumulator.push(current_byte);
-            bytes += 1;
-            line_bytes += 1;
-            continue;
+impl<'a> Lexer {
+    pub fn new(source_path: String, source: String) -> Self {
+        Self {
+            source_path,
+            source,
+            line: Cell::new(1),
+            byte_offset: Cell::new(0),
+            byte_offset_line: Cell::new(0),
         }
+    }
 
-        let character = current_byte as char;
+    pub fn get_source(&'a self) -> &'a str {
+        &self.source
+    }
 
-        // Tripple quoted string:
-        if character == '"'
-        && string.get(bytes..bytes + 3) == Some("\"\"\"") {
-            token_start = line_bytes;
-            let start_line = lines;
-            bytes += 3;
-            line_bytes += 3;
+    fn increment_byte_offsets(&'a self, offset: usize) {
+        let i = self.byte_offset.get();
+        let j = self.byte_offset_line.get();
+        self.byte_offset.set(i + offset);
+        self.byte_offset_line.set(j + offset);
+    }
 
-            let mut found_end_quote = false;
+    fn next_line(&'a self) {
+        let l = self.line.get();
+        self.line.set(l + 1);
+        self.byte_offset_line.set(0);
+    }
 
-            while let Some(quote) = string.get(bytes..bytes + 3) {
-                if quote == "\"\"\"" {
-                    found_end_quote = true;
-                    break;
-                }
-
-                let c = string.as_bytes()[bytes];
-                if c == '\n' as u8 {
-                    lines += 1;
-                    line_bytes = 0;
-                }
-                accumulator.push(c);
-                bytes += 1;
-                line_bytes += 1;
-            }
-
-            if !found_end_quote {
-                let mut site = Site::from_line(
-                    lines, line_bytes, 1);
-                site.source = source_str.clone();
-                return Err(LexError(site,
-                    String::from("Unclosed tripple-quoted string.")));
-            }
-
-
-            bytes += 3;
-            line_bytes += 3;
-            current_kind = None;
-
-            let span = accumulator.len() + 3 + 3;
-            let mut site = Site::from_line(start_line,
-                token_start, span);
-            site.source = source_str.clone();
-            tokens.push(Token::new(tokens::Kind::String,
-                String::from_utf8(accumulator).unwrap(),
-                site));
-            accumulator = Vec::new();
-            continue;
+    /// Advance the lexer past any whitespace characters,
+    /// and ignore any comments.
+    fn consume_whitespace(&'a self) -> &'a str {
+        let bytes = self.source.as_bytes();
+        let mut start = self.byte_offset.get();
+        if start >= bytes.len() {
+            return "";
         }
+        let mut inside_eon_comment: bool = false;
+        loop {
+            let index = self.byte_offset.get();
+            let byte: u8 = bytes[index];
+            if byte as char == ';' {
+                inside_eon_comment = true;
+            }
+            if !is_whitespace(byte as char) && !inside_eon_comment {
+                break;
+            }
+            self.increment_byte_offsets(1);
+            if self.byte_offset.get() >= bytes.len() {
+                break;
+            }
+            if byte as char == '\n' {
+                self.next_line();
+                if inside_eon_comment {
+                    // EON comments ends at end-of-line.
+                    inside_eon_comment = false;
+                    // Now, whitespace is only what comes *after* the comment.
+                    start = index;
+                }
+            }
+        }
+        unsafe {
+            std::str::from_utf8_unchecked(&bytes[start..self.byte_offset.get()])
+        }
+    }
 
-        if character == '\\' {  // Escapes
-            if current_kind == Some(tokens::Kind::String) {
-                // How escapes work in strings (TODO)
-                let new_char = match string.as_bytes()[bytes + 1] as char {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    '0' => '\0',
-                     c  => c,
+    /// Look at immediately following complete character.
+    /// Returns `None` if file is at EOF.
+    fn peek_char(&self) -> Option<char> {
+        let bytes = self.source.as_bytes();
+        let slice = &bytes[self.byte_offset.get()..];
+        unsafe {
+            let utf8 = std::str::from_utf8_unchecked(slice);
+            let mut chars = utf8.chars();
+            chars.next()
+        }
+    }
+
+    /// Check if source-code at current possition starts with a pattern.
+    fn starts_with<P>(&'a self, pat: P) -> bool where P: Pattern<'a> {
+        self.source[self.byte_offset.get()..].starts_with(pat)
+    }
+
+    /// Advance the offset to the next unicode character.
+    /// Returns `None` if file is at EOF.
+    fn consume_char(&self) -> Option<char> {
+        let c = self.peek_char();
+        self.increment_byte_offsets(1);
+        while !self.source.is_char_boundary(self.byte_offset.get()) {
+            self.increment_byte_offsets(1);
+        }
+        if c == Some('\n') {
+            self.next_line();
+        }
+        return c;
+    }
+
+    fn consume_lparen(&'a self, whitespace: &'a str) -> Token<'a> {
+        let start = self.byte_offset.get();
+        let line_offset = self.byte_offset_line.get();
+        assert_eq!('(', self.consume_char().expect("consumed token at eof"));
+        let value: &str = &self.source[start..self.byte_offset.get()];
+        let site: Site = self.site(start, line_offset);
+        Token::new(tokens::Kind::LParen, value, whitespace, site)
+    }
+
+    fn consume_rparen(&'a self, whitespace: &'a str) -> Token<'a> {
+        let start = self.byte_offset.get();
+        let line_offset = self.byte_offset_line.get();
+        assert_eq!(')', self.consume_char().expect("consumed token at eof"));
+        let value: &str = &self.source[start..self.byte_offset.get()];
+        let site: Site = self.site(start, line_offset);
+        Token::new(tokens::Kind::RParen, value, whitespace, site)
+    }
+
+    fn consume_number(&'a self, whitespace: &'a str) -> Token<'a> {
+        let start = self.byte_offset.get();
+        let line_offset = self.byte_offset_line.get();
+        let value: &str = self.consume_identifier_string();
+        let site: Site = self.site(start, line_offset);
+        Token::new(tokens::Kind::Number, value, whitespace, site)
+    }
+
+    /// Consume characters as long as they can be part of the identifier.
+    /// **Note:** backslashes are escaped and consume literally any
+    /// character after them, regardless of 'kind', including whitespace.
+    fn consume_identifier_string(&'a self) -> &'a str {
+        let start = self.byte_offset.get();
+        while let Some(c) = self.peek_char() {
+            let Some(kind) = character_kind(c) else { break };
+            // Symbols can contain escaped characters.
+            if c == '\\' {
+                let   _ = self.consume_char(); // `\`.
+                let esc = self.consume_char(); // escaped char.
+                if esc == Some('\n') {
+                    self.next_line(); // NOTE: Disallow this?
+                }
+                continue;
+            }
+            // Characters that fit in a symbol or number are valid idents.
+            match kind {
+                tokens::Kind::Symbol | tokens::Kind::Number => {},
+                _ => break
+            }
+            let _ = self.consume_char();
+        }
+        &self.source[start..self.byte_offset.get()]
+    }
+
+    /// Consume a symbol/identifier token.
+    fn consume_symbol(&'a self, whitespace: &'a str) -> Token<'a> {
+        let start = self.byte_offset.get();
+        let line_offset = self.byte_offset_line.get();
+        let value: &str = self.consume_identifier_string();
+        let site: Site = self.site(start, line_offset);
+        Token::new(tokens::Kind::Symbol, value, whitespace, site)
+    }
+
+    /// A string is consumed as a token, but not parsed.
+    fn consume_string(&'a self, whitespace: &'a str) -> Result<Token<'a>, LexError<'a>> {
+        let start = self.byte_offset.get();
+        let line_no = self.line.get();
+        let line_offset = self.byte_offset_line.get();
+        assert_eq!('"', self.peek_char().expect("consumed token at eof"));
+
+        let token = if self.starts_with(r#"""""#) {
+            // Tripple-quoted string.
+            self.increment_byte_offsets(3);
+            let start_of_string = self.byte_offset.get();
+            // Read until end-of-string.
+            let mut reading_escape = false;
+            loop {
+                let Some(next_char) = self.peek_char() else {
+                    let site = Site::new(&self.source_path, &self.source, line_no, start, line_offset, 3);
+                    return Err(LexError(
+                        String::from("Unclosed tripple-quoted string."),
+                        site));
                 };
-                accumulator.push(new_char as u8);
-                bytes += 2;
-                line_bytes += 2;
-                continue;
-            } else {
-                // How they work outside strings:
-                // TODO: add more escapes.
-                if bytes + 1 == eof {
-                    continue;
+                if next_char == '\n' { self.next_line(); }
+                if self.starts_with(r#"""""#) && !reading_escape {
+                    break;  // End-of-string.
                 }
-                match string.as_bytes()[bytes + 1] as char {
-                    '\n' | '\r' | ' ' | '\t' => {
-                        current_kind = None;
-                        bytes += 1;
-                        line_bytes += 1;
-                    },
-                    _ => ()
-                }
-                escaped = true;
-                bytes += 1;
-                line_bytes += 1;
-                continue;
-            }
-        }
-
-        // EON Comments:
-        if character == ';' && current_kind != Some(tokens::Kind::String) {
-            let mut i = 0;
-            while bytes < eof
-            && string.as_bytes()[bytes + i] != '\n' as u8 {
-                i += 1;
-            }
-            bytes += i;
-            continue;
-        }
-
-        let mut prev_kind = current_kind;
-        current_kind = character_kind(character, current_kind);
-        if escaped {
-            current_kind = Some(tokens::Kind::Symbol);
-        }
-
-        let string_start = character == '"'
-            && prev_kind != Some(tokens::Kind::String)
-            && !escaped;
-        if string_start {
-            string_open = true;
-            current_kind = None;
-        }
-
-        let peek_char = if bytes == eof - 1 {
-            None
-        } else {
-            let peek_char = string.as_bytes()[bytes + 1] as char;
-            Some(peek_char)
-        };
-        let mut peek_kind = if let Some(peeked) = peek_char {
-            character_kind(peeked, current_kind)
-        } else { None };
-
-        let some_lparen = Some(tokens::Kind::LParen);
-        let some_rparen = Some(tokens::Kind::RParen);
-
-        let was_lparen = current_kind == some_lparen;
-        let was_rparen = current_kind == some_rparen;
-
-        let peek_string = peek_char == Some('"');
-        let peek_lparen = peek_kind == some_lparen;
-        let peek_rparen = peek_kind == some_rparen;
-
-        if was_lparen || was_rparen {
-            peek_kind = None;
-            prev_kind = None;
-        } else if peek_rparen || peek_lparen {
-            peek_kind = None;
-        } else if peek_string {
-            peek_kind = None;
-            string_open = false;
-        }
-
-        // If we're on a whitespace, and there's a bracket (or quote) ahead,
-        // we need to explicitly say there's whitespace between the
-        // last token and the next bracket/quotation.
-        // (Ignore the whitespace, if it is consecutive to another whitespace)
-        match tokens.last() {
-            Some(token) if token.kind != tokens::Kind::Whitespace
-                        && token.kind != tokens::Kind::Keyword
-                        && is_whitespace(character)
-                        && (peek_rparen
-                         || peek_lparen
-                         || peek_char == Some('"')
-                         || token.kind == tokens::Kind::String
-                         || token.kind == tokens::Kind::RParen) => {
-                let kind = tokens::Kind::Whitespace;
-                let mut site = Site::from_line(lines, line_bytes, 1);
-                site.source = source_str.clone();
-                let value = character.to_string();
-                tokens.push(Token::new(kind, value, site));
-            },
-            Some(_) | None => (),
-        }
-
-        if let Some(kind_current) = current_kind {
-            if prev_kind.is_none() {
-                old_kind = current_kind;
-                token_start = line_bytes;
-            }
-            accumulator.push(current_byte);
-            bytes += 1;
-            line_bytes += 1;
-
-            if peek_kind.is_none() {
-                let kind = if let Some(kind_old) = old_kind {
-                    kind_old
+                if !reading_escape {
+                    reading_escape = next_char == '\\';
                 } else {
-                    kind_current
-                };
-
-                let mut span = accumulator.len();
-                if kind == tokens::Kind::String {
-                    span += 2;
+                    reading_escape = false;
                 }
-
-                let value = String::from_utf8(accumulator).unwrap();
-                let mut site = Site::from_line(lines, token_start, span);
-                site.source = source_str.clone();
-                tokens.push(Token::new(kind, value, site));
-                accumulator = Vec::new();
-
-                if was_lparen || peek_rparen || was_rparen {
-                    old_kind = None;
-                    current_kind = None;
-                    token_start = line_bytes;
-                }
-
+                self.increment_byte_offsets(1);
             }
+            let end_of_string = self.byte_offset.get();
+            self.increment_byte_offsets(3);
+            // String 'value' is inside quotes.
+            let value: &str = &self.source[start_of_string..end_of_string];
+            let mut site: Site = self.site(start, line_offset);
+            site.line = line_no;
+            Token::new(tokens::Kind::String, value, whitespace, site)
         } else {
-            bytes += 1;
-            line_bytes += 1;
-        }
+            // Single-quoted string.
+            self.increment_byte_offsets(1);
+            let start_of_string = self.byte_offset.get();
+            // Read until end-of-string.
+            let mut reading_escape = false;
+            loop {
+                let Some(next_char) = self.peek_char() else {
+                    let site = Site::new(&self.source_path, &self.source, line_no, start, line_offset, 1);
+                    return Err(LexError(
+                        String::from("Unclosed string quote (`\"')."),
+                        site));
+                };
+                if next_char == '\n' { self.next_line(); }
+                if next_char == '"' && !reading_escape {
+                    break;  // End-of-string.
+                }
+                if !reading_escape {
+                    reading_escape = next_char == '\\';
+                } else {
+                    reading_escape = false;
+                }
+                self.increment_byte_offsets(1);
+            }
+            let end_of_string = self.byte_offset.get();
+            self.increment_byte_offsets(1);
+            // String 'value' is inside quotes.
+            let value: &str = &self.source[start_of_string..end_of_string];
+            let mut site: Site = self.site(start, line_offset);
+            site.line = line_no;
+            Token::new(tokens::Kind::String, value, whitespace, site)
+        };
 
-        if character == '\n' {
-            line_bytes = 0;
-            token_start = 0;
-            lines += 1;
-        }
-        if string_start {
-            current_kind = Some(tokens::Kind::String);
-            old_kind = current_kind;
-            token_start = line_bytes - 1;
-        }
-        escaped = false;
+        Ok(token)
     }
-    if string_open {
-        let mut site = Site::from_line(lines, line_bytes, 1);
-        site.source = source_str.clone();
-        return Err(LexError(site,
-            "Unclosed double-quoted string.".to_string()))
+
+    fn consume_keyword(&'a self, whitespace: &'a str) -> Token<'a> {
+        assert_eq!(':', self.consume_char().expect("consumed token at eof"));
+        let start = self.byte_offset.get();  // Leave colon out of token value.
+        let start_from_line = self.byte_offset_line.get();
+        let value: &str = self.consume_identifier_string();
+        let site: Site = self.site(start - 1, start_from_line  - 1);
+        Token::new(tokens::Kind::Keyword, value, whitespace, site)
     }
-    Ok(tokens)
+
+    /// Generate site from start byte-index.
+    fn site(&self, file_offset: usize, line_offset: usize) -> Site {
+        let span = self.byte_offset.get() - file_offset;
+        Site::new(&self.source_path, &self.source, self.line.get(), file_offset, line_offset, span)
+    }
+
+    pub fn consume(&'a self) -> Result<Token<'a>, LexError<'a>> {
+        // Swallow up leading whitespace.
+        let whitespace = self.consume_whitespace();
+        // If there is any text left, continuie depending on the inital char.
+        let character = self.peek_char().expect("tried to consume token on eof.");
+        let token = match character_kind(character) {
+            Some(tokens::Kind::LParen) => self.consume_lparen(whitespace),
+            Some(tokens::Kind::RParen) => self.consume_rparen(whitespace),
+            Some(tokens::Kind::Number) => self.consume_number(whitespace),
+            Some(tokens::Kind::String) => self.consume_string(whitespace)?,
+            Some(tokens::Kind::Symbol) => self.consume_symbol(whitespace),
+            Some(tokens::Kind::Keyword) => self.consume_keyword(whitespace),
+            None => unreachable!("incompletely consumed whitespace.")
+        };
+        Ok(token)
+    }
+
+    /// Perform an action that potentially advances us through
+    /// the source-code, but restore to the lexer-state before said
+    /// action (after getting its result), e.g. peeking tokens.
+    pub fn restore<F, T>(&'a self, action: F) -> T
+        where F: FnOnce(&'a Self) -> T
+    {
+        // Remeber current position in source code.
+        let bo = self.byte_offset.get();
+        let bol = self.byte_offset_line.get();
+        let l = self.line.get();
+        // Do some action, advancing the position.
+        let ret = action(self);
+        // Reset position to before doing the action.
+        self.byte_offset.set(bo);
+        self.byte_offset_line.set(bol);
+        self.line.set(l);
+        // What did the action produce.
+        ret
+    }
+
+    /// Look ahead to the next token without advancing the
+    /// source-code past it.
+    pub fn peek(&'a self) -> Result<Token<'a>, LexError<'a>> {
+        self.restore(|this: &'a Self| {
+            this.consume()
+        })
+    }
+
+    /// Check if file is at end-of-file.
+    pub fn eof(&self) -> bool {
+        self.restore(|this: &Self| {
+            let _ = this.consume_whitespace();
+            self.peek_char().is_none()
+        })
+    }
 }

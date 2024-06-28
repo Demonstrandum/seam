@@ -79,7 +79,7 @@ will be treated as macros.
 *File `index.sex`:*
 ```lisp
 (!doctype html)
-(html
+(html :lang en
   (head (%define title "Index page")
         (%include "head.sex"))
   (body

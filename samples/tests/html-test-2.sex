@@ -1,0 +1,23 @@
+(!DOCTYPE html)
+; A document can contain
+; any number of comments too.
+(html :lang en
+  (head
+    (%define title My Page)
+    (title %title - (Example HTML Document))
+    (style (%include test-css.sex)))
+  (body
+    (p  :id hello  Hello, World!)
+    (p something something text...)
+    (h1 A big header)
+    (p Yet some more
+       (span text) <3)
+    (p Hello(span World)!)
+    (pre
+      nothing %title gets
+      evaluated in here)
+    (script :id javascript
+      (%define CONSTANT 3.14)
+      let my_num = (1 + %CONSTANT) * 2;
+      console.log(my_num);
+    )))

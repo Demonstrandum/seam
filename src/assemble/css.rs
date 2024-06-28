@@ -1,16 +1,16 @@
 //! Assembles an expanded tree into valid CSS.
 use super::{GenerationError, MarkupDisplay, Formatter};
-use crate::parse::parser::{self, ParseNode, ParseTree};
+use crate::parse::parser::{ParseNode, ParseTree};
 
 use std::slice::Iter;
 
 #[derive(Debug, Clone)]
-pub struct CSSFormatter {
-    pub tree : ParseTree,
+pub struct CSSFormatter<'a> {
+    pub tree : ParseTree<'a>,
 }
 
-impl CSSFormatter {
-    pub fn new(tree : ParseTree) -> Self {
+impl<'a> CSSFormatter<'a> {
+    pub fn new(tree: ParseTree<'a>) -> Self {
         Self { tree }
     }
 }
@@ -57,11 +57,10 @@ const CSS_ONELINE_RULES : [&str; 3]
 /// or at least I think.
 const BINARY_OPERATORS : [&str; 4] = ["+", "-", "*", "/"];
 
-fn convert_value(node : &ParseNode) -> Result<String, GenerationError> {
+fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<'a>> {
     match node {
-        ParseNode::List(list) => {
-            let list = parser::strip(list, false);
-            let result = match list.as_slice() {
+        ParseNode::List { nodes: list, .. } => {
+            let result = match &**list {
                 [head, tail@..] => {
                     let head = convert_value(head)?;
 
@@ -100,7 +99,7 @@ fn convert_value(node : &ParseNode) -> Result<String, GenerationError> {
             } else {
                 node.value.to_owned()
             }),
-        ParseNode::Attribute(_) => Err(GenerationError::new("CSS-value",
+        ParseNode::Attribute { .. } => Err(GenerationError::new("CSS-value",
                 "Incompatible structure (attribute) found in CSS \
                  property value.",
                 &node.site()))
@@ -110,8 +109,8 @@ fn convert_value(node : &ParseNode) -> Result<String, GenerationError> {
 /// Function responsible for translating a CSS value (i.e.
 /// a value of a CSS property) from some s-expression into
 /// a valid CSS value.
-pub fn css_value(_property : &str, node : &ParseNode)
--> Result<String, GenerationError> {
+pub fn css_value<'a>(_property : &str, node: &'a ParseNode<'a>)
+-> Result<String, GenerationError<'a>> {
     // Naïve way (in future consider the type of property,
     //  and take care of special cases):
     convert_value(node)
@@ -123,18 +122,17 @@ pub fn css_value(_property : &str, node : &ParseNode)
 /// (@symbol :attr arg)                -> @symbol (attr: arg);
 /// (@symbol (select :prop val))       -> @symbol { select { prop: val; } }
 /// (@sym x :attr arg (sel :prop val)) -> @sym x (attr: arg) { sel { prop: val; } }
-fn generate_special_selector
-    (f: Formatter,
-     selector: &str,
-     arguments: Iter<ParseNode>) -> Result<(), GenerationError> {
+fn generate_special_selector<'a>(f: Formatter,
+    selector: &str,
+    arguments: Iter<'a, ParseNode<'a>>)
+    -> Result<(), GenerationError<'a>> {
     // Deal with oneline rules quickly.
     if CSS_ONELINE_RULES.contains(&selector) {
         write!(f, "{} ", selector)?;
         for arg in arguments {
             match arg {
-                ParseNode::Attribute(attr) => {
-                    let kw = &attr.keyword;
-                    write!(f, "({}: {}) ", kw, css_value(kw, &*attr.node)?)?;
+                ParseNode::Attribute { ref keyword, node, .. } => {
+                    write!(f, "({}: {}) ", keyword, css_value(keyword, &*node)?)?;
                 },
                 _ => write!(f, "{} ", css_value(selector, arg)?)?
             }
@@ -146,10 +144,11 @@ fn generate_special_selector
     write!(f, "{} ", selector)?;
 
     let mut parsing_rules = false;
-    let unexpected_node = |node: &ParseNode, rules: bool| {
+    let unexpected_node = |node: &'a ParseNode<'a>, rules: bool| {
         if rules {
             Err(GenerationError::new("CSS",
-                "Expected list (i.e. a CSS rule) here!", &node.site()))
+                "Expected list (i.e. a CSS rule) here!",
+                &node.site()))
         } else {
             Ok(())
         }
@@ -157,17 +156,18 @@ fn generate_special_selector
 
     for arg in arguments {
         match arg {
-            ParseNode::Attribute(attr) => {
+            ParseNode::Attribute { ref keyword, node, .. } => {
                 unexpected_node(&arg, parsing_rules)?;
-                let kw = &attr.keyword;
-                write!(f, "({}: {}) ", kw, css_value(kw, &*attr.node)?)?;
+                write!(f, "({}: {}) ", keyword, css_value(keyword, &*node)?)?;
             },
-            ParseNode::List(rule) => {  // Now we parse nested rules!
+            ParseNode::List { nodes: ref rule, leading_whitespace, .. } => {
+                // Now we parse nested rules!
                 if !parsing_rules {
                     writeln!(f, "{{")?;
                 }
                 parsing_rules = true;
-                generate_css_rule(f, &rule)?;
+                write!(f, "{}", leading_whitespace)?;
+                generate_css_rule(f, rule)?;
             },
             _ => {
                 unexpected_node(&arg, parsing_rules)?;
@@ -175,13 +175,12 @@ fn generate_special_selector
             }
         }
     }
-    writeln!(f, "}}")?;
+    write!(f, "}}")?;
     Ok(())
 }
 
-fn generate_css_rule(f: Formatter, list: &[ParseNode]) -> Result<(), GenerationError> {
-    let stripped = parser::strip(list, false);
-    let mut iter = stripped.iter();
+fn generate_css_rule<'a>(f: Formatter, list: &'a [ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+    let mut iter = list.iter();
     let mut prop_i = 0; // Index of first property.
     // TODO: Selector functions such as nth-child(...), etc.
     // e.g. (ul li(:nth-child (+ 2n 1))) -> ul li:nth-child(2n + 1).
@@ -217,50 +216,43 @@ fn generate_css_rule(f: Formatter, list: &[ParseNode]) -> Result<(), GenerationE
     let properties = iter.skip(prop_i - 1);
 
     for property in properties {
-        if let ParseNode::Attribute(property) = property {
-            let value = &property.node;
-            writeln!(f, "  {}: {};",
-                     &property.keyword,
-                     css_value(&property.keyword, value)?)?;
-        } else {
+        let ParseNode::Attribute { ref node, ref keyword, .. } = property else {
             return Err(GenerationError::new("CSS",
                 "CSS property-value pairs must be in the \
                  form of attributes, i.e. `:property value`.",
                  &property.site()));
-        }
+        };
+        writeln!(f, "  {}: {};", keyword, css_value(keyword, node)?)?;
     }
-    writeln!(f, "}}")?;
-
+    write!(f, "}}")?;
     Ok(())
 }
 
-impl MarkupDisplay for CSSFormatter {
-
+impl<'a> MarkupDisplay for CSSFormatter<'a> {
     fn document(&self) -> Result<String, GenerationError> {
         let mut doc = String::new();
         if self.tree.is_empty() {
             return Ok(String::from(DEFAULT));
         }
         doc += &self.display()?;
-        doc += "\n/* Generated from symbolic-expressions, with SEAM */\n";
         Ok(doc)
     }
 
-    fn generate(&self, f : Formatter)
+    fn generate(&self, f: Formatter)
     -> Result<(), GenerationError> {
         let mut tree_iter = self.tree.iter().peekable();
         while let Some(node) = tree_iter.next() {
             match node {
-                ParseNode::List(list) => {
-                    generate_css_rule(f, list)?;
+                ParseNode::List { nodes: list, leading_whitespace, .. } => {
+                    write!(f, "{}", leading_whitespace)?;
+                    generate_css_rule(f, &*list)?;
                 },
-                ParseNode::Attribute(attr) => {
-                    let site = attr.site.to_owned();
+                ParseNode::Attribute { site, .. }  => {
                     return Err(GenerationError::new("CSS",
                         "Attribute not expected here, CSS documents \
                          are supposed to be a series of selectors \
                          and property-value pairs, wrapped in parentheses.",
-                         &site));
+                         &site.to_owned()));
                 },
                 ParseNode::Symbol(node)
                 | ParseNode::Number(node)
@@ -280,4 +272,3 @@ impl MarkupDisplay for CSSFormatter {
         Ok(())
     }
 }
-

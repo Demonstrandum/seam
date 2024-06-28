@@ -1,5 +1,5 @@
 (!DOCTYPE html)
-(html :lang en
+(html :lang en   ; language is set to english.
   (head
     (title Example HTML Document)
     (style (%include "./test-css.sex")))

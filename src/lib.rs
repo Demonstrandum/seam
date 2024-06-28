@@ -1,38 +1,36 @@
 #![allow(incomplete_features)]
+#![feature(pattern)]
 #![feature(associated_type_defaults)]
-#![feature(generic_associated_types)]
 
 pub mod parse;
 pub mod assemble;
 
 use parse::{expander, parser, lexer};
 
-use std::error::Error;
 use std::{fs, io, path::Path};
 
-pub const VERSION : (u8, u8, u8) = (0, 1, 8);
+pub const VERSION : (u8, u8, u8) = (0, 2, 0);
 
-pub fn parse<P: AsRef<Path>>(string : String, source : Option<P>)
-    -> Result<parser::ParseTree, Box<dyn Error>> {
-    let tokens = lexer::lex(string, source)?;
-    #[cfg(feature="debug")]
-    eprintln!("{:#?}", &tokens);
-    let tree = parser::parse_stream(tokens)?;
-    let expanded = expander::expand(tree)?;
-    Ok(expanded)
+pub fn tree_builder<'a, P: AsRef<Path>>(source_path: Option<P>, string: String)
+    -> expander::Expander<'a> {
+    let path = source_path.map_or("<stdin>".to_string(),
+        |s| s.as_ref().to_string_lossy().to_string());
+    let tokenizer = lexer::Lexer::new(path, string);
+    let builder = parser::Parser::new(tokenizer);
+    expander::Expander::new(builder)
 }
 
-pub fn parse_file(path : &Path)
-    -> Result<parser::ParseTree, Box<dyn Error>> {
+pub fn tree_builder_file<'a>(path: &Path)
+    -> io::Result<expander::Expander<'a>> {
     let contents = fs::read_to_string(&path)?;
-    parse(contents, Some(&path))
+    Ok(tree_builder(Some(path), contents))
 }
 
-pub fn parse_stream(stream : &mut impl io::Read)
-    -> Result<parser::ParseTree, Box<dyn Error>> {
+pub fn tree_builder_stream(stream: &mut impl io::Read)
+    -> io::Result<expander::Expander> {
     let mut contents = String::new();
     stream.read_to_string(&mut contents)?;
-    parse(contents, Option::<&Path>::None)
+    Ok(tree_builder(Option::<&Path>::None, contents))
 }
 
 pub fn main() {
