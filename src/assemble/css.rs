@@ -18,9 +18,9 @@ impl<'a> CSSFormatter<'a> {
 pub const DEFAULT : &str = "\n";
 
 /// All CSS functions, I might have missed a few.
-const CSS_FUNCTIONS : [&str; 57] = [
+const CSS_FUNCTIONS : [&str; 58] = [
     "attr", "blur", "brightness", "calc", "circle", "color", "contrast",
-    "counter", "counters", "cubic-bezier", "drop-shadow", "ellipse",
+    "counter", "counters", "cubic-bezier", "drop-shadow", "ellipse", "format",
     "grayscale", "hsl", "hsla", "hue-rotate", "hwb", "image", "inset",
     "invert", "lab", "lch", "linear-gradient", "matrix", "matrix3d",
     "opacity", "perspective", "polygon", "radial-gradient",
@@ -47,10 +47,17 @@ const CSS_SPECIAL_SELECTORS : [&str; 12]
       ];
 
 /// Special selectors that do not have a body.
-const CSS_ONELINE_RULES : [&str; 3]
+const CSS_ONELINE_RULES: [&str; 3]
     = [ CSS_SPECIAL_SELECTORS[0]  //< @charset
       , CSS_SPECIAL_SELECTORS[5]  //< @import
       , CSS_SPECIAL_SELECTORS[8]  //< @namespace
+      ];
+
+/// Special selectors that do not have nested selectors as their body.
+const CSS_NON_NESTED_SELECTORS: [&str; 3]
+    = [ CSS_SPECIAL_SELECTORS[3]  //< @font-face
+      , CSS_SPECIAL_SELECTORS[9]  //< @page
+      , CSS_SPECIAL_SELECTORS[10] //< @property
       ];
 
 /// The only four math operations supported by CSS calc(...),
@@ -119,16 +126,27 @@ pub fn css_value<'a>(_property : &str, node: &'a ParseNode<'a>)
 /// # A special-selector / @-rule looks like:
 /// S-expr:                          CSS:
 /// (@symbol arg)                      -> @symbol arg;
-/// (@symbol :attr arg)                -> @symbol (attr: arg);
+/// (@symbol :attr arg)                -> @symbol (attr: arg); OR @symbol { attr: arg }
 /// (@symbol (select :prop val))       -> @symbol { select { prop: val; } }
 /// (@sym x :attr arg (sel :prop val)) -> @sym x (attr: arg) { sel { prop: val; } }
 fn generate_special_selector<'a>(f: Formatter,
-    selector: &str,
-    arguments: Iter<'a, ParseNode<'a>>)
-    -> Result<(), GenerationError<'a>> {
-    // Deal with oneline rules quickly.
+                                 selector: &str,
+                                 mut arguments: Iter<'a, ParseNode<'a>>)
+-> Result<(), GenerationError<'a>> {
+    let mut parsing_rules: bool = false;
+    let unexpected_node = |node: &'a ParseNode<'a>, rules: bool| {
+        if rules {
+            Err(GenerationError::new("CSS",
+                "Expected list (i.e. a CSS rule) here!",
+                &node.site()))
+        } else {
+            Ok(())
+        }
+    };
+    // Deal with one-line rules quickly.
     if CSS_ONELINE_RULES.contains(&selector) {
         write!(f, "{} ", selector)?;
+        arguments.next();  // Skip `@`-selector.
         for arg in arguments {
             match arg {
                 ParseNode::Attribute { ref keyword, node, .. } => {
@@ -140,19 +158,10 @@ fn generate_special_selector<'a>(f: Formatter,
         writeln!(f, ";")?;
         return Ok(());
     }
-    // @-rules with nested elements!
-    write!(f, "{} ", selector)?;
 
-    let mut parsing_rules = false;
-    let unexpected_node = |node: &'a ParseNode<'a>, rules: bool| {
-        if rules {
-            Err(GenerationError::new("CSS",
-                "Expected list (i.e. a CSS rule) here!",
-                &node.site()))
-        } else {
-            Ok(())
-        }
-    };
+    // Handle @-rules with nested elements.
+    write!(f, "{} ", selector)?;
+    arguments.next();  // Skip `@`-selector.
 
     for arg in arguments {
         match arg {
@@ -167,7 +176,7 @@ fn generate_special_selector<'a>(f: Formatter,
                 }
                 parsing_rules = true;
                 write!(f, "{}", leading_whitespace)?;
-                generate_css_rule(f, rule)?;
+                generate_css_rule(f, rule.into_iter())?;
             },
             _ => {
                 unexpected_node(&arg, parsing_rules)?;
@@ -179,8 +188,7 @@ fn generate_special_selector<'a>(f: Formatter,
     Ok(())
 }
 
-fn generate_css_rule<'a>(f: Formatter, list: &'a [ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
-    let mut iter = list.iter();
+fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<(), GenerationError<'a>> {
     let mut prop_i = 0; // Index of first property.
     // TODO: Selector functions such as nth-child(...), etc.
     // e.g. (ul li(:nth-child (+ 2n 1))) -> ul li:nth-child(2n + 1).
@@ -197,12 +205,13 @@ fn generate_css_rule<'a>(f: Formatter, list: &'a [ParseNode<'a>]) -> Result<(), 
         return Err(GenerationError::new("CSS",
             "CSS selector(s) missing. \
              Expected a symbol/identifier node, none was found!",
-             &list[0].site()));
+             &selectors.peek().unwrap().site));
     };
 
     // Handle special @-rule selectors.
-    if CSS_SPECIAL_SELECTORS.contains(&head.value.as_ref()) {
-        iter.next();  //< Throw away the head.
+    if CSS_SPECIAL_SELECTORS.contains(&head.value.as_ref())
+    && !CSS_NON_NESTED_SELECTORS.contains(&head.value.as_ref()) {
+        // Don't do anything special for non-nested selectors.
         return generate_special_selector(f, &head.value, iter);
     }
 
@@ -245,7 +254,7 @@ impl<'a> MarkupDisplay for CSSFormatter<'a> {
             match node {
                 ParseNode::List { nodes: list, leading_whitespace, .. } => {
                     write!(f, "{}", leading_whitespace)?;
-                    generate_css_rule(f, &*list)?;
+                    generate_css_rule(f, list.into_iter())?;
                 },
                 ParseNode::Attribute { site, .. }  => {
                     return Err(GenerationError::new("CSS",
@@ -258,9 +267,6 @@ impl<'a> MarkupDisplay for CSSFormatter<'a> {
                 | ParseNode::Number(node)
                 | ParseNode::String(node) => {
                     let site = node.site.to_owned();
-                    if node.value.trim().is_empty() {
-                        continue;
-                    }
                     return Err(GenerationError::new("CSS",
                         "Symbolic node not expected here, CSS documents \
                          are supposed to be a series of selectors \
