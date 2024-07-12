@@ -1,5 +1,5 @@
 use seam;
-use seam::assemble::MarkupDisplay;
+use seam::assemble::MarkupFormatter;
 
 use std::{io, env};
 use std::path::PathBuf;
@@ -7,21 +7,21 @@ use std::error::Error;
 
 use colored::*;
 
-fn argument_fatal(msg : impl std::fmt::Display) -> ! {
+fn argument_fatal(msg: impl std::fmt::Display) -> ! {
     eprintln!("{} {}",
         format!("[{}]", "**".red()).white().bold(),
         msg.to_string().bold());
     std::process::exit(1)
 }
 
-const SUPPORTED_TARGETS : [&str; 4] = ["sexp", "html", "xml", "css"];
+const SUPPORTED_TARGETS: [&str; 5] = ["text", "sexp", "html", "xml", "css"];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args();
     let _ = args.next();  // Discard.
 
     let mut files = Vec::new();
-    let mut target = "";
+    let mut target = String::from("");
     let mut from_stdin = false;
     let mut is_doc = true;
 
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if arg.chars().nth(0) == Some('-') {
             if let Some(opt) = arg.split("--").nth(1) {
                 if SUPPORTED_TARGETS.contains(&opt) {
-                    target = Box::leak(opt.to_owned().into_boxed_str());
+                    target = opt.to_owned();
                     continue;
                 }
                 match opt {
@@ -74,12 +74,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     if from_stdin {
         let mut stdin = io::stdin();
         let builder = seam::tree_builder_stream(&mut stdin)?;
-        generate_and_print(&builder, target, is_doc);
+        generate_and_print(&builder, &target, is_doc);
     }
 
     for file in files {
         let builder = seam::tree_builder_file(&file)?;
-        generate_and_print(&builder, target, is_doc);
+        generate_and_print(&builder, &target, is_doc);
     }
 
 
@@ -94,12 +94,16 @@ fn generate_and_print<'a>(expander: &'a seam::parse::expander::Expander<'a>, tar
             std::process::exit(1);
         }
     };
-    let fmt: Box<dyn MarkupDisplay> = match target {
+    let fmt: Box<dyn MarkupFormatter> = match target {
+        "text" => Box::new(seam::assemble::text::PlainTextFormatter::new(tree)),
         "sexp" => Box::new(seam::assemble::sexp::SExpFormatter::new(tree)),
         "html" => Box::new(seam::assemble::html::HTMLFormatter::new(tree)),
         "xml"  => Box::new(seam::assemble::xml::XMLFormatter::new(tree)),
         "css"  => Box::new(seam::assemble::css::CSSFormatter::new(tree)),
         _ => {
+            if SUPPORTED_TARGETS.contains(&target) {
+                unreachable!("bug: target `{}' is not covered", target);
+            }
             argument_fatal(
                 format!("Target `{}', does not exist.", target))
         }

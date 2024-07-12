@@ -24,9 +24,9 @@ impl<'a> Site<'a> {
     pub fn new(source: &'a str,
                source_code: &'a str,
                line: usize,
-               bytes_from_start : usize,
+               bytes_from_start: usize,
                bytes_from_start_of_line: usize,
-               bytes_span : usize) -> Self {
+               bytes_span: usize) -> Self {
         Self {
             source,
             source_code,
@@ -83,7 +83,7 @@ impl<'a> Site<'a> {
 }
 
 impl<'a> Display for Site<'a> {
-    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "(")?;
         write!(f, "{}:", self.source)?;
         write!(f, "{}:{}", self.line, self.line_column())?;

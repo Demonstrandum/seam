@@ -1,21 +1,23 @@
-//! Output expanded source-code as identical looking to the original
-//! hand-written code as possible.
+//! Output expanded plain-text.
+//! Very similar to the source-code expanding SExp generator,
+//! but this also converts strings and other constructs
+//! into unescaped plain text as well.
 use std::cell::RefCell;
 
 use super::{MarkupFormatter, GenerationError, Formatter};
 use crate::parse::parser::{ParseNode, ParseTree};
 
 #[derive(Debug, Clone)]
-pub struct SExpFormatter<'a> {
+pub struct PlainTextFormatter<'a> {
     pub tree: ParseTree<'a>,
     formatters: RefCell<Vec<Box<dyn MarkupFormatter + 'a>>>,
 }
 
-impl<'a> SExpFormatter<'a> {
+impl<'a> PlainTextFormatter<'a> {
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self {
             tree,
-            formatters: Default::default()
+            formatters: Default::default(),
         }
     }
 
@@ -30,24 +32,18 @@ impl<'a> SExpFormatter<'a> {
     fn generate_node(&self, f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
         match node {
             ParseNode::Symbol(node)
-          | ParseNode::Number(node) => {
+          | ParseNode::Number(node)
+          | ParseNode::String(node) => {
                 write!(f, "{}", node.leading_whitespace)?;
                 write!(f, "{}", node.value)?;
-            },
-            ParseNode::String(node) => {
-                // We actually don't want the rendered string,
-                // we want the escaped string, so we retrieve
-                // it from source.
-                write!(f, "{}", node.leading_whitespace)?;
-                write!(f, "{}", node.site.view())?;
             },
             ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
                 write!(f, "{}", leading_whitespace)?;
                 write!(f, "(")?;
                 let tree = nodes.to_vec();
-                let sexp_fmt = SExpFormatter::new(tree.into_boxed_slice());
-                let sexp_fmt = self.register_formatter(sexp_fmt);
-                sexp_fmt.generate(f)?;
+                let text_fmt = PlainTextFormatter::new(tree.into_boxed_slice());
+                let text_fmt = self.register_formatter(text_fmt);
+                text_fmt.generate(f)?;
                 write!(f, "{}", end_token.leading_whitespace)?;
                 write!(f, ")")?;
 
@@ -60,10 +56,9 @@ impl<'a> SExpFormatter<'a> {
         }
         Ok(())
     }
-
 }
 
-impl<'a> MarkupFormatter for SExpFormatter<'a> {
+impl<'a> MarkupFormatter for PlainTextFormatter<'a> {
     fn document(&self) -> Result<String, GenerationError> {
         self.display()
     }

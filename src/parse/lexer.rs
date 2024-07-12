@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 pub struct LexError<'a>(pub String, pub Site<'a>);
 
 impl<'a> fmt::Display for LexError<'a> {
-    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let LexError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();

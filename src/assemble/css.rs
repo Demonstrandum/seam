@@ -1,12 +1,12 @@
 //! Assembles an expanded tree into valid CSS.
-use super::{GenerationError, MarkupDisplay, Formatter};
+use super::{GenerationError, MarkupFormatter, Formatter};
 use crate::parse::parser::{ParseNode, ParseTree};
 
 use std::slice::Iter;
 
 #[derive(Debug, Clone)]
 pub struct CSSFormatter<'a> {
-    pub tree : ParseTree<'a>,
+    pub tree: ParseTree<'a>,
 }
 
 impl<'a> CSSFormatter<'a> {
@@ -15,10 +15,10 @@ impl<'a> CSSFormatter<'a> {
     }
 }
 
-pub const DEFAULT : &str = "\n";
+pub const DEFAULT: &str = "\n";
 
 /// All CSS functions, I might have missed a few.
-const CSS_FUNCTIONS : [&str; 58] = [
+const CSS_FUNCTIONS: [&str; 58] = [
     "attr", "blur", "brightness", "calc", "circle", "color", "contrast",
     "counter", "counters", "cubic-bezier", "drop-shadow", "ellipse", "format",
     "grayscale", "hsl", "hsla", "hue-rotate", "hwb", "image", "inset",
@@ -34,12 +34,12 @@ const CSS_FUNCTIONS : [&str; 58] = [
 
 /// Some CSS functions use commas as an argument delimiter,
 /// some use spaces!  Why not!
-const CSS_COMMA_DELIM : [&str; 2] = ["rgba", "hsla"];
+const CSS_COMMA_DELIM: [&str; 2] = ["rgba", "hsla"];
 
 /// Intentionally left out "@viewport".  If they decided to make
 /// CSS a good and coherent language in the first place, we wouldn't
 /// have to deal with ridiculous stuff like this.
-const CSS_SPECIAL_SELECTORS : [&str; 12]
+const CSS_SPECIAL_SELECTORS: [&str; 12]
     = [ "@charset"   , "@counter-style"       , "@document"
       , "@font-face" , "@font-feature-values" , "@import"
       , "@keyframes" , "@media"               , "@namespace"
@@ -62,7 +62,7 @@ const CSS_NON_NESTED_SELECTORS: [&str; 3]
 
 /// The only four math operations supported by CSS calc(...),
 /// or at least I think.
-const BINARY_OPERATORS : [&str; 4] = ["+", "-", "*", "/"];
+const BINARY_OPERATORS: [&str; 4] = ["+", "-", "*", "/"];
 
 fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<'a>> {
     match node {
@@ -116,7 +116,7 @@ fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<
 /// Function responsible for translating a CSS value (i.e.
 /// a value of a CSS property) from some s-expression into
 /// a valid CSS value.
-pub fn css_value<'a>(_property : &str, node: &'a ParseNode<'a>)
+pub fn css_value<'a>(_property: &str, node: &'a ParseNode<'a>)
 -> Result<String, GenerationError<'a>> {
     // Naïve way (in future consider the type of property,
     //  and take care of special cases):
@@ -237,7 +237,7 @@ fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<
     Ok(())
 }
 
-impl<'a> MarkupDisplay for CSSFormatter<'a> {
+impl<'a> MarkupFormatter for CSSFormatter<'a> {
     fn document(&self) -> Result<String, GenerationError> {
         let mut doc = String::new();
         if self.tree.is_empty() {

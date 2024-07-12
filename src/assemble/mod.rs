@@ -1,5 +1,5 @@
 use crate::parse::tokens::Site;
-use std::{convert, fmt, error::Error};
+use std::{convert, error::Error, fmt::{self, Debug}};
 
 use colored::*;
 use unicode_width::UnicodeWidthStr;
@@ -8,16 +8,16 @@ use unicode_width::UnicodeWidthStr;
 /// each type of markup.
 #[derive(Debug, Clone)]
 pub struct GenerationError<'a> {
-    pub markup: String,
+    pub markup: &'static str,
     pub message: String,
     pub site: Site<'a>,
 }
 
 impl<'a> GenerationError<'a> {
     /// Create a new error given the ML, the message, and the site.
-    pub fn new(ml: &str, msg: &str, site: &Site<'a>) -> Self {
+    pub fn new(ml: &'static str, msg: &str, site: &Site<'a>) -> Self {
         Self {
-            markup: ml.to_owned(),
+            markup: ml,
             message: msg.to_owned(),
             site: site.to_owned(),
         }
@@ -26,7 +26,7 @@ impl<'a> GenerationError<'a> {
 
 /// Implement fmt::Display for user-facing error output.
 impl<'a> fmt::Display for GenerationError<'a> {
-    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let line_prefix = format!("  {} |", self.site.line);
         let line_view = self.site.line_slice();
         writeln!(f, "{} {}", line_prefix, line_view)?;
@@ -53,7 +53,7 @@ impl<'a> Error for GenerationError<'a> { }
 impl<'a> From<std::io::Error> for GenerationError<'a> {
     fn from(e: std::io::Error) -> Self {
         Self {
-            markup: String::from("<markup>"), // FIXME.
+            markup: "<markup>",
             message: format!("IO error: {}", e),
             site: Site::unknown(),
         }
@@ -65,7 +65,7 @@ impl<'a> From<std::io::Error> for GenerationError<'a> {
 impl<'a> convert::From<fmt::Error> for GenerationError<'a> {
     fn from(e: fmt::Error) -> Self {
         Self {
-            markup: String::from("<markup>"),
+            markup: "<markup>",
             message: format!("Format buffer error: {}", e),
             site: Site::unknown(),
         }
@@ -76,13 +76,12 @@ pub type Formatter<'a> = &'a mut dyn fmt::Write;
 
 /// Trait for all structs that can generate specific markup
 /// for the s-expression tree.
-pub trait MarkupDisplay {
+pub trait MarkupFormatter: Debug + CloneBox {
     // Required definitions:
     /// Similar to fmt in Display/Debug traits, takes in a
     /// mutable writable buffer, returns success or a specifc
     /// error while generating the markup.
-    fn generate(&self, buf : Formatter)
-        -> Result<(), GenerationError>;
+    fn generate(&self, buf: Formatter) -> Result<(), GenerationError>;
     /// Documentises the input, that's to say, it adds any
     /// extra meta-information to the generated markup, if
     /// the s-expressions your wrote ommited it.
@@ -98,10 +97,29 @@ pub trait MarkupDisplay {
     }
 }
 
+/// See: https://stackoverflow.com/a/30353928
+pub trait CloneBox {
+    fn clone_box(&self) -> *mut ();
+}
+
+impl<'a, T> CloneBox for T where T: Clone + 'a {
+    fn clone_box(&self) -> *mut () {
+        Box::<T>::into_raw(Box::new(self.clone())) as *mut ()
+    }
+}
+
+impl<'a> Clone for Box<dyn MarkupFormatter + 'a> {
+    fn clone(&self) -> Box<dyn MarkupFormatter + 'a> {
+        unsafe {
+            *Box::from_raw(self.clone_box() as *mut Self)
+        }
+    }
+}
+
 /// Automatically implement fmt::Display as a wrapper around
-/// MarkupDisplay::generate, but throws away the useful error message.
-impl fmt::Display for dyn MarkupDisplay {
-    fn fmt(&self, f : &mut fmt::Formatter) -> fmt::Result {
+/// MarkupFormatter::generate, but throws away the useful error message.
+impl fmt::Display for dyn MarkupFormatter {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.generate(f).map_err(|_| fmt::Error)
     }
 }
@@ -132,6 +150,8 @@ pub fn escape_xml(string: &str) -> String {
 
 /// Re-constitute original S-expressions.
 pub mod sexp;
+/// Converts source into expanded plain-text.
+pub mod text;
 /// XML generation.
 pub mod xml;
 /// HTML5 CSS generation.

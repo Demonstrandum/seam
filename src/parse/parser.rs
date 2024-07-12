@@ -12,7 +12,7 @@ pub struct Node<'a> {
 }
 
 impl<'a> Node<'a> {
-    pub fn new(value: &str, site : &Site<'a>, leading_whitespace: &str) -> Self {
+    pub fn new(value: &str, site: &Site<'a>, leading_whitespace: &str) -> Self {
         Self {
             site: site.to_owned(),
             value: value.to_owned(),
@@ -58,13 +58,23 @@ impl<'a> ParseNode<'a> {
         }
     }
 
-    pub fn site(&self) -> &Site {
+    pub fn site(&self) -> &Site<'a> {
         match self {
             Self::Symbol(ref node)
             | Self::Number(ref node)
             | Self::String(ref node) => &node.site,
             Self::List { ref site, .. } => site,
             Self::Attribute { ref site, .. } => site,
+        }
+    }
+
+    pub fn owned_site(&self) -> Site {
+        match self {
+            Self::Symbol(node)
+            | Self::Number(node)
+            | Self::String(node) => node.site.clone(),
+            Self::List { site, .. } => site.clone(),
+            Self::Attribute { site, .. } => site.clone(),
         }
     }
 
@@ -105,7 +115,7 @@ pub type ParseTree<'a> = Box<[ParseNode<'a>]>;
 pub struct ParseError<'a>(pub String, pub Site<'a>);
 
 impl<'a> fmt::Display for ParseError<'a> {
-    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ParseError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();
@@ -361,7 +371,7 @@ impl<'a> SearchTree<'a> for ParseTree<'a> {
 /// Pretty printing for parse nodes.
 #[cfg(feature="debug")]
 impl<'a> fmt::Display for ParseNode<'a> {
-    fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseNode::Symbol(node)
             | ParseNode::Number(node)  => write!(f, "{}", &node.value),

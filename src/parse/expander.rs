@@ -1,4 +1,4 @@
-use super::parser::{Parser, ParseNode, ParseTree, Node};
+use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
 
 use std::{
@@ -62,7 +62,7 @@ pub struct Macro<'a> {
 // in order to implement lexical scoping.
 
 impl<'a> Macro<'a> {
-    pub fn new(name : &str) -> Macro {
+    pub fn new(name: &str) -> Macro {
         Macro {
             name: name.to_string(),
             params: Box::new([]),
@@ -77,6 +77,9 @@ pub type Scope<'a> = RefCell<HashMap<String, Rc<Macro<'a>>>>; // Can you believe
 #[derive(Debug, Clone)]
 pub struct Expander<'a> {
     parser: Parser,
+    subparsers: RefCell<Vec<Parser>>,
+    subcontexts: RefCell<Vec<Self>>,
+    invocations: RefCell<Vec<ParseNode<'a>>>,
     definitions: Scope<'a>,
 }
 
@@ -84,13 +87,55 @@ impl<'a> Expander<'a> {
     pub fn new(parser: Parser) -> Self {
         Self {
             parser,
-            definitions: RefCell::new(HashMap::new())
+            subparsers: RefCell::new(Vec::new()),
+            subcontexts: RefCell::new(Vec::new()),
+            invocations: RefCell::new(Vec::new()),
+            definitions: RefCell::new(HashMap::new()),
         }
     }
 
     /// Get underlying source-code of the active parser for current unit.
     pub fn get_source(&'a self) -> &'a str {
         self.parser.get_source()
+    }
+
+    /// Add a subparser owned by the expander context.
+    fn register_parser(&'a self, parser: Parser) -> &'a Parser {
+        {
+            let mut parsers = self.subparsers.borrow_mut();
+            parsers.push(parser);
+        }
+        self.latest_parser()
+    }
+
+    /// Get the latest subparser added.
+    fn latest_parser(&'a self) -> &'a Parser {
+        let p = self.subparsers.as_ptr();
+        unsafe { (*p).last().unwrap_or(&self.parser) }
+    }
+
+    /// Create and register a subcontext built from the current context.
+    fn create_subcontext(&'a self) -> &'a Self {
+        {
+            let copy = self.clone();
+            let mut contexts = self.subcontexts.borrow_mut();
+            contexts.push(copy);
+        }
+        self.latest_context().unwrap()
+    }
+
+    /// Get the latest subparser added.
+    fn latest_context(&'a self) -> Option<&'a Self> {
+        let contexts = self.subcontexts.as_ptr();
+        unsafe { (*contexts).last() }
+    }
+
+    fn register_invocation(&'a self, node: ParseNode<'a>) -> &'a ParseNode<'a> {
+        let invocations = self.invocations.as_ptr();
+        unsafe {
+            (*invocations).push(node);
+            (*invocations).last().unwrap()
+        }
     }
 
     /// Update variable (macro) for this scope.
@@ -118,7 +163,7 @@ impl<'a> Expander<'a> {
             return Err(ExpansionError(
                 format!("`%define` macro takes at least \
                     two (2) arguments ({} were given.", params.len()),
-                node.site().to_owned()));
+                node.owned_site()));
         };
 
         // If head is atomic, we assign to a 'variable'.
@@ -249,11 +294,8 @@ impl<'a> Expander<'a> {
                 }
             }
         };
-        // FIXME: Whatever! I tried to indicate with life-times that these
-        // live for the entier duration that the lex->parse->expand phases.
-        // Might as well just leak it, since it's going to live that long anyway.
-        let leaked_parser = Box::leak(Box::new(parser));  // Keep a Vec<Box<Parser>>?
-        let tree = match leaked_parser.parse() {
+        let parser = self.register_parser(parser);
+        let tree = match parser.parse() {
             Ok(tree) => tree,
             Err(error) => return Err(ExpansionError(
                 format!("{}", error), node.site().to_owned()))
@@ -325,12 +367,11 @@ impl<'a> Expander<'a> {
 
         let Some(mac) = self.get_variable(name) else {
             return Err(ExpansionError::new(
-                &format!("Macro not found (`{}').", name), node.site()))
+                &format!("Macro not found (`{}').", name), &node.owned_site()))
         };
 
         // Instance of expansion subcontext.
-        // FIXME: Leaking again, maybe track subcontexts in superior context?
-        let subcontext = Box::leak(Box::new(self.clone()));  // TODO: Create a stack Vec<Rc<Context>> and clone it here.
+        let subcontext = self.create_subcontext();
         // Check enough arguments were given.
         if params.len() != mac.params.len() {
             return Err(ExpansionError(
@@ -407,20 +448,19 @@ impl<'a> Expander<'a> {
 
                 // Pathway: (%_ _ _) macro invocation.
                 if let Some(ref symbol@ParseNode::Symbol(..)) = head {
-                    // FIXME: This is just really bad...
-                    let list_node = Box::leak(Box::new(node.clone()));
+                    let node = self.register_invocation(node.clone());
                     let name = symbol.atomic().unwrap().value;
                     if name.starts_with("%") {
                         // Rebuild node...
                         let name = &name[1..];
                         // Clean macro arguments from whitespace tokens.
                         let params: Vec<ParseNode> = call.collect();
-                        return self.expand_invocation(name, list_node, params.into_boxed_slice());
+                        return self.expand_invocation(name, node, params.into_boxed_slice());
                     }
                 }
                 // Otherwise, if not a macro, just expand child nodes incase they are macros.
                 let mut expanded_list = Vec::with_capacity(len);
-                expanded_list.extend(self.expand_node(head.clone().unwrap())?);
+                expanded_list.extend(self.expand_node(head.unwrap().clone())?);
                 for elem in call {
                     expanded_list.extend(self.expand_node(elem)?);
                 }
@@ -436,10 +476,10 @@ impl<'a> Expander<'a> {
                 let mut expanded_nodes = self.expand_node(*node)?;
                 let new_node = Box::new(expanded_nodes[0].clone());
                 expanded_nodes[0] = ParseNode::Attribute {
-                    keyword,
+                    keyword: keyword.clone(),
                     node: new_node,
-                    site,
-                    leading_whitespace,
+                    site: site.clone(),
+                    leading_whitespace: leading_whitespace.clone(),
                 };
                 Ok(expanded_nodes)
             },
@@ -450,7 +490,7 @@ impl<'a> Expander<'a> {
     pub fn expand_nodes(&'a self, tree: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let mut expanded = Vec::with_capacity(tree.len());
-        for branch in tree.into_vec() {
+        for branch in tree {
             expanded.extend(self.expand_node(branch)?);
         }
         Ok(expanded.into_boxed_slice())

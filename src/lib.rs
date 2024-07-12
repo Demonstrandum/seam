@@ -9,7 +9,7 @@ use parse::{expander, parser, lexer};
 
 use std::{fs, io, path::Path};
 
-pub const VERSION: (u8, u8, u8) = (0, 2, 3);
+pub const VERSION: (u8, u8, u8) = (0, 2, 4);
 
 pub fn tree_builder<'a, P: AsRef<Path>>(source_path: Option<P>, string: String)
     -> expander::Expander<'a> {
