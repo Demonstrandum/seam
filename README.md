@@ -23,7 +23,8 @@ Read the [USAGE.md](USAGE.md) file for code examples and documentation.
  - XML (`--xml`; including: SVG, MathML)
  - HTML (`--html`; SGML)
  - CSS (`--css`)
- - SEXP (`--sexp`; S-expression, basically a macro expansion utility)
+ - SExp (`--sexp`; S-expression, basically a macro expansion utility)
+ - Plain Text (`--text`; renders escaped strings to text)
 
 ### Installation
 
@@ -35,7 +36,7 @@ cargo build --release
 cargo install --path .
 ```
 
-Or install it from crates.io
+Or install it from [crates.io](https://crates.io/crates/seam)
 ```sh
 cargo install seam
 ```
@@ -89,36 +90,39 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 #   (hello world)
 ```
 
-## TODO
- - Escape evaluating macros with `\%`.
- - `(%format "{}")` macro with Rust's `format` syntax.
- - Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
- - `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
- - Variadic arguments via `&rest` syntax.
- - Delayed evaluation of macros by `%(...)` synatx.
-   For example `%(f x y)` is the same as `(%f x y)`, so you can have `(%define uneval f x)` and then write `%(%uneval y)`.
- - `%list` macro which expands from `(p (%list a b c))` to `(p a b c)`.
-    Defined as such:
-    ```lisp
-    (%define (list &rest) rest)
-    ```
- - `%for`-loop macro, iterating over `%list`s.
- - `%glob` which returns a list of files/directories matching a glob.
- - `%markdown` renders Markdown given to it as html.
- - `%html`, `%xml`, `%css`, etc. macros which goes into the specific rendering mode.
- - Add variadic and keyword macro arguments.
- - Caching or checking time-stamps as to not regenerate unmodified source files.
- - HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
- - Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
- - Maybe: a whole JavaScript front-end, e.g.
+## Checklist
+ - [ ] First argument (of body) in a macro invocation should have its whitespace stripped.
+ - [x] `(%os/env ENV_VAR)` environment variable macro.
+ - [ ] `(%to-string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
+ - [ ] Escape evaluating macros with `\%`.
+ - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
+ - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
+ - [ ] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
+ - [ ] Variadic arguments via `&rest` syntax.
+ - [ ] Delayed evaluation of macros by `%(...)` syntax.
+   [ ] For example `%(f x y)` is the same as `(%f x y)`, so you can have `(%define uneval f x)` and then write `%(%uneval y)`.
+ - [ ] `%list` macro which expands from `(p (%list a b c))` to `(p a b c)`.
+   Defined as such:
+   ```lisp
+   (%define (list &rest) rest)
+   ```
+ - [ ] `%for`-loop macro, iterating over `%list`s.
+ - [ ] `%glob` which returns a list of files/directories matching a glob.
+ - [ ] `%markdown` renders Markdown given to it as html.
+ - [ ] `%html`, `%xml`, `%css`, etc. macros which goes into the specific rendering mode.
+ - [ ] Add variadic and keyword macro arguments.
+ - [ ] Caching or checking time-stamps as to not regenerate unmodified source files.
+ - [ ] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
+ - [ ] Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
+ - [ ] Maybe: a whole JavaScript front-end, e.g.
    ```lisp
    (let x 2)
    (let (y 1) (z 1))
    (const f (=> (a b) (+ a b))
    ((. console log) (== (f y z) x))
    ```
- - Add more helpful/generic macros (e.g. `(%include ...)`, which already exists).
- - Allow for arbitrary embedding of code, that can be run by
+ - [ ] Add more helpful/generic macros (e.g. `(%include ...)`, which already exists).
+ - [ ] Allow for arbitrary embedding of code, that can be run by
    a LISP interpreter (or any other langauge), for example.  (e.g. `(%chez (+ 1 2))` executes
    `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source
    (i.e. `3`).

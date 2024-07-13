@@ -82,7 +82,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         generate_and_print(&builder, &target, is_doc);
     }
 
-
     Ok(())
 }
 

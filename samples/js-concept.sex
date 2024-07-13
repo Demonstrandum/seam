@@ -26,7 +26,6 @@
 ;const points = [];
 ;const r = 0.4;
 
-
 (import * as BC from "../lib/BasicCanvas.js")
 (import { grid, ellipse } from "../lib/BasicCanvas.js")
 
@@ -51,7 +50,3 @@
 
 (const points [])
 (const r 0.4)
-
-
-
-

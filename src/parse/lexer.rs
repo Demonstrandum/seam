@@ -54,7 +54,6 @@ pub struct Lexer {
     byte_offset_line: Cell<usize>,
 }
 
-
 impl<'a> Lexer {
     pub fn new(source_path: String, source: String) -> Self {
         Self {
@@ -66,18 +65,18 @@ impl<'a> Lexer {
         }
     }
 
-    pub fn get_source(&'a self) -> &'a str {
+    pub fn get_source(&self) -> &str {
         &self.source
     }
 
-    fn increment_byte_offsets(&'a self, offset: usize) {
+    fn increment_byte_offsets(&self, offset: usize) {
         let i = self.byte_offset.get();
         let j = self.byte_offset_line.get();
         self.byte_offset.set(i + offset);
         self.byte_offset_line.set(j + offset);
     }
 
-    fn next_line(&'a self) {
+    fn next_line(&self) {
         let l = self.line.get();
         self.line.set(l + 1);
         self.byte_offset_line.set(0);

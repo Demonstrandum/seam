@@ -14,6 +14,7 @@ use std::{
 };
 
 use colored::*;
+use formatx;
 use unicode_width::UnicodeWidthStr;
 
 /// Error type for errors while expanding macros.
@@ -95,7 +96,7 @@ impl<'a> Expander<'a> {
     }
 
     /// Get underlying source-code of the active parser for current unit.
-    pub fn get_source(&'a self) -> &'a str {
+    pub fn get_source(&self) -> &str {
         self.parser.get_source()
     }
 
@@ -229,7 +230,7 @@ impl<'a> Expander<'a> {
                 node.site().to_owned()));
         }
         let symbol = if let Some(node) = params[0].atomic() {
-            node.value
+            node.value.to_owned()
         } else {
             // FIXME: Borrow-checker won't let me use params[0].site() as site!
             return Err(ExpansionError(
@@ -342,7 +343,7 @@ impl<'a> Expander<'a> {
 
     /// `(%log ...)` logs to `STDERR` when called and leaves *no* node behind.
     /// This means whitespace preceeding `(%log ...)` will be removed!
-    fn expand_log_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_log_macro(&'a self, node: &'a ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let mut words = Vec::with_capacity(params.len());
         for param in self.expand_nodes(params)? {
@@ -360,7 +361,86 @@ impl<'a> Expander<'a> {
         Ok(Box::new([]))
     }
 
-    fn expand_macro(&'a self, name: &str, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_os_env_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let [ref var] = *params else {
+            return Err(ExpansionError::new(
+                "`%os/env' expects excatly one argument.",
+                node.site()));
+        };
+        let Some(var) = var.atomic() else {
+            return Err(ExpansionError::new(
+                "`%os/env' argument must be atomic (not a list).",
+                var.site()));
+        };
+        let Node { site, leading_whitespace, .. } = var.clone();
+        let Ok(value) = std::env::var(&var.value) else {
+            return Err(ExpansionError(
+                format!("No such environment variable ($`{}') visible.", &var.value),
+                site));
+        };
+        Ok(Box::new([
+            ParseNode::String(Node { value, site, leading_whitespace }),
+        ]))
+    }
+
+    fn expand_format_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let [format_str, ..] = &*params else {
+            return Err(ExpansionError::new(
+                "`%format' expects at a format-string.",
+                node.site()));
+        };
+        let ParseNode::String(format_str) = format_str else {
+            return Err(ExpansionError::new(
+                "First argument to `%format' must be a string.",
+                format_str.site()));
+        };
+        // Iterate and collect format arguments.
+        let mut arguments = params.iter();
+        let _ = arguments.next();  // Skip the format-string.
+        let Ok(mut template) = formatx::Template::new(&format_str.value) else {
+            return Err(ExpansionError::new(
+                "Invalid format string.",
+                &format_str.site));
+        };
+        for mut var in arguments {
+            // Check if we're replacing a named or positional placeholder.
+            let mut named: Option<&str> = None;
+            if let ParseNode::Attribute { keyword, node, .. } = var {
+                named = Some(keyword.as_str());
+                var = node;
+            }
+            // TODO: Somehow let non-atomic values be formattable?
+            let Some(Node { value, .. }) = var.atomic() else {
+                return Err(ExpansionError(
+                    format!("In `%format', the compound {} type is not formattable.",
+                        var.node_type()),
+                    var.site().clone()));
+            };
+            // Replace the placeholder.
+            match named {
+                Some(name) => template.replace(name, value),
+                None       => template.replace_positional(value),
+            }
+        }
+        // Template has been constructed, so now attempt to do subsitituions and
+        // render the formatted string.
+        match template.text() {
+            Ok(value) => Ok(Box::new([
+                ParseNode::String(Node {
+                    value,
+                    site: node.owned_site(),
+                    leading_whitespace: node.leading_whitespace().to_owned(),
+                })
+            ])),
+            Err(err) => Err(ExpansionError(
+                format!("Failed to format string: {}", err.message()),
+                format_str.site.clone()))
+        }
+    }
+
+    fn expand_macro(&'a self, name: &str, node: &'a ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Eagerly evaluate parameters passed to macro invocation.
         let params = self.expand_nodes(params)?;
@@ -410,6 +490,8 @@ impl<'a> Expander<'a> {
             "include" => self.expand_include_macro(node, params),
             "date"    => self.expand_date_macro(node, params),
             "log"     => self.expand_log_macro(node, params),
+            "format"  => self.expand_format_macro(node, params),
+            "os/env"  => self.expand_os_env_macro(node, params),
             _         => self.expand_macro(name, node, params),
         }
     }
@@ -449,7 +531,7 @@ impl<'a> Expander<'a> {
                 // Pathway: (%_ _ _) macro invocation.
                 if let Some(ref symbol@ParseNode::Symbol(..)) = head {
                     let node = self.register_invocation(node.clone());
-                    let name = symbol.atomic().unwrap().value;
+                    let name = symbol.atomic().unwrap().value.clone();
                     if name.starts_with("%") {
                         // Rebuild node...
                         let name = &name[1..];

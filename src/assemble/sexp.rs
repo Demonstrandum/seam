@@ -35,11 +35,11 @@ impl<'a> SExpFormatter<'a> {
                 write!(f, "{}", node.value)?;
             },
             ParseNode::String(node) => {
-                // We actually don't want the rendered string,
-                // we want the escaped string, so we retrieve
-                // it from source.
+                // We actually don't want the rendered string with the escpaes
+                // that we parsed, so we send it to the debug view to get a string
+                // with quotes and escaped special characters.
                 write!(f, "{}", node.leading_whitespace)?;
-                write!(f, "{}", node.site.view())?;
+                write!(f, "{:?}", node.value)?;
             },
             ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
                 write!(f, "{}", leading_whitespace)?;

@@ -41,19 +41,19 @@ pub enum ParseNode<'a> {
 }
 
 impl<'a> ParseNode<'a> {
-    pub fn symbolic(&self) -> Option<Node> {
+    pub fn symbolic(&self) -> Option<&Node<'a>> {
         match self {
-            Self::Symbol(node)
-            | Self::Number(node) => Some(node.to_owned()),
+            Self::Symbol(ref node)
+            | Self::Number(ref node) => Some(node),
             _ => None
         }
     }
 
-    pub fn atomic(&self) -> Option<Node> {
+    pub fn atomic(&self) -> Option<&Node<'a>> {
         match self {
-            Self::Symbol(node)
-            | Self::Number(node)
-            | Self::String(node) => Some(node.to_owned()),
+            Self::Symbol(ref node)
+            | Self::Number(ref node)
+            | Self::String(ref node) => Some(node),
             _ => None
         }
     }
@@ -68,7 +68,7 @@ impl<'a> ParseNode<'a> {
         }
     }
 
-    pub fn owned_site(&self) -> Site {
+    pub fn owned_site(&self) -> Site<'a> {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
@@ -78,7 +78,7 @@ impl<'a> ParseNode<'a> {
         }
     }
 
-    pub fn leading_whitespace(&'a self) -> &'a str {
+    pub fn leading_whitespace(&self) -> &str {
         match self {
             Self::Symbol(ref node)
             | Self::Number(ref node)
@@ -142,7 +142,7 @@ impl<'a> Parser {
         Self { lexer }
     }
 
-    pub fn get_source(&'a self) -> &'a str {
+    pub fn get_source(&self) -> &str {
         self.lexer.get_source()
     }
 
