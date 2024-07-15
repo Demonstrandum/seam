@@ -96,6 +96,8 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [ ] `(%to-string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
  - [ ] Escape evaluating macros with `\%`.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
+ - [ ] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.  Can also take any othe source code, for which it just embeds the expanded code (plain-text formatter).
+ - [ ] `(%formatter/html ...)` etc. which call the respective available formatters.
  - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
  - [ ] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
  - [ ] Variadic arguments via `&rest` syntax.
