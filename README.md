@@ -91,6 +91,12 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ```
 
 ## Checklist
+ - [ ] `(%define x %body)` evaluates `%body` eagerly (at definition),
+       while `(%define (y) %body)` only evaluates `%body` per call-site `(%y)`.
+ - [x] Namespace macro `(%namespace ns (%include "file.sex"))` will prefix all definitions in its body with `ns/`, e.g. `%ns/defn`.
+       Allows for a customizable separator, e.g. `(%namespace ns :separator "-" ...)` will allow for writing `%ns-defn`.
+       Otherwise, the macro leaves the content produced by the body completely unchanged.
+ - [x] Command line `-I` include directory.
  - [ ] First argument (of body) in a macro invocation should have its whitespace stripped.
  - [x] `(%os/env ENV_VAR)` environment variable macro.
  - [ ] `(%to-string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.

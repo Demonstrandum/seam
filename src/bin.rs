@@ -1,6 +1,7 @@
 use seam;
 use seam::assemble::MarkupFormatter;
 
+use std::collections::BTreeSet;
 use std::{io, env};
 use std::path::PathBuf;
 use std::error::Error;
@@ -20,8 +21,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args();
     let _ = args.next();  // Discard.
 
+    // Command line flags and options.
     let mut files = Vec::new();
     let mut target = String::from("");
+    let mut include_dirs: BTreeSet<PathBuf> = Default::default();
     let mut from_stdin = false;
     let mut is_doc = true;
 
@@ -38,14 +41,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                        format!("Unknown argument: `--{}'.", opt))
                 }
             } else if let Some(opt) = arg.split("-").nth(1) {
-                match opt {
-                    "v" => {
+                match opt.as_bytes() {
+                    [b'v'] => {
                         let (major, minor, tiny) = seam::VERSION;
                         eprintln!("{}", format!("SEAM v{}.{}.{}",
                             major, minor, tiny).bold());
                         std::process::exit(0);
                     },
-                    "" => {
+                    [b'I', ..] => {
+                        let dir = &arg.as_str()[2..];
+                        let dir = PathBuf::from(dir);
+                        include_dirs.insert(dir);
+                    },
+                    [] => {
                         from_stdin = true;
                     },
                     _ => argument_fatal(
@@ -73,12 +81,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if from_stdin {
         let mut stdin = io::stdin();
-        let builder = seam::tree_builder_stream(&mut stdin)?;
+        let mut builder = seam::tree_builder_stream(&mut stdin)?;
+        builder.add_includes(include_dirs.iter());
         generate_and_print(&builder, &target, is_doc);
     }
 
     for file in files {
-        let builder = seam::tree_builder_file(&file)?;
+        let mut builder = seam::tree_builder_file(&file)?;
+        builder.add_includes(include_dirs.iter());
         generate_and_print(&builder, &target, is_doc);
     }
 

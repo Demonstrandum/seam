@@ -58,6 +58,15 @@ impl<'a> ParseNode<'a> {
         }
     }
 
+    pub fn into_atomic(self) -> Option<Node<'a>> {
+        match self {
+            Self::Symbol(node)
+            | Self::Number(node)
+            | Self::String(node) => Some(node),
+            _ => None
+        }
+    }
+
     pub fn site(&self) -> &Site<'a> {
         match self {
             Self::Symbol(ref node)

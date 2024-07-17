@@ -1,16 +1,18 @@
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
 
+use std::fmt::Display;
 use std::{
     fmt,
     cell::RefCell,
-    path::{
-        Path,
-        PathBuf
-    },
+    path::PathBuf,
     ffi::OsString,
     error::Error,
     rc::Rc,
+    collections::{
+        HashMap,
+        BTreeSet,
+    },
 };
 
 use colored::*;
@@ -47,8 +49,6 @@ impl<'a> fmt::Display for ExpansionError<'a> {
 /// Implements std::error::Error for macro expansion error.
 impl<'a> Error for ExpansionError<'a> { }
 
-use std::collections::HashMap;
-
 /// A macro consists of:
 /// - its name;
 /// - its argument list (if any);
@@ -78,6 +78,7 @@ pub type Scope<'a> = RefCell<HashMap<String, Rc<Macro<'a>>>>; // Can you believe
 #[derive(Debug, Clone)]
 pub struct Expander<'a> {
     parser: Parser,
+    includes: BTreeSet<PathBuf>,
     subparsers: RefCell<Vec<Parser>>,
     subcontexts: RefCell<Vec<Self>>,
     invocations: RefCell<Vec<ParseNode<'a>>>,
@@ -88,6 +89,7 @@ impl<'a> Expander<'a> {
     pub fn new(parser: Parser) -> Self {
         Self {
             parser,
+            includes: BTreeSet::from([PathBuf::from(".")]),
             subparsers: RefCell::new(Vec::new()),
             subcontexts: RefCell::new(Vec::new()),
             invocations: RefCell::new(Vec::new()),
@@ -100,23 +102,31 @@ impl<'a> Expander<'a> {
         self.parser.get_source()
     }
 
+    pub fn add_includes<T: Iterator>(&mut self, dirs: T)
+        where T::Item: Into<PathBuf>
+    {
+        for dir in dirs {
+            self.includes.insert(dir.into());
+        }
+    }
+
     /// Add a subparser owned by the expander context.
-    fn register_parser(&'a self, parser: Parser) -> &'a Parser {
+    fn register_parser(&self, parser: Parser) -> &'a Parser {
         {
             let mut parsers = self.subparsers.borrow_mut();
             parsers.push(parser);
         }
-        self.latest_parser()
+        self.latest_parser().unwrap()
     }
 
     /// Get the latest subparser added.
-    fn latest_parser(&'a self) -> &'a Parser {
+    fn latest_parser(&self) -> Option<&'a Parser> {
         let p = self.subparsers.as_ptr();
-        unsafe { (*p).last().unwrap_or(&self.parser) }
+        unsafe { (*p).last() }
     }
 
     /// Create and register a subcontext built from the current context.
-    fn create_subcontext(&'a self) -> &'a Self {
+    fn create_subcontext(&self) -> &mut Self {
         {
             let copy = self.clone();
             let mut contexts = self.subcontexts.borrow_mut();
@@ -126,12 +136,12 @@ impl<'a> Expander<'a> {
     }
 
     /// Get the latest subparser added.
-    fn latest_context(&'a self) -> Option<&'a Self> {
+    fn latest_context(&self) -> Option<&mut Self> {
         let contexts = self.subcontexts.as_ptr();
-        unsafe { (*contexts).last() }
+        unsafe { (*contexts).last_mut() }
     }
 
-    fn register_invocation(&'a self, node: ParseNode<'a>) -> &'a ParseNode<'a> {
+    fn register_invocation(&self, node: ParseNode<'a>) -> &ParseNode<'a> {
         let invocations = self.invocations.as_ptr();
         unsafe {
             (*invocations).push(node);
@@ -140,25 +150,25 @@ impl<'a> Expander<'a> {
     }
 
     /// Update variable (macro) for this scope.
-    fn insert_variable(&'a self, name: String, var: Rc<Macro<'a>>) {
+    fn insert_variable(&self, name: String, var: Rc<Macro<'a>>) {
         let mut defs = self.definitions.borrow_mut();
         defs.insert(name, var);
     }
 
     /// Check if macro exists in this scope.
-    fn has_variable(&'a self, name: &str) -> bool {
+    fn has_variable(&self, name: &str) -> bool {
         let defs = self.definitions.borrow();
         defs.contains_key(name)
     }
 
-    fn get_variable(&'a self, name: &str) -> Option<Rc<Macro<'a>>> {
+    fn get_variable(&self, name: &str) -> Option<Rc<Macro<'a>>> {
         self.definitions.borrow().get(name).map(|m| m.clone())
     }
 
     /// Define a macro with `(%define a b)` --- `a` is a symbol or a list `(c ...)` where `c` is a symbol.
     /// macro definitions will eliminate any preceding whitespace, so make sure trailing whitespace provides
     /// the whitespace you need.
-    fn expand_define_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_define_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let [head, nodes@..] = &*params else {
             return Err(ExpansionError(
@@ -220,7 +230,7 @@ impl<'a> Expander<'a> {
     /// `(%ifdef symbol a b)` --- `b` is optional, however, if not provided *and*
     /// the symbol is not defined, it will erase the whole expression, and whitespace will not
     /// be preseved before it. If that's a concern, provide `b` as the empty string `""`.
-    fn expand_ifdef_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_ifdef_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         if params.len() < 2 || params.len() > 3 {
             return Err(ExpansionError(format!("`ifdef` takes one (1) \
@@ -253,7 +263,7 @@ impl<'a> Expander<'a> {
         Ok(expanded)
     }
 
-    fn expand_include_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_include_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
         let [path_node] = &*params else {
@@ -264,38 +274,44 @@ impl<'a> Expander<'a> {
                 node.site().to_owned()));
         };
 
-        let Some(Node { value: path, .. }) = path_node.atomic()  else {
+        let Some(Node { value: path, site, .. }) = path_node.atomic()  else {
             return Err(ExpansionError(
                 "Bad argument to `%include' macro.\n\
                     Expected a path, but did not get any value
                     that could be interpreted as a path.".to_string(),
-                node.site().to_owned()))
+                path_node.site().to_owned()))
         };
 
         // Open file, and parse contents!
-        let path = Path::new(&path);
-        let parser = match super::parser_for_file(&path) {
-            Ok(parser) => parser,
-            Err(error) => {
-                let err = ExpansionError(
-                    format!("{}", error), node.site().to_owned());
-                // Try with `.sex` extensions appended.
-                let mut with_ext = PathBuf::from(path);
-                let filename = path.file_name().ok_or(err.clone())?;
-                with_ext.pop();
-
-                let mut new_filename = OsString::new();
-                new_filename.push(filename);
-                new_filename.push(".sex");
-
-                with_ext.push(new_filename);
-                match super::parser_for_file(&with_ext) {
-                    Ok(parser) => parser,
-                    Err(_)   => return Err(err)
-                }
-            }
-        };
-        let parser = self.register_parser(parser);
+        let include_error = |error: Box<dyn Display>| ExpansionError(
+            format!("{}", error), site.to_owned());
+        let mut parser: Result<Parser, ExpansionError> = Err(
+            include_error(Box::new("No path tested.")));
+        // Try all include directories until one is succesful.
+        for include_dir in &self.includes {
+            let path = include_dir.join(path);
+            parser = super::parser_for_file(&path)
+                .or_else(|err| {
+                    let err = Box::new(err);
+                    // Try with `.sex` extensions appended.
+                    let mut with_ext = PathBuf::from(&path);
+                    let filename = path.file_name()
+                        .ok_or(include_error(err))?;
+                    with_ext.pop();  // Remove old filename.
+                    // Build new filename with `.sex` appended.
+                    let mut new_filename = OsString::new();
+                    new_filename.push(filename);
+                    new_filename.push(".sex");
+                    with_ext.push(new_filename); // Replace with new filename.
+                    match super::parser_for_file(&with_ext) {
+                        Ok(parser) => Ok(parser),
+                        Err(err)   => Err(include_error(Box::new(err)))
+                    }
+                });
+            if parser.is_ok() { break; }
+        }
+        // Register the parser for the found file.
+        let parser = self.register_parser(parser?);
         let tree = match parser.parse() {
             Ok(tree) => tree,
             Err(error) => return Err(ExpansionError(
@@ -316,7 +332,7 @@ impl<'a> Expander<'a> {
         Ok(expanded_tree.into_boxed_slice())
     }
 
-    fn expand_date_macro(&'a self, node: &'a ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_date_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?;
         let [date_format] = &*params else {
@@ -343,7 +359,7 @@ impl<'a> Expander<'a> {
 
     /// `(%log ...)` logs to `STDERR` when called and leaves *no* node behind.
     /// This means whitespace preceeding `(%log ...)` will be removed!
-    fn expand_log_macro(&'a self, node: &'a ParseNode<'a>, params: ParseTree<'a>)
+    fn expand_log_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let mut words = Vec::with_capacity(params.len());
         for param in self.expand_nodes(params)? {
@@ -440,7 +456,7 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_macro(&'a self, name: &str, node: &'a ParseNode<'a>, params: ParseTree<'a>)
+    fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Eagerly evaluate parameters passed to macro invocation.
         let params = self.expand_nodes(params)?;
@@ -477,26 +493,67 @@ impl<'a> Expander<'a> {
         Ok(expanded.into_boxed_slice())
     }
 
-    fn expand_invocation(&'a self,
+    fn expand_namespace_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        // Start evaluating all the arguments to the macro in a separate context.
+        let context = self.clone();
+        let params =  context.expand_nodes(params)?;
+        let mut args = params.iter().peekable();
+        let Some(namespace) = args.next().and_then(ParseNode::atomic) else {
+            return Err(ExpansionError::new("Expected a namespace name.", node.site()));
+        };
+        // Parse options to macro.
+        let mut seperator = "/";  // Default namespace seperator is `/`.
+        while let Some(ParseNode::Attribute { keyword, node, site, .. }) = args.peek() {
+            let _ = args.next();
+            match keyword.as_str() {
+                "separator" => match node.atomic() {
+                    Some(Node { value, .. }) => seperator = &value,
+                    None => return Err(ExpansionError(
+                        format!("`%namespace' separator must be a symbol, got a {}.", node.node_type()),
+                        node.owned_site())),
+                },
+                opt => return Err(ExpansionError(
+                    format!("Unknown option `:{}' to `%namespace' macro.", opt),
+                    site.clone())),
+            }
+        }
+        // Find all the definitions made within the context of the
+        // `%namespace` macro and include the defintion prefixed by
+        // the namespace in the *current* scope.
+        {
+            let mut self_defs = self.definitions.borrow_mut();
+            let defs = context.definitions.borrow();
+            for (key, value) in defs.iter() {
+                let new_key = format!("{}{}{}", namespace.value, seperator, key);
+                self_defs.insert(new_key, value.clone());
+            }
+        }
+        // Return remaining body of the macro.
+        Ok(args.cloned().collect())
+    }
+
+    fn expand_invocation(&self,
                          name: &str, //< Name of macro (e.g. %define).
-                         node: &'a ParseNode<'a>, //< Node for `%'-macro invocation.
+                         node: &ParseNode<'a>, //< Node for `%'-macro invocation.
                          params: Box<[ParseNode<'a>]> //< Passed in arguments.
     ) -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Some macros are lazy (e.g. `ifdef`), so each macro has to
         //   expand the macros in its arguments individually.
         match name {
-            "define"  => self.expand_define_macro(node, params),
-            "ifdef"   => self.expand_ifdef_macro(node, params),
-            "include" => self.expand_include_macro(node, params),
-            "date"    => self.expand_date_macro(node, params),
-            "log"     => self.expand_log_macro(node, params),
-            "format"  => self.expand_format_macro(node, params),
-            "os/env"  => self.expand_os_env_macro(node, params),
-            _         => self.expand_macro(name, node, params),
+            "define"    => self.expand_define_macro(node, params),
+            "ifdef"     => self.expand_ifdef_macro(node, params),
+            "include"   => self.expand_include_macro(node, params),
+            "namespace" => self.expand_namespace_macro(node, params),
+            "date"      => self.expand_date_macro(node, params),
+            "log"       => self.expand_log_macro(node, params),
+            "format"    => self.expand_format_macro(node, params),
+            "os/env"    => self.expand_os_env_macro(node, params),
+            _           => self.expand_macro(name, node, params),
         }
     }
 
-    pub fn expand_node(&'a self, node: ParseNode<'a>)
+    pub fn expand_node(&self, node: ParseNode<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         match node {
             ParseNode::Symbol(ref sym) => {
@@ -569,7 +626,7 @@ impl<'a> Expander<'a> {
         }
     }
 
-    pub fn expand_nodes(&'a self, tree: Box<[ParseNode<'a>]>)
+    pub fn expand_nodes(&self, tree: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let mut expanded = Vec::with_capacity(tree.len());
         for branch in tree {

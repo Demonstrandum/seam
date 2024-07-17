@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Debug, Clone)]
 pub struct Site<'a> {
     pub source: &'a str,
-    pub source_code: &'a str, // TODO: propagate!
+    pub source_code: &'a str,
     pub line: usize,
     pub bytes_from_start: usize,
     pub bytes_from_start_of_line: usize,
