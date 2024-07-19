@@ -4,6 +4,9 @@ use descape::UnescapeExt;
 
 use super::{lexer::{LexError, Lexer}, tokens::{Kind, Site, Token}};
 
+/// The [`Node`] type represents what atomic/literals are parsed
+/// into; i.e. not compound types (e.g. lists, attributes).
+/// These are just a common storage for the literals in [`ParseNode`].
 #[derive(Debug, Clone)]
 pub struct Node<'a> {
     pub value: String,
@@ -21,11 +24,15 @@ impl<'a> Node<'a> {
     }
 }
 
+/// Parse nodes are the components of the syntax tree that
+/// the source code is translated into.
+/// These nodes are also produced at compile-time by the macro expander.
 #[derive(Debug, Clone)]
 pub enum ParseNode<'a> {
     Symbol(Node<'a>),
     Number(Node<'a>),
     String(Node<'a>),
+    Raw(Node<'a>), //< Raw-content strings are not parsed, only expanded by macros.
     List {
         nodes: Box<[ParseNode<'a>]>,
         site: Site<'a>,
@@ -41,83 +48,109 @@ pub enum ParseNode<'a> {
 }
 
 impl<'a> ParseNode<'a> {
+    /// Unwrap a literal node if it is a symbol or number.
     pub fn symbolic(&self) -> Option<&Node<'a>> {
         match self {
             Self::Symbol(ref node)
             | Self::Number(ref node) => Some(node),
-            _ => None
+            _ => None,
         }
     }
 
+    /// Unwrap string-like nodes.
+    pub fn string(&self) -> Option<&Node<'a>> {
+        match self {
+            Self::String(ref node) | Self::Raw(ref node) => Some(node),
+            _ => None,
+        }
+    }
+
+    /// Unwrap literal (atomic) nodes into their underlying [`Node`].
     pub fn atomic(&self) -> Option<&Node<'a>> {
         match self {
             Self::Symbol(ref node)
             | Self::Number(ref node)
-            | Self::String(ref node) => Some(node),
-            _ => None
+            | Self::String(ref node)
+            | Self::Raw(ref node) => Some(node),
+            _ => None,
         }
     }
 
+    /// Same as [`Self::atomic`], but consumes the node,
+    /// returning an owned [`Node`].
     pub fn into_atomic(self) -> Option<Node<'a>> {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
             | Self::String(node) => Some(node),
-            _ => None
+            _ => None,
         }
     }
 
+    /// Get a reference to the parse node's underlying [`Site`].
     pub fn site(&self) -> &Site<'a> {
         match self {
             Self::Symbol(ref node)
             | Self::Number(ref node)
-            | Self::String(ref node) => &node.site,
+            | Self::String(ref node)
+            | Self::Raw(ref node) => &node.site,
             Self::List { ref site, .. } => site,
             Self::Attribute { ref site, .. } => site,
         }
     }
 
+    /// Clone the underlying [`Site`] of this parse node.
     pub fn owned_site(&self) -> Site<'a> {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
-            | Self::String(node) => node.site.clone(),
+            | Self::String(node)
+            | Self::Raw(node) => node.site.clone(),
             Self::List { site, .. } => site.clone(),
             Self::Attribute { site, .. } => site.clone(),
         }
     }
 
+    /// Get a reference to the underlying leading whitespace string
+    /// of this parse node.
     pub fn leading_whitespace(&self) -> &str {
         match self {
             Self::Symbol(ref node)
             | Self::Number(ref node)
-            | Self::String(ref node) => &node.leading_whitespace,
+            | Self::String(ref node)
+            | Self::Raw(ref node) => &node.leading_whitespace,
             Self::List { ref leading_whitespace, .. } => leading_whitespace,
             Self::Attribute { ref leading_whitespace, .. } => leading_whitespace,
         }
     }
 
+    /// Modify the underlying leading whitespace stored for this parse node.
     pub fn set_leading_whitespace(&mut self, whitespace: String) {
         match self {
             Self::Symbol(ref mut node)
             | Self::Number(ref mut node)
-            | Self::String(ref mut node) => node.leading_whitespace = whitespace,
+            | Self::String(ref mut node)
+            | Self::Raw(ref mut node) => node.leading_whitespace = whitespace,
             Self::List { ref mut leading_whitespace, .. } => *leading_whitespace = whitespace,
             Self::Attribute { ref mut leading_whitespace, .. } => *leading_whitespace = whitespace,
         };
     }
 
+    /// Get a `&'static str` string name of what type of parse node this is.
     pub fn node_type(&self) -> &'static str {
         match self {
             Self::Symbol(..) => "symbol",
             Self::Number(..) => "number",
             Self::String(..) => "string",
+            Self::Raw(..) => "raw-content string",
             Self::List { .. } => "list",
             Self::Attribute { .. } => "attribute",
         }
     }
 }
 
+/// An array of parse nodes, like in a [`ParseNode::List`], never grows.
+/// Hence we prefer the `Box<[...]>` representation over a `Vec<...>`.
 pub type ParseTree<'a> = Box<[ParseNode<'a>]>;
 
 #[derive(Debug, Clone)]
@@ -333,7 +366,7 @@ impl<'a> SearchTree<'a> for ParseNode<'a> {
                     None
                 }
             },
-            ParseNode::String(name) => {
+            ParseNode::String(name) | ParseNode::Raw(name) => {
                 if kind.is_a(SearchType::String) && is_equal(&name.value) {
                     Some(self)
                 } else {

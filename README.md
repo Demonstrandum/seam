@@ -91,21 +91,23 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ```
 
 ## Checklist
- - [ ] `(%define x %body)` evaluates `%body` eagerly (at definition),
+ - [x] `(%define x %body)` evaluates `%body` eagerly (at definition),
        while `(%define (y) %body)` only evaluates `%body` per call-site `(%y)`.
  - [x] Namespace macro `(%namespace ns (%include "file.sex"))` will prefix all definitions in its body with `ns/`, e.g. `%ns/defn`.
        Allows for a customizable separator, e.g. `(%namespace ns :separator "-" ...)` will allow for writing `%ns-defn`.
        Otherwise, the macro leaves the content produced by the body completely unchanged.
  - [x] Command line `-I` include directory.
- - [ ] First argument (of body) in a macro invocation should have its whitespace stripped.
+ - [x] First argument in a macro invocation should have its whitespace stripped.
  - [x] `(%os/env ENV_VAR)` environment variable macro.
- - [ ] `(%to-string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
+ - [ ] Lazy evaluation for *user* macros (like in `ifdef`) with use of new `(%eval ...)` macro.
+ - [ ] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
  - [ ] Escape evaluating macros with `\%`.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
- - [ ] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.  Can also take any othe source code, for which it just embeds the expanded code (plain-text formatter).
+ - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.
+ - [ ] `(%formatter/text)` can take any other source code, for which it just embeds the expanded code (plain-text formatter).
  - [ ] `(%formatter/html ...)` etc. which call the respective available formatters.
  - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
- - [ ] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
+ - [x] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
  - [ ] Variadic arguments via `&rest` syntax.
  - [ ] Delayed evaluation of macros by `%(...)` syntax.
    [ ] For example `%(f x y)` is the same as `(%f x y)`, so you can have `(%define uneval f x)` and then write `%(%uneval y)`.

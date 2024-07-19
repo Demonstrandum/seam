@@ -102,10 +102,13 @@ fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<
         | ParseNode::Symbol(node)
         | ParseNode::String(node) =>
             Ok(if node.value.chars().any(|c| c.is_whitespace()) {
-                format!("\"{}\"", node.value)
+                format!("{:?}", node.value)
             } else {
                 node.value.to_owned()
             }),
+        ParseNode::Raw(node) => {
+            Ok(node.value.to_owned())
+        },
         ParseNode::Attribute { .. } => Err(GenerationError::new("CSS-value",
                 "Incompatible structure (attribute) found in CSS \
                  property value.",
@@ -265,7 +268,8 @@ impl<'a> MarkupFormatter for CSSFormatter<'a> {
                 },
                 ParseNode::Symbol(node)
                 | ParseNode::Number(node)
-                | ParseNode::String(node) => {
+                | ParseNode::String(node)
+                | ParseNode::Raw(node) => {
                     let site = node.site.to_owned();
                     return Err(GenerationError::new("CSS",
                         "Symbolic node not expected here, CSS documents \

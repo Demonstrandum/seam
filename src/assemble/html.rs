@@ -45,6 +45,11 @@ impl<'a> HTMLFormatter<'a> {
                 write!(f, "{}", node.leading_whitespace)?;
                 write!(f, "{}", escape_xml(&node.value))?;
             },
+            ParseNode::Raw(node) => {
+                // Don't escape any symbols in a raw-content string.
+                write!(f, "{}", node.leading_whitespace)?;
+                write!(f, "{}", &node.value)?;
+            },
             ParseNode::List { nodes: list, leading_whitespace, end_token, .. } => {
                 write!(f, "{}", leading_whitespace)?;
                 let head = list.first();
@@ -85,9 +90,13 @@ impl<'a> HTMLFormatter<'a> {
                     return Ok(());
                 }
 
-                while let Some(ParseNode::Attribute { node, keyword, .. }) = rest.first() {
+                while let Some(ParseNode::Attribute { node, keyword, leading_whitespace, .. }) = rest.first() {
                     if let Some(atom) = (*node).atomic() {
-                        write!(f, " {}=\"{}\"", keyword, atom.value)?;
+                        let leading_whitespace
+                            = if leading_whitespace.is_empty()
+                              { " " } else { leading_whitespace };
+                        write!(f, "{}", leading_whitespace)?;
+                        write!(f, "{}=\"{}\"", keyword, atom.value)?;
                         rest = &rest[1..];
                     } else {
                         // Error! Cannot be non atomic.

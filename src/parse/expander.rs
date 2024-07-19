@@ -178,11 +178,14 @@ impl<'a> Expander<'a> {
         };
 
         // If head is atomic, we assign to a 'variable'.
+        // Aditionally, we evaluate its body *eagerly*.
         let def_macro = if let Some(variable) = head.atomic() {
+            let nodes = nodes.to_owned().into_boxed_slice();
+            let body = self.expand_nodes(nodes)?;
             Rc::new(Macro {
                 name: variable.value.clone(),
                 params: Box::new([]),
-                body: nodes.to_owned().into_boxed_slice(),
+                body,
             })
         } else {  // Otherwise, we are assigning to a 'function'.
             let ParseNode::List { nodes: defn_nodes, .. } = head else {
@@ -332,6 +335,47 @@ impl<'a> Expander<'a> {
         Ok(expanded_tree.into_boxed_slice())
     }
 
+    fn expand_embed_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
+        let [path_node] = &*params else {
+            return Err(ExpansionError(
+                format!("Incorrect number of arguments \
+                    to `%embed' macro. Got {}, expected {}.",
+                    params.len(), 1),
+                node.site().to_owned()));
+        };
+
+        let Some(Node { value: path, site, .. }) = path_node.atomic()  else {
+            return Err(ExpansionError(
+                "Bad argument to `%embed' macro.\n\
+                    Expected a path, but did not get any value
+                    that could be interpreted as a path.".to_string(),
+                path_node.site().to_owned()))
+        };
+
+        // Open file, and read contents!
+        let embed_error = |error: Box<dyn Display>| ExpansionError(
+            format!("{}", error), site.to_owned());
+        let mut value: Result<String, ExpansionError> = Err(
+            embed_error(Box::new("No path tested.")));
+        // Try all include directories until one is succesful.
+        for include_dir in &self.includes {
+            let path = include_dir.join(path);
+            value = std::fs::read_to_string(path)
+                .map_err(|err| embed_error(Box::new(err)));
+            if value.is_ok() { break; }
+        }
+        let value = value?;
+        Ok(Box::new([
+            ParseNode::String(Node {
+                value,
+                site: node.owned_site(),
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            }),
+        ]))
+    }
+
     fn expand_date_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?;
@@ -456,43 +500,6 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
-    -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        // Eagerly evaluate parameters passed to macro invocation.
-        let params = self.expand_nodes(params)?;
-
-        let Some(mac) = self.get_variable(name) else {
-            return Err(ExpansionError::new(
-                &format!("Macro not found (`{}').", name), &node.owned_site()))
-        };
-
-        // Instance of expansion subcontext.
-        let subcontext = self.create_subcontext();
-        // Check enough arguments were given.
-        if params.len() != mac.params.len() {
-            return Err(ExpansionError(
-                format!("`%{}` macro expects {} arguments, \
-                        but {} were given.", &mac.name, mac.params.len(),
-                        params.len()), node.site().to_owned()));
-        }
-        // Define arguments for body.
-        for i in 0..params.len() {
-            let arg_macro = Macro {
-                name: mac.params[i].to_owned(),
-                params: Box::new([]),
-                body: Box::new([params[i].clone()]), //< Argument as evaluated at call-site.
-            };
-            subcontext.insert_variable(mac.params[i].to_string(), Rc::new(arg_macro));
-        }
-        // Expand body.
-        let mut expanded = subcontext.expand_nodes(mac.body.clone())?.to_vec();
-        // Inherit leading whitespace of invocation.
-        if let Some(first_node) = expanded.get_mut(0) {
-            first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
-        }
-        Ok(expanded.into_boxed_slice())
-    }
-
     fn expand_namespace_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Start evaluating all the arguments to the macro in a separate context.
@@ -533,6 +540,87 @@ impl<'a> Expander<'a> {
         Ok(args.cloned().collect())
     }
 
+    fn expand_raw_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut builder = String::new();
+        let args = self.expand_nodes(params)?;
+        for arg in args {
+            let Some(Node { value, leading_whitespace, .. }) = arg.atomic() else {
+                return Err(ExpansionError(
+                    format!("Expected a literal, found a {} node instead.", arg.node_type()),
+                    arg.owned_site()));
+            };
+            builder += leading_whitespace;
+            builder += value;
+        }
+        Ok(Box::new([
+            ParseNode::Raw(Node {
+                value: builder,
+                site: node.owned_site(),
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            })
+        ]))
+    }
+
+    fn expand_string_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut builder = String::new();
+        let args = self.expand_nodes(params)?;
+        for arg in args {
+            let Some(Node { value, leading_whitespace, .. }) = arg.atomic() else {
+                return Err(ExpansionError(
+                    format!("Expected a literal, found a {} node instead.", arg.node_type()),
+                    arg.owned_site()));
+            };
+            builder += leading_whitespace;
+            builder += value;
+        }
+        Ok(Box::new([
+            ParseNode::String(Node {
+                value: builder,
+                site: node.owned_site(),
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            })
+        ]))
+    }
+
+    fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        // Eagerly evaluate parameters passed to macro invocation.
+        let params = self.expand_nodes(params)?;
+
+        let Some(mac) = self.get_variable(name) else {
+            return Err(ExpansionError::new(
+                &format!("Macro not found (`{}').", name), &node.owned_site()))
+        };
+
+        // Instance of expansion subcontext.
+        let subcontext = self.create_subcontext();
+        // Check enough arguments were given.
+        if params.len() != mac.params.len() {
+            return Err(ExpansionError(
+                format!("`%{}` macro expects {} arguments, \
+                        but {} were given.", &mac.name, mac.params.len(),
+                        params.len()), node.site().to_owned()));
+        }
+        // Define arguments for body.
+        for i in 0..params.len() {
+            let arg_macro = Macro {
+                name: mac.params[i].to_owned(),
+                params: Box::new([]),
+                body: Box::new([params[i].clone()]), //< Argument as evaluated at call-site.
+            };
+            subcontext.insert_variable(mac.params[i].to_string(), Rc::new(arg_macro));
+        }
+        // Expand body.
+        let mut expanded = subcontext.expand_nodes(mac.body.clone())?.to_vec();
+        // Inherit leading whitespace of invocation.
+        if let Some(first_node) = expanded.get_mut(0) {
+            first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
     fn expand_invocation(&self,
                          name: &str, //< Name of macro (e.g. %define).
                          node: &ParseNode<'a>, //< Node for `%'-macro invocation.
@@ -543,7 +631,10 @@ impl<'a> Expander<'a> {
         match name {
             "define"    => self.expand_define_macro(node, params),
             "ifdef"     => self.expand_ifdef_macro(node, params),
+            "raw"       => self.expand_raw_macro(node, params),
+            "string"    => self.expand_string_macro(node, params),
             "include"   => self.expand_include_macro(node, params),
+            "embed"     => self.expand_embed_macro(node, params),
             "namespace" => self.expand_namespace_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
             "log"       => self.expand_log_macro(node, params),
@@ -592,8 +683,13 @@ impl<'a> Expander<'a> {
                     if name.starts_with("%") {
                         // Rebuild node...
                         let name = &name[1..];
-                        // Clean macro arguments from whitespace tokens.
-                        let params: Vec<ParseNode> = call.collect();
+                        let mut params: Vec<ParseNode> = call.collect();
+                        // Delete leading whitespace of leading argument.
+                        if let Some(leading) = params.first_mut() {
+                            if !leading.leading_whitespace().contains('\n') {
+                                leading.set_leading_whitespace(String::from(""));
+                            }
+                        }
                         return self.expand_invocation(name, node, params.into_boxed_slice());
                     }
                 }

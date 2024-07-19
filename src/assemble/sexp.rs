@@ -41,6 +41,12 @@ impl<'a> SExpFormatter<'a> {
                 write!(f, "{}", node.leading_whitespace)?;
                 write!(f, "{:?}", node.value)?;
             },
+            ParseNode::Raw(node) => {
+                // This is the only place we can't really expand
+                // the `(%raw ...)` macro. It is meaningful.
+                write!(f, "{}", node.leading_whitespace)?;
+                write!(f, "(%raw {:?})", node.value)?;
+            },
             ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
                 write!(f, "{}", leading_whitespace)?;
                 write!(f, "(")?;

@@ -33,7 +33,8 @@ impl<'a> PlainTextFormatter<'a> {
         match node {
             ParseNode::Symbol(node)
           | ParseNode::Number(node)
-          | ParseNode::String(node) => {
+          | ParseNode::String(node)
+          | ParseNode::Raw(node) => {
                 write!(f, "{}", node.leading_whitespace)?;
                 write!(f, "{}", node.value)?;
             },
