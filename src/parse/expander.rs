@@ -125,6 +125,12 @@ impl<'a> Expander<'a> {
         self.latest_context().unwrap()
     }
 
+    /// Delete a subcontext from the current context.
+    fn remove_subcontext(&'a self) -> () {
+        let mut contexts = self.subcontexts.borrow_mut();
+        contexts.pop();
+    }
+
     /// Get the latest subparser added.
     fn latest_context(&'a self) -> Option<&'a Self> {
         let contexts = self.subcontexts.as_ptr();
@@ -474,6 +480,8 @@ impl<'a> Expander<'a> {
         if let Some(first_node) = expanded.get_mut(0) {
             first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
         }
+        // Finished expanding macro, delete the subcontext.
+        self.remove_subcontext();
         Ok(expanded.into_boxed_slice())
     }
 
