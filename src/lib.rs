@@ -9,7 +9,18 @@ use parse::{expander, parser, lexer};
 
 use std::{fs, io, path::Path};
 
-pub const VERSION: (u8, u8, u8) = (0, 2, 4);
+const fn parse_u8(s: &str) -> u8 {
+    match u8::from_str_radix(s, 10) {
+        Ok(n) => n,
+        Err(_) => panic!("is not a base 10 integer"),
+    }
+}
+
+pub const VERSION: (u8, u8, u8) = (
+    parse_u8(env!("CARGO_PKG_VERSION_MAJOR")),
+    parse_u8(env!("CARGO_PKG_VERSION_MINOR")),
+    parse_u8(env!("CARGO_PKG_VERSION_PATCH")),
+);
 
 pub fn tree_builder<'a, P: AsRef<Path>>(source_path: Option<P>, string: String)
     -> expander::Expander<'a> {

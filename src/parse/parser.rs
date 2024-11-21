@@ -147,7 +147,7 @@ impl<'a> Parser {
     }
 
     /// Parse whole source code, finishing off the lexer.
-    pub fn parse(&'a self) -> Result<ParseTree, Box<dyn Error + 'a>> {
+    pub fn parse(&'a self) -> Result<ParseTree<'a>, Box<dyn Error + 'a>> {
         let mut root: Vec<ParseNode> = Vec::new();
         while !self.lexer.eof() {
             let expr = self.parse_expr()?;
@@ -157,7 +157,7 @@ impl<'a> Parser {
     }
 
     /// Produce a parse node from the current position in the lexer.
-    pub fn parse_expr(&'a self) -> Result<ParseNode, Box<dyn Error + 'a>> {
+    pub fn parse_expr(&'a self) -> Result<ParseNode<'a>, Box<dyn Error + 'a>> {
         let token = self.lexer.peek()?;
         match token.kind {
             Kind::LParen => self.parse_list(),
@@ -173,7 +173,7 @@ impl<'a> Parser {
     }
 
     /// Parse keyword-attribute pair.
-    fn parse_keyword(&'a self) -> Result<ParseNode, Box<dyn Error + 'a>> {
+    fn parse_keyword(&'a self) -> Result<ParseNode<'a>, Box<dyn Error + 'a>> {
         // Consume :keyword token.
         let token = self.lexer.consume()?;
         assert_eq!(token.kind, Kind::Keyword);
@@ -276,7 +276,7 @@ pub trait SearchTree<'a> {
     fn search_node(&'a self, kind: SearchType,
                    value: &str,
                    case_insensitive: bool,
-                   level: usize) -> Option<&ParseNode<'a>>;
+                   level: usize) -> Option<&'a ParseNode<'a>>;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -295,7 +295,7 @@ impl SearchType {
 
 impl<'a> SearchTree<'a> for ParseNode<'a> {
     fn search_node(&'a self, kind: SearchType, value: &str,
-                   insensitive: bool, level: usize) -> Option<&ParseNode<'a>> {
+                   insensitive: bool, level: usize) -> Option<&'a ParseNode<'a>> {
         if level == 0 {
             return None;
         }
@@ -352,7 +352,7 @@ impl<'a> SearchTree<'a> for ParseNode<'a> {
 
 impl<'a> SearchTree<'a> for ParseTree<'a> {
     fn search_node(&'a self, kind: SearchType, value: &str,
-                   insensitive: bool, level: usize) -> Option<&ParseNode<'a>> {
+                   insensitive: bool, level: usize) -> Option<&'a ParseNode<'a>> {
         if level == 0 {
             return None;
         }

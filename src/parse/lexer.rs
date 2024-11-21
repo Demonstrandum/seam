@@ -132,7 +132,7 @@ impl<'a> Lexer {
     }
 
     /// Check if source-code at current possition starts with a pattern.
-    fn starts_with<P>(&'a self, pat: P) -> bool where P: Pattern<'a> {
+    fn starts_with<P>(&self, pat: P) -> bool where P: Pattern {
         self.source[self.byte_offset.get()..].starts_with(pat)
     }
 
