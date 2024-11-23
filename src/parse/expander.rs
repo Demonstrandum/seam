@@ -367,8 +367,9 @@ impl<'a> Expander<'a> {
         Ok(Box::new([]))
     }
 
-    fn expand_os_env_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    fn expand_os_env_macro(&'a self, node: &'a ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
         let [ref var] = *params else {
             return Err(ExpansionError::new(
                 "`%os/env' expects excatly one argument.",
@@ -390,8 +391,9 @@ impl<'a> Expander<'a> {
         ]))
     }
 
-    fn expand_format_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    fn expand_format_macro(&'a self, node: &'a ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
         let [format_str, ..] = &*params else {
             return Err(ExpansionError::new(
                 "`%format' expects at a format-string.",
