@@ -1,4 +1,4 @@
-use std::{fmt, error::Error};
+use std::{error::Error, fmt, str::FromStr};
 use unicode_width::UnicodeWidthStr;
 use descape::UnescapeExt;
 
@@ -148,6 +148,74 @@ impl<'a> ParseNode<'a> {
         }
     }
 }
+
+/// Trait determining if a [`ParseNode`] can be converted into
+/// a value of a given (usually inferred) type.
+pub trait IntoValue<'a, T>: Sized {
+    fn into_value(&'a self) -> Option<T> { None }
+}
+
+/// A number type.
+trait Num<Rhs = Self, Output = Self>:
+    std::ops::Add<Rhs, Output = Output>
+  + std::ops::Sub<Rhs, Output = Output>
+  + std::ops::Mul<Rhs, Output = Output>
+  + std::ops::Div<Rhs, Output = Output>
+  + std::ops::Rem<Rhs, Output = Output> { }
+impl Num for usize { }
+impl Num for isize { }
+impl Num for u32 { }
+impl Num for i32 { }
+impl Num for u64 { }
+impl Num for i64 { }
+impl Num for f32 { }
+impl Num for f64 { }
+
+/// Convert parse-node into value if said value is a number type.
+impl<'a, T: Num + FromStr> IntoValue<'a, T> for ParseNode<'a> {
+    fn into_value(&self) -> Option<T> {
+        match self {
+            ParseNode::Number(node) => node.value.parse().ok(),
+            _ => None,
+        }
+    }
+}
+
+/// Convert parse-node into value if said value is a symbol/string type.
+impl<'a> IntoValue<'a, &'a str> for ParseNode<'a> {
+    fn into_value(&'a self) -> Option<&'a str> {
+        match self {
+            ParseNode::Symbol(node)
+          | ParseNode::String(node)
+          | ParseNode::Raw(node) => Some(node.value.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// TODO: Convert parse-node into value if said value is a list type.
+/*
+impl<'a, V> IntoValue<'a, &'a [V]> for ParseNode<'a> {
+    fn into_value(&'a self) -> Option<&'a [V]> {
+        match self {
+            ParseNode::List { nodes, .. } => {
+                let mut values = Vec::with_capacity(nodes.len());
+                for node in nodes {
+                    let Some(value) = node.into_value() else {
+                        return None;
+                    };
+                    let value: V = value;
+                    values.push(value)
+                }
+                // TODO: fix this.
+                let values: &[V] = &*Box::leak(values.into_boxed_slice());
+                Some(values)
+            },
+            _ => None,
+        }
+    }
+}
+*/
 
 /// An array of parse nodes, like in a [`ParseNode::List`], never grows.
 /// Hence we prefer the `Box<[...]>` representation over a `Vec<...>`.

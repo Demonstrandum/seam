@@ -1,3 +1,4 @@
+use super::macros::*;
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
 
@@ -75,9 +76,12 @@ impl<'a> Macro<'a> {
 /// Type of variable scope owned by an `Expander` instance.
 pub type Scope<'a> = RefCell<HashMap<String, Rc<Macro<'a>>>>; // Can you believe this type?
 
+/// Macro expansion context, takes a parser and expands
+/// any macro calls found in the generated parse-tree.
 #[derive(Debug, Clone)]
 pub struct Expander<'a> {
     parser: Parser,
+    /// Include directories, in order of search.
     includes: BTreeSet<PathBuf>,
     subparsers: RefCell<Vec<Parser>>,
     subcontexts: RefCell<Vec<Self>>,
@@ -102,6 +106,9 @@ impl<'a> Expander<'a> {
         self.parser.get_source()
     }
 
+    /// Supply additonal include-directories for the macros
+    /// to use when searching for files to include/emebed.
+    /// Files are searched for in the order that of the directories.
     pub fn add_includes<T: Iterator>(&mut self, dirs: T)
         where T::Item: Into<PathBuf>
     {
@@ -584,6 +591,19 @@ impl<'a> Expander<'a> {
         ]))
     }
 
+    fn expand_join_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let args: ArgRules = arguments! {
+            mandatory(1): literal,
+            mandatory(2): number fn(_v: ParseNode) { true },
+            optional("trailing"): literal["true", "false"],
+            rest: literal,
+        };
+        let arg_parser = args.parser(&params);
+
+        todo!()
+    }
+
     fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Eagerly evaluate parameters passed to macro invocation.
@@ -637,6 +657,7 @@ impl<'a> Expander<'a> {
             "embed"     => self.expand_embed_macro(node, params),
             "namespace" => self.expand_namespace_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
+            "join"      => self.expand_join_macro(node, params),
             "log"       => self.expand_log_macro(node, params),
             "format"    => self.expand_format_macro(node, params),
             "os/env"    => self.expand_os_env_macro(node, params),

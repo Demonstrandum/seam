@@ -1,4 +1,4 @@
-use crate::parse::tokens::Site;
+use crate::{impl_clone_box, CloneBox, parse::tokens::Site};
 use std::{convert, error::Error, fmt::{self, Debug}};
 
 use colored::*;
@@ -97,24 +97,7 @@ pub trait MarkupFormatter: Debug + CloneBox {
     }
 }
 
-/// See: https://stackoverflow.com/a/30353928
-pub trait CloneBox {
-    fn clone_box(&self) -> *mut ();
-}
-
-impl<'a, T> CloneBox for T where T: Clone + 'a {
-    fn clone_box(&self) -> *mut () {
-        Box::<T>::into_raw(Box::new(self.clone())) as *mut ()
-    }
-}
-
-impl<'a> Clone for Box<dyn MarkupFormatter + 'a> {
-    fn clone(&self) -> Box<dyn MarkupFormatter + 'a> {
-        unsafe {
-            *Box::from_raw(self.clone_box() as *mut Self)
-        }
-    }
-}
+impl_clone_box! { 'a; dyn MarkupFormatter + 'a}
 
 /// Automatically implement fmt::Display as a wrapper around
 /// MarkupFormatter::generate, but throws away the useful error message.

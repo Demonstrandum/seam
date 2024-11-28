@@ -1,6 +1,8 @@
 pub mod tokens;
 pub mod lexer;
 pub mod parser;
+#[macro_use]
+mod macros;
 pub mod expander;
 
 pub use parser::ParseTree;

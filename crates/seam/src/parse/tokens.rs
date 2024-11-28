@@ -1,6 +1,10 @@
 use std::fmt::{self, Display};
 use unicode_width::UnicodeWidthStr;
 
+/// Precise source-code location a parsed (or lexed) node (or token).
+/// Including references to the source-code and path, line number, bytes offsets
+/// within the file, including from start of line, and the number of
+/// bytes it occupies in the source.
 #[derive(Debug, Clone)]
 pub struct Site<'a> {
     pub source: &'a str,
@@ -11,6 +15,7 @@ pub struct Site<'a> {
     pub bytes_span: usize,
 }
 
+/// Dummy (unknown) site.
 pub const UNKNOWN_SITE: Site<'static> = Site {
     source: "<unknwon>",
     source_code: "",
@@ -57,13 +62,15 @@ impl<'a> Site<'a> {
         return i;
     }
 
+    /// Get a string slice into the part of the source-code
+    /// which occupies the location this site references.
     pub fn view(&'a self) -> &'a str {
         let start = self.bytes_from_start;
         let end = start + self.bytes_span;
         &self.source_code[start..end]
     }
 
-    /// Get string view into whole line that site is referencing.
+    /// Get string view into whole line that this site is referencing.
     pub fn line_slice(&self) -> &'a str {
         &self.source_code[self.start_of_line()..self.end_of_line()]
     }
@@ -75,7 +82,9 @@ impl<'a> Site<'a> {
         UnicodeWidthStr::width(text)
     }
 
-    /// Compute which column the site starts at on the line.
+    /// Compute which column the site starts at on the line,
+    /// accounting for the rendered number of columns for each character
+    /// in a terminal, according to the same procedure as [`Self::width`].
     pub fn line_column(&self) -> usize {
         let preceeding = &self.source_code[self.start_of_line()..self.bytes_from_start];
         UnicodeWidthStr::width(preceeding) + 1
@@ -91,6 +100,7 @@ impl<'a> Display for Site<'a> {
     }
 }
 
+/// Kinds of possible tokens.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
     LParen,

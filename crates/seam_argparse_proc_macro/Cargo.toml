@@ -1,0 +1,15 @@
+[package]
+name = "seam_argparse_proc_macro"
+license-file = "../../LICENSE"
+authors = ["Demonstrandum <samuel@knutsen.co>"]
+edition = "2021"
+
+[lib]
+proc-macro = true
+name = "seam_argparse_proc_macro"
+path = "src/lib.rs"
+
+[dependencies]
+proc-macro2 = "1.0.86"
+quote = "1.0.37"
+syn = "2.0.77"

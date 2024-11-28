@@ -91,6 +91,7 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ```
 
 ## Checklist
+ - [ ] A *splat* operation: `(%splat (a b c))` becomes `a b c`.
  - [x] `(%define x %body)` evaluates `%body` eagerly (at definition),
        while `(%define (y) %body)` only evaluates `%body` per call-site `(%y)`.
  - [x] Namespace macro `(%namespace ns (%include "file.sex"))` will prefix all definitions in its body with `ns/`, e.g. `%ns/defn`.
@@ -109,6 +110,7 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
  - [x] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
  - [ ] Variadic arguments via `&rest` syntax.
+ - [ ] Type-checking facilities for user macros (?).
  - [ ] Delayed evaluation of macros by `%(...)` syntax.
    [ ] For example `%(f x y)` is the same as `(%f x y)`, so you can have `(%define uneval f x)` and then write `%(%uneval y)`.
  - [ ] `%list` macro which expands from `(p (%list a b c))` to `(p a b c)`.
