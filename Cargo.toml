@@ -1,2 +1,4 @@
 [workspace]
 members = ["crates/seam", "crates/seam_argparse_proc_macro"]
+resolver = "2"
+package.edition = "2021"

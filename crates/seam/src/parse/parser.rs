@@ -82,7 +82,8 @@ impl<'a> ParseNode<'a> {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
-            | Self::String(node) => Some(node),
+            | Self::String(node)
+            | Self::Raw(node) => Some(node),
             _ => None,
         }
     }
@@ -146,6 +147,56 @@ impl<'a> ParseNode<'a> {
             Self::List { .. } => "list",
             Self::Attribute { .. } => "attribute",
         }
+    }
+
+    pub fn is_atomic(&self) -> bool { self.atomic().is_some() }
+
+    pub fn is_list(&self) -> bool {
+        match self {
+            Self::List { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_attribute(&self) -> bool {
+        match self {
+            Self::Attribute { .. } => true,
+            _ => false,
+        }
+    }
+}
+
+// Try to convert a [`ParseNode`] enum value into
+// its underlying type (e.g. [`Node`], `Box<[Node]>`, etc.).
+
+impl<'a> TryFrom<ParseNode<'a>> for Node<'a> {
+    type Error = ();
+
+    fn try_from(value: ParseNode<'a>) -> Result<Self, Self::Error> {
+        match value.into_atomic() {
+            Some(node) => Ok(node),
+            None => Err(()),
+        }
+    }
+}
+
+impl<'a> TryFrom<ParseNode<'a>> for Box<[ParseNode<'a>]> {
+    type Error = ();
+
+    fn try_from(value: ParseNode<'a>) -> Result<Self, Self::Error> {
+        match value {
+            ParseNode::List { nodes, .. } => Ok(nodes),
+            _ => Err(()),
+        }
+    }
+}
+
+impl<'a> TryFrom<ParseNode<'a>> for Vec<ParseNode<'a>> {
+    type Error = ();
+
+    fn try_from(value: ParseNode<'a>) -> Result<Self, Self::Error> {
+        let into: Result<Box<[ParseNode<'a>]>, Self::Error> = value.try_into();
+        into.map(|b| b.to_vec())
     }
 }
 
@@ -257,7 +308,7 @@ impl<'a> Parser {
     }
 
     /// Parse whole source code, finishing off the lexer.
-    pub fn parse(&'a self) -> Result<ParseTree, Box<dyn Error + 'a>> {
+    pub fn parse(&'a self) -> Result<ParseTree<'a>, Box<dyn Error + 'a>> {
         let mut root: Vec<ParseNode> = Vec::new();
         while !self.lexer.eof() {
             let expr = self.parse_expr()?;
@@ -267,7 +318,7 @@ impl<'a> Parser {
     }
 
     /// Produce a parse node from the current position in the lexer.
-    pub fn parse_expr(&'a self) -> Result<ParseNode, Box<dyn Error + 'a>> {
+    pub fn parse_expr(&'a self) -> Result<ParseNode<'a>, Box<dyn Error + 'a>> {
         let token = self.lexer.peek()?;
         match token.kind {
             Kind::LParen => self.parse_list(),
@@ -283,7 +334,7 @@ impl<'a> Parser {
     }
 
     /// Parse keyword-attribute pair.
-    fn parse_keyword(&'a self) -> Result<ParseNode, Box<dyn Error + 'a>> {
+    fn parse_keyword(&'a self) -> Result<ParseNode<'a>, Box<dyn Error + 'a>> {
         // Consume :keyword token.
         let token = self.lexer.consume()?;
         assert_eq!(token.kind, Kind::Keyword);
@@ -386,7 +437,7 @@ pub trait SearchTree<'a> {
     fn search_node(&'a self, kind: SearchType,
                    value: &str,
                    case_insensitive: bool,
-                   level: usize) -> Option<&ParseNode<'a>>;
+                   level: usize) -> Option<&'a ParseNode<'a>>;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -405,7 +456,7 @@ impl SearchType {
 
 impl<'a> SearchTree<'a> for ParseNode<'a> {
     fn search_node(&'a self, kind: SearchType, value: &str,
-                   insensitive: bool, level: usize) -> Option<&ParseNode<'a>> {
+                   insensitive: bool, level: usize) -> Option<&'a ParseNode<'a>> {
         if level == 0 {
             return None;
         }
@@ -462,7 +513,7 @@ impl<'a> SearchTree<'a> for ParseNode<'a> {
 
 impl<'a> SearchTree<'a> for ParseTree<'a> {
     fn search_node(&'a self, kind: SearchType, value: &str,
-                   insensitive: bool, level: usize) -> Option<&ParseNode<'a>> {
+                   insensitive: bool, level: usize) -> Option<&'a ParseNode<'a>> {
         if level == 0 {
             return None;
         }

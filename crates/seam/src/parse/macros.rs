@@ -1,17 +1,27 @@
 //! Expander macros argument parsing utilities.
-use std::{borrow::Borrow, collections::HashMap};
+use std::{borrow::Borrow, collections::HashMap, iter::zip};
 
 use regex::Regex;
 
 use super::{
     expander::ExpansionError,
-    parser::{Node, ParseNode, ParseTree},
+    parser::{Node, ParseNode, ParseTree}, tokens::Site,
 };
 
+#[derive(Debug, Clone)]
 pub enum ArgPredicate {
     Exactly(String),
     Matching(Regex),
-    Satisfying(Box<dyn Fn(ParseNode) -> bool>),
+    Satisfying(fn(ParseNode) -> bool),
+}
+
+impl ArgPredicate {
+    pub fn check_node<'tree>(&self, node: &Node<'tree>) -> Result<(), ExpansionError<'tree>> {
+        Ok(())
+    }
+    pub fn check<'tree>(&self, node: &ParseNode<'tree>) -> Result<(), ExpansionError<'tree>> {
+        Ok(())
+    }
 }
 
 /// Type of argument, and what kind of
@@ -22,6 +32,7 @@ pub enum ArgPredicate {
 ///     Number ⊆ Symbolic;
 ///     Symbolic ⊆ Literal;
 ///     * ⊆ Any.
+#[derive(Debug, Clone)]
 pub enum ArgType {
     Literal(Vec<ArgPredicate>),
     String(Vec<ArgPredicate>),
@@ -29,16 +40,120 @@ pub enum ArgType {
     Number(Vec<ArgPredicate>),
     Symbolic(Vec<ArgPredicate>),
     List(Vec<ArgType>),
-    Any(Vec<ArgType>),
+    Any(Vec<ArgPredicate>),
 }
 
-/// Kind of arguemnt type (optional, mandatory).
+fn check_all_node<'tree>(preds: &Vec<ArgPredicate>, node: &Node<'tree>) -> Result<(), ExpansionError<'tree>> {
+    if preds.is_empty() { return Ok(()); }
+    let mut issues = vec![];
+    for pred in preds {
+        match pred.check_node(node) {
+            Ok(()) => return Ok(()),
+            Err(err) => issues.push(err),
+        }
+    }
+    if issues.is_empty() { return Ok(()); }
+    // Amalgamate errors.
+    let mut error = String::from("This argument's value did not satisfy one of the follwining:\n");
+    for issue in issues {
+        error += &format!(" * {}", issue.0);
+    }
+    Err(ExpansionError(error, node.site.clone()))
+}
+
+fn check_all<'tree>(preds: &Vec<ArgPredicate>, node: &ParseNode<'tree>) -> Result<(), ExpansionError<'tree>> {
+    if preds.is_empty() { return Ok(()); }
+    let mut issues = vec![];
+    for pred in preds {
+        match pred.check(node) {
+            Ok(()) => return Ok(()),
+            Err(err) => issues.push(err),
+        }
+    }
+    if issues.is_empty() { return Ok(()); }
+    // Amalgamate errors.
+    let mut error = String::from("This argument's value did not satisfy one of the follwining:\n");
+    for issue in issues {
+        error += &format!(" * {}", issue.0);
+    }
+    Err(ExpansionError(error, node.owned_site()))
+}
+
+impl ArgType {
+    pub fn name(&self) -> &'static str {
+        use ArgType::*;
+        match self {
+            Literal(..) => "literal",
+            String(..) => "string",
+            Symbol(..) => "symbol",
+            Number(..) => "number",
+            Symbolic(..) => "symbolic",
+            List(..) => "list",
+            Any(..) => "any",
+        }
+    }
+
+    pub fn check<'tree>(&self, node: &ParseNode<'tree>) -> Result<(), ExpansionError<'tree>> {
+        use ArgType::*;
+        // Compute the generic type-mismatch error beforehand, even if not used.
+        let mismatch = ExpansionError(
+            format!("Expected a {} node, got a {} instead.", self.name(), node.node_type()),
+            node.owned_site());
+        match node {
+            ParseNode::Symbol(v) => match self {
+                Literal(pred) | Symbol(pred) | Symbolic(pred) | Any(pred) => check_all_node(pred, v),
+                _ => Err(mismatch),
+            },
+            ParseNode::String(v) | ParseNode::Raw(v) => match self {
+                Literal(pred) | String(pred) | Any(pred) => check_all_node(pred, v),
+                _ => Err(mismatch),
+            },
+            ParseNode::Number(v) => match self {
+                Literal(pred) | Symbolic(pred) | Number(pred) | Any(pred) => check_all_node(pred, v),
+                _ => Err(mismatch),
+            },
+            ParseNode::List { nodes, .. } => match self {
+                List(arg_types) => {
+                    if nodes.len() != arg_types.len() {
+                        return Err(ExpansionError(
+                            format!("Unexpected number of items in list, expected {} items, got {}.",
+                                arg_types.len(), nodes.len()),
+                            node.owned_site()
+                        ));
+                    }
+                    for (arg_type, node) in zip(arg_types, nodes) {
+                        arg_type.check(node)?;
+                    }
+                    Ok(())
+                },
+                Any(preds) => check_all(preds, node),
+                _ => Err(mismatch),
+            },
+            ParseNode::Attribute { keyword, .. } => match self {
+                Any(pred) => check_all(pred, node),
+                _ => Err(ExpansionError(format!("Unknown attribute `:{}`.", keyword), node.owned_site()))
+            },
+        }
+    }
+}
+
+/// Kind of arguemnt (optional, mandatory).
+#[derive(Debug, Clone)]
 pub enum Arg {
     Mandatory(ArgType),
     Optional(ArgType),
 }
 
+impl Arg {
+    pub fn argtype(&self) -> &ArgType {
+        match self {
+           Arg::Mandatory(typ) | Arg::Optional(typ) => typ
+        }
+    }
+}
+
 /// Positonal or named argument position.
+#[derive(Debug, Clone)]
 enum ArgPos<'a> { Int(usize), Str(&'a str) }
 /// What kind of types can be matched against
 /// when determining an arguments positionality.
@@ -51,8 +166,8 @@ impl ArgMatcher for usize {
 impl ArgMatcher for &str {
     fn unwrap(&self) -> ArgPos { ArgPos::Str(self) }
 }
-impl From<&Box<dyn ArgMatcher>> for Option<usize> {
-    fn from(value: &Box<dyn ArgMatcher>) -> Option<usize> {
+impl<'a> From<&'a Box<dyn ArgMatcher + 'a>> for Option<usize> {
+    fn from(value: &'a Box<dyn ArgMatcher + 'a>) -> Option<usize> {
         match value.unwrap() {
             ArgPos::Int(int) => Some(int),
             _ => None,
@@ -67,8 +182,8 @@ impl<'a> From<&'a Box<dyn ArgMatcher + 'a>> for Option<&'a str> {
         }
     }
 }
-impl From<usize> for Box<dyn ArgMatcher> {
-    fn from(value: usize) -> Box<dyn ArgMatcher> { Box::new(value) }
+impl<'a> From<usize> for Box<dyn ArgMatcher + 'a> {
+    fn from(value: usize) -> Box<dyn ArgMatcher + 'a> { Box::new(value) }
 }
 impl<'a> From<&'a str> for Box<dyn ArgMatcher + 'a> {
     fn from(value: &'a str) -> Box<dyn ArgMatcher + 'a> { Box::new(value) }
@@ -82,13 +197,15 @@ impl<'a> From<&'a String> for Box<dyn ArgMatcher + 'a> {
 /// position.
 /// Pattern pertains to how to argument sits
 /// in the macro-call's argument list.
+#[derive(Debug, Clone)]
 struct ArgPattern<'a> {
     argument: Arg,
-    pattern: Box<dyn Fn(&Box<dyn ArgMatcher + 'a>) -> bool>,
+    pattern: fn(&Box<dyn ArgMatcher + 'a>) -> bool,
 }
 
 /// A complete description of how a macro's arguments
 /// should be parsed.
+#[derive(Debug, Clone)]
 pub struct ArgRules<'a> {
     patterns: Vec<ArgPattern<'a>>,
     trailing: Option<ArgType>,
@@ -99,12 +216,11 @@ impl<'a> ArgRules<'a> {
         Self { patterns: Vec::new(), trailing: None }
     }
     /// Register a pattern to match.
-    pub fn register<F>(&mut self, matcher: F, arg: Arg)
-        where F: 'static + Fn(&Box<dyn ArgMatcher + 'a>) -> bool
+    pub fn register(&mut self, matcher: fn(&Box<dyn ArgMatcher + 'a>) -> bool, arg: Arg)
     {
         self.patterns.push(ArgPattern {
             argument: arg,
-            pattern: Box::new(matcher),
+            pattern: matcher,
         });
     }
     /// Register matching on all remaining arguments.
@@ -113,135 +229,27 @@ impl<'a> ArgRules<'a> {
     }
     /// Turn this structure into a parser.
     pub fn parser<'params, 'tree>(self, params: &'params Box<[ParseNode<'tree>]>) -> ArgParser<'params, 'a, 'tree> {
-        ArgParser::new(self, params)
+        ArgParser::new(self, params).unwrap()
+    }
+    /// Count how many mandatory arguments there are.
+    pub fn count_mandatory(&self) -> usize {
+        let mut count = 0;
+        for pattern in &self.patterns {
+            match pattern.argument {
+                Arg::Mandatory(..) => count += 1,
+                _ => {}
+            }
+        }
+        count
     }
 }
 
-/// Turns a pattern into a argument matching predicate.
-macro_rules! predicate {
-    // A literals which represent a potential exact match of the string values.
-    ($lit:literal) => { ArgPredicate::Exactly(String::from($lit)) };
-    // A pattern which can match against the argument.
-    ($pat:pat) => {{
-        fn matcher(arg: ParseNode) -> bool {
-            use super::parser::IntoValue;
-            match arg.into_value() {
-                Some($pat) => true,
-                _ => false,
-            }
-        }
-        ArgPredicate::Satisfying(Box::new(matcher))
-    }};
-}
-
-macro_rules! arg_type {
-    (literal)  => { ArgType::Literal };
-    (string)   => { ArgType::String };
-    (symbol)   => { ArgType::Symbol };
-    (number)   => { ArgType::Number };
-    (symbolic) => { ArgType::Symbolic };
-    (list)     => { ArgType::List };
-    (any)      => { ArgType::Any };
-}
-
-macro_rules! argument_type {
-    ($typ:ident) => {{ ArgType::Literal(vec![]) }};
-    ($typ:ident[ $($preds:literal),+ ]) => {{
-        arg_type!($typ)(vec![ $( predicate!($preds) ),+ ])
-    }};
-    ($typ:ident ( $($preds:pat),+ )) => {{
-        arg_type!($typ)(vec![ $( predicate!($preds) ),+ ])
-    }};
-    ($typ:ident fn($($var:tt)+) { $($body:tt)* }) => {{
-        fn predicate($($var)+) -> bool { $($body)* }
-        let arg_pred = ArgPredicate::Satisfying(Box::new(predicate));
-        arg_type!($typ)(vec![arg_pred])
-    }};
-}
-
-macro_rules! register_position_pattern {
-    ($ctx:expr, $n:pat, $arg:expr) => {
-        fn position_matcher(pattern: &Box<dyn ArgMatcher>) -> bool {
-            match pattern.into() {
-                Some($n) => true,
-                _ => false,
-            }
-        }
-        let ctx: &mut ArgRules = $ctx;
-        let arg: Arg = $arg;
-        ctx.register(position_matcher, arg);
-    };
-}
-
-macro_rules! _argument {
-    // The pattern for a mandatory argument.
-    ($ctx:expr => mandatory($n:pat): $($kind:tt)+) => {
-        {
-            let arg_type = argument_type!($($kind)+);
-            let arg = Arg::Mandatory(arg_type);
-            let ctx: &mut ArgRules = $ctx;
-            register_position_pattern!(ctx, $n, arg);
-        }
-    };
-    // The pattern for an optional argument.
-    ($ctx:expr => optional($n:pat): $($kind:tt)+) => {
-        {
-            let arg_type = argument_type!($($kind)+);
-            let arg = Arg::Optional(arg_type);
-            let ctx: &mut ArgRules = $ctx;
-            register_position_pattern!(ctx, $n, arg);
-        }
-    };
-    // The pattern for an any remaining argument.
-    ($ctx:expr => rest: $($kind:tt)+) => {
-        {
-            let arg_type = argument_type!($($kind)+);
-            let ctx: &mut ArgRules = $ctx;
-            ctx.register_remaining(arg_type);
-        }
-    };
-}
-
-/// See <https://stackoverflow.com/a/74971086/13162100>.
-#[macro_export]
-macro_rules! arguments {
-    ($ctx:expr => @accumulate [ $($accumulated:tt)* ] [ ]) => { [ $($accumulated)* ] };
-    ($ctx:expr => @accumulate [ $($accumulated:tt)* ] [ $($final_line:tt)* ]) => {
-        [ $($accumulated)* _argument!( $ctx => $($final_line)+ ) ]
-    };
-    ($ctx:expr => @accumulate [ $($accumulated:tt)* ] [ $($this_line:tt)* ] , $($rest:tt)* ) => {
-        arguments! {
-            $ctx => @accumulate
-                [ $($accumulated)* _argument!( $ctx => $($this_line)* ), ]
-                [ ] $($rest)*
-        }
-    };
-    ($ctx:expr => @accumulate [ $($accumulated:tt)* ] [ $($this_line:tt)* ] $current:tt $($rest:tt)* ) => {
-        arguments! {
-            $ctx => @accumulate
-                [ $($accumulated)* ]
-                [ $($this_line)* $current ]
-                $($rest)*
-        }
-    };
-    ( $($t:tt)* ) => {{
-        let mut ctx = ArgRules::new();
-        arguments! { &mut ctx => @accumulate [ ] [ ] $($t)* };
-        ctx
-    }}
-}
-
-
-// --- Proc Macro
-use seam_argparse_proc_macro::*;
-
-
-// ---
-
+#[derive(Debug, Clone)]
 pub struct ArgParser<'params: 'rules, 'rules, 'tree> {
-    rules: ArgRules<'rules>,
-    positional: HashMap<usize, &'params ParseNode<'tree>>,
-    named: HashMap<String, &'params ParseNode<'tree>>,
+    pub rules: ArgRules<'rules>,
+    pub positional: HashMap<usize, &'params ParseNode<'tree>>,
+    pub named: HashMap<String, &'params ParseNode<'tree>>,
+    pub trailing: Vec<&'params ParseNode<'tree>>
 }
 
 impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
@@ -251,77 +259,106 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
         let mut position = 0;
         let mut positional = HashMap::with_capacity(params.len());
         let mut named = HashMap::with_capacity(params.len());
+        let mut trailing = vec![];
+        let mut mandatory_count: usize = 0;
+        println!("going through params: {:?}", params);
+
         for param in params {
-            let matcher: Box<dyn ArgMatcher>;
+            let matcher: Box<dyn ArgMatcher + 'rules>;
             // Register each argument with the parser.
+            let param_node: &'params ParseNode;
             if let ParseNode::Attribute { keyword, node, .. } = param {
-                named.insert(keyword.to_owned(), node.borrow());
                 matcher = keyword.into();
+                param_node = node;
             } else {
-                positional.insert(position, param);
                 position += 1;
                 matcher = position.into();
+                param_node = param;
             }
             // Check if they do actually match with any of the rules.
             let mut arg_rule = None;
             for rule in &rules.patterns {
+                println!("calling matcher");
                 // First check that there is a valid place for this argument.
                 let is_valid_argument = (rule.pattern)(&matcher);
-                if !is_valid_argument {
+                println!("checked pattern {:?} against {:?} and got {:?}", rule.pattern, matcher.unwrap(), is_valid_argument);
+                if is_valid_argument {
                     arg_rule = Some(rule);
                     break;
                 }
             }
-            let Some(rule) = arg_rule else {
-                // Error on fact that an errenous positional or named argument
-                // has been given. Only error on additional errenous named
-                // arguemnts if trailing argument capture is enabled.
-                todo!()
-            };
-            // Now check that the types are satisfied.
-            let arg = &rule.argument;
-            // TODO: throw error when mismatched.
-        }
-        // After checking all the arguments are *valid*, now check
-        // that all mandatory arguments are given.
-        "todo";
-        // Now check if trailing (variadic) arguments are permitted
-        // (otherwise error on unexpected additional arguments).
-        // And if so, that they all satisfy the trailing argument rule.
-        "todo";
-
-        Ok(Self { rules, positional, named, })
-    }
-
-    pub fn get<P>(&mut self, key: P) -> Result<ParseNode<'tree>, ExpansionError<'tree>>
-        where P: Into<Box<dyn ArgMatcher>>
-    {
-        let matcher: &Box<dyn ArgMatcher> = &key.into();
-        // Go through every pattern that could match against the argument
-        // position given and check if they match.
-        for argpat in &self.rules.patterns {
-            let pat = &argpat.pattern;
-            let did_match = pat(matcher);
-            if did_match {
-                match matcher.unwrap() {
-                    ArgPos::Int(i) => {},
-                    ArgPos::Str(k) => {},
+            // If the position rule does not match any specified argument,
+            // check if it can be given as trailing argument.
+            match arg_rule {
+                Some(rule) => {
+                    println!("matched param against rule: {:?}", rule);
+                    // Now check that the types are satisfied.
+                    let argtype = rule.argument.argtype();
+                    argtype.check(param_node)?;
+                    // If so, insert the parameter.
+                    match matcher.unwrap() {
+                        ArgPos::Int(i) => positional.insert(i, param_node),
+                        ArgPos::Str(k) => named.insert(k.to_owned(), param_node),
+                    };
+                    // Register if a mandatory argument was consumed.
+                    match rule.argument {
+                        Arg::Mandatory(..) => {
+                            println!("found mand");
+                            mandatory_count += 1
+                        },
+                        _ => {},
+                    };
+                },
+                None => match &rules.trailing {
+                    Some(trailing_rule) => {
+                        // Check that the trailing type is satisfied.
+                        trailing_rule.check(param)?;
+                        // If so, push the argument.
+                        trailing.push(param);
+                    },
+                    None => {
+                        // Error on fact that an errenous positional or named argument
+                        // has been given. Only error on additional errenous named
+                        // arguemnts if trailing argument capture is enabled.
+                        return Err(ExpansionError(if let ParseNode::Attribute { keyword, .. } = param {
+                            format!("Unexpected named argument `:{}`.", keyword)
+                        } else {
+                            format!("Unexpected positional argument in position {}.", position)
+                        }, param.owned_site()));
+                    }
                 }
             }
         }
+        // After checking all the arguments are *valid*, now check
+        // that all mandatory arguments are given.
+        let needed_count =  rules.count_mandatory();
+        // TODO: pass in site of macro-call
+        let last_site = params.last().map(|node| node.owned_site()).unwrap_or(Site::unknown());
+        if mandatory_count < needed_count {
+            return Err(ExpansionError(
+                format!("Missing {} non-optional arguments from macro call.", needed_count - mandatory_count),
+                last_site
+            ));
+        }
 
-        todo!()
+        Ok(Self { rules, positional, named, trailing })
     }
-}
 
-pub enum _ArgType {
-    Literal(Vec<ArgPredicate>),
-    String(Vec<ArgPredicate>),
-    Symbol(Vec<ArgPredicate>),
-    Number(Vec<ArgPredicate>),
-    Symbolic(Vec<ArgPredicate>),
-    List(Vec<ArgType>),
-    Any(Vec<ArgType>),
+    pub fn get_optional<P>(&self, key: P) -> Option<&&ParseNode<'tree>>
+        where P: Into<Box<dyn ArgMatcher + 'rules>>
+    {
+        let matcher: &Box<dyn ArgMatcher + 'rules> = &key.into();
+        match matcher.unwrap() {
+            ArgPos::Int(i) => self.positional.get(&i),
+            ArgPos::Str(k) => self.named.get(k),
+        }
+    }
+
+    pub fn get<P>(&self, key: P) -> Result<&&ParseNode<'tree>, ExpansionError<'tree>>
+        where P: Into<Box<dyn ArgMatcher + 'rules>>
+    {
+        Ok(self.get_optional(key).unwrap())
+    }
 }
 
 pub fn extract_literal<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionError<'a>> {

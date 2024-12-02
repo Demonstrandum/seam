@@ -1,12 +1,13 @@
 //! Procedural macro for the `arguments! { ... }`
 //! macro-argument parser for seam macros.
 //! TODO: Convert all `panic!(..)` calls to actual compiler errors.
+#![feature(proc_macro_diagnostic)]
 
 use std::{collections::{HashMap, HashSet}, iter::Peekable};
 
-use proc_macro;
+use proc_macro::{self, Diagnostic, Span};
 use proc_macro2::{token_stream::IntoIter, Delimiter, TokenStream, TokenTree};
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{self,
     Expr, ExprRange, ExprLit,
     Lit, Pat, PatOr,
@@ -53,14 +54,24 @@ struct ArgumentStructTypes {
 ///     ```
 ///     let (parser, args) = arguments! { [&params]
 ///         mandatory(1..=3): literal,
-///         mandatory(4): number fn(_v: ParseNode) { true },
+///         mandatory(4): number fn(n: ParseNode) {
+///             let n = extract_number(n)?;
+///             let Ok(n): u32 = n.value.parse() else {
+///                 return Err("Argument must be an integer.");
+///             }
+///             if n % 2 == 0 {
+///                 Ok(())
+///             } else {
+///                 Err("Integer must be even.")
+///             }
+///         },
 ///         optional("trailing"): literal["true", "false"],
 ///         rest: number
 ///     }?;
 ///     println!("first  arg {:?}", args.number.1); // a literal (Node<'a>).
 ///     println!("second arg {:?}", args.number.2); // a literal (Node<'a>).
 ///     println!("third  arg {:?}", args.number.3); // a literal (Node<'a>).
-///     println!("fourth arg {:?}", args.number.4); // a number of any kind (Node<'a>).
+///     println!("fourth arg {:?}", args.number.4); // an even integer (Node<'a>).
 ///     if let Some(named) = args.trailing {
 ///         println!("named arg {:?}", named);  // the literal "true" or "false".
 ///     }
@@ -76,25 +87,22 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     // Parse the provided runtime argument vector.
     let Some(args_vec) = stream.next().and_then(|tokens| match tokens {
-        TokenTree::Group(group) => match
-            group.stream()
-                .into_iter()
-                .collect::<Vec<TokenTree>>()
-                .as_slice()
-        {
-            [params,] => Some(params.clone()),
-            _ => None,
-        },
+        TokenTree::Group(group) => Some(group
+            .stream()
+            .into_iter()
+            .collect::<Vec<TokenTree>>()
+            .as_slice()
+            .to_vec()),
         _ => None,
     }) else {
-        panic!("Vector of arguments not given.");
+        panic!("Argument vector not given.");
     };
+    let params: TokenStream = quote! { #(#args_vec)* };
 
     // Start building final source-code output.
     let mut out: TokenStream = TokenStream::new();
     out.extend(quote! {
         let mut rules = crate::parse::macros::ArgRules::new();
-        let params: Vec<crate::parse::parser::ParseNode> = #args_vec;
     });
     // Initialize keeping track of the custom argument struct types.
     let mut arg_struct = ArgumentStructTypes {
@@ -115,12 +123,15 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     match ident.to_string().as_str() {
                         "mandatory" => {
                             parse_state = ParseState::PositionPattern(PositionTypes::Mandatroy);
+                            continue;
                         },
                         "optional" => {
                             parse_state = ParseState::PositionPattern(PositionTypes::Optional);
+                            continue;
                         },
                         "rest" => {
                             parse_state = ParseState::PositionPattern(PositionTypes::Rest);
+                            continue;
                         },
                         _ => panic!("Invalid token: `{}`", ident.to_string()),
                     }
@@ -136,21 +147,27 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 }
                 let argument_type = parse_argument_type(&mut stream, PositionTypes::Rest);
                 let arg_type = argument_type.source_code;
-                let code = quote! {{
-                    let arg_type = #arg_type;
-                    rules.register_remaining(arg_type);
-                }};
+                let code = quote! {
+                    {
+                        let arg_type = #arg_type;
+                        rules.register_remaining(arg_type);
+                    };
+                };
                 out.extend(code);
                 // Register argument struct type.
                 let rust_type = argument_type.properties.rust_type;
                 arg_struct.rest.kind = argument_type.properties.kind;
-                arg_struct.rest.rust_type = quote! { Vec<#rust_type> };
+                arg_struct.rest.rust_type = rust_type;
             },
             ParseState::PositionPattern(pos@PositionTypes::Mandatroy | pos@PositionTypes::Optional) => {
                 // Parse the pattern for matching argument positions.
                 let position_pattern = match token {
                     TokenTree::Group(group) => group.stream(),
-                    _ => panic!("Unexpected token"),
+                    t => {
+                        let span: proc_macro::Span = t.span().unwrap();
+                        Diagnostic::spanned(span, proc_macro::Level::Error, "expected a paranthesised pattern matching the argument position here.").emit();
+                        panic!("failed to parse.");
+                    },
                 };
                 // Skip `:`
                 let token = stream.next();
@@ -166,17 +183,19 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     PositionTypes::Optional  => quote! { crate::parse::macros::Arg::Optional  },
                     _ => unreachable!(),
                 };
-                let code = quote! {{
-                    let arg_type = #arg_type;
-                    let arg_pos = #arg_pos;
-                    fn position_matcher(pattern: &Box<dyn crate::parse::macros::ArgMatcher>) -> bool {
-                        match pattern.into() {
-                            Some(#position_pattern) => true,
-                            _ => false,
+                let code = quote! {
+                    {
+                        let arg_type = #arg_type;
+                        let arg = #arg_pos(arg_type);
+                        fn position_matcher<'b>(pattern: &Box<dyn crate::parse::macros::ArgMatcher + 'b>) -> bool {
+                            match pattern.into() {
+                                Some(#position_pattern) => true,
+                                _ => false,
+                            }
                         }
-                    }
-                    rules.register(position_matcher, arg);
-                }};
+                        rules.register(position_matcher, arg);
+                    };
+                };
                 out.extend(code);
                 // Register argument struct type.
                 let rust_type = argument_type.properties.rust_type;
@@ -189,88 +208,163 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 for position in parse_finite_pattern(position_pattern) {
                     match position {
                         StringOrInt::String(name) => arg_struct.named.insert(name, ArgumentProperties {
-                            kind: argument_type.properties.kind,
+                            kind: argument_type.properties.kind.clone(),
                             position_type: pos,
-                            rust_type,
+                            rust_type: rust_type.clone(),
                         }),
                         StringOrInt::Int(offset)  => arg_struct.positional.insert(offset, ArgumentProperties {
-                            kind: argument_type.properties.kind,
+                            kind: argument_type.properties.kind.clone(),
                             position_type: pos,
-                            rust_type,
+                            rust_type: rust_type.clone(),
                         }),
                     };
                 }
             },
         };
+        // Handle switching back states, and any additional delimiting tokens.
+        match parse_state {
+            ParseState::PositionPattern(_) => {
+                // Finished parsing a pattern, skip the comma delimiting the next rule.
+                let token = stream.next();
+                // Expecting to find ',' at this point.
+                match match token {
+                    Some(TokenTree::Punct(punct)) if punct.as_char() == ',' => Ok(()),
+                    Some(t) => Err(t.span().unwrap()),
+                    None => Err(Span::call_site()),
+                } {
+                    Ok(()) => {},
+                    Err(span) => {
+                        Diagnostic::spanned(span, proc_macro::Level::Error,
+                            "Expected a comma after defining an argument rule.").emit();
+                        panic!("failed to parse");
+                    }
+                };
+                // Otherwise, switch back to trying tp parse a new rule.
+                parse_state = ParseState::ArgumentPosition;
+            },
+            _ => {},
+        };
     }
 
     // Build tuple type for arguments structure.
     let tuple_len = *arg_struct.positional.keys().max().unwrap_or(&0);
-    let mut tuple_types = vec![quote! { () }; tuple_len];
-    for i in 0..tuple_len {
-        tuple_types.push(match arg_struct.positional.remove(&i) {
-            Some(props) => props.rust_type,
-            None            => quote! { () },
-        });
+    let mut tuple_types = vec![quote! { () }; tuple_len + 1];
+    for i in 1..=tuple_len {
+        let props = arg_struct.positional.get(&i);
+        tuple_types[i] = match props {
+            Some(props) => props.rust_type.clone(),
+            None        => quote! { () },
+        };
     }
     // Build named arguments struct fields.
     let mut named_arguments: Vec<TokenStream> = vec![];
+    let mut named_types: Vec<TokenStream> = vec![];
+    let mut named_values: Vec<TokenStream> = vec![];
     for (name, props) in arg_struct.named.iter() {
-        let rust_type = props.rust_type;
-        named_arguments.push(quote! {
-            #name: #rust_type
-        });
+        let rust_type = props.rust_type.clone();
+        let variable: proc_macro2::TokenStream = name.parse().unwrap();
+        named_types.push(rust_type);
+        named_arguments.push(variable);
+        match props.position_type {
+            PositionTypes::Mandatroy => named_values.push(quote! {{
+                let retrieved = *parser.get(#name)?;
+                retrieved
+                    .clone()
+                    .try_into()
+                    .expect("node type-checked but unwrap failed")
+            }}),
+            PositionTypes::Optional => named_values.push(quote! {{
+                parser.get_optional(#name).map(|retrieved|
+                    (*retrieved)
+                        .clone()
+                        .try_into()
+                        .expect("node type-checked but unwrap failed"))
+            }}),
+            _ => unreachable!(),
+        }
     }
 
-    // TODO: need to iterate the runtime-provided params and extract
-    // them into the correct type depending on expected type
-    // (i.e. literal => Node<'a>; list => Vec<ParseNode<'a>; etc.)
-    // A failure of the above extraction should nicely hand back a
-    // custom Err() message.
-    // Optional nodes do not fail, they just get a `None` value.
-    // While doing this, each extracted argument should be checked
-    // that it satisfies the supplemental conditions in the schema (predicates).
-    // Again, if it fails the check, default on an Err() describing in the
-    // most informative possible way why it failed.
-    // Finally, no failures should mean a fully populated arguments struct
-    // can be constructed from the previous arguments, and can be returned.
-
-    // TODO: write reusable `extract_literal` function
-    // (signature: ParseNode<'a> -> Result<Node<'a>, ExpansionError<'a>>)
-    // that will give a custom error message for failing to extract.
-    // e.g. "expected a literal, got a {insert_node_kind}".
-
+    // Generate code for extracting the values of the positional arguments.
+    let mut tuple_variables = vec![quote! { () }];
+    let mut tuple_variable_initializations = vec![];
     for i in 1..=tuple_len {
         let arg_num_name: TokenStream = format!("arg_num_{}", i).parse().unwrap();
+        let arg_type = tuple_types[i].clone();
 
-        let code = quote! {
-            let #arg_num_name = parser.positional.get();
-        };
+        tuple_variables.push(arg_num_name.clone());
+        let Some(props) = arg_struct.positional.get(&i) else { continue };
+        match props.position_type {
+            PositionTypes::Mandatroy => {
+                tuple_variable_initializations.push(quote! {
+                    let #arg_num_name: #arg_type = {
+                        let retrieved = *parser.get(#i)?;
+                        retrieved
+                            .clone()
+                            .try_into()
+                            .expect("node type-checked but unwrap failed")
+                    };
+                });
+            },
+            PositionTypes::Optional => {
+                tuple_variable_initializations.push(quote! {
+                    let #arg_num_name: #arg_type = parser
+                        .get_optional(#i)
+                        .map(|retrieved|
+                            (*retrieved)
+                                .clone()
+                                .try_into()
+                                .expect("node type-checked but unwrap failed"));
+                });
+            },
+            _ => unreachable!(),
+        }
     }
 
+    // Generate code for extracting the trailing arguments.
+    let rest_rust_type = arg_struct.rest.rust_type;
+    let trailing_arguments = quote! {
+        {
+            parser.trailing
+                .iter()
+                .map(|arg| {
+                    let arg: crate::parse::parser::ParseNode = (*arg).clone();
+                    let retrieved: #rest_rust_type = arg.try_into().expect("node type-checked but unwrap failed");
+                    retrieved
+                })
+                .collect()
+        }
+    };
+
     // Assemble code that builds argument parser context and argument struct.
-    let rest_rust_type = arg_struct.rest;
     let out = out.into_iter();
-    quote! {
+    let out = quote! {
         {
             #(#out)*;
-            struct MyArguments {
-                number: #(#tuple_types),*,
-                #(#named_arguments),*,
-                rest: #rest_rust_type,
+            #[derive(Debug, Clone)]
+            struct MyArguments<'a> {
+                number: (#(#tuple_types),*,),
+                #(#named_arguments: #named_types),*,
+                rest: Vec<#rest_rust_type>,
             }
-            let rules = rules.clone();
-            match crate::parse::macros::ArgParser::new(rules, params) {
+            let parser_result = crate::parse::macros::ArgParser::new(rules, #params);
+            match parser_result {
                 Ok(parser) => {
+                    #(#tuple_variable_initializations)*
+                    #(let #named_arguments: #named_types = #named_values;)*
+                    let rest = #trailing_arguments;
                     let args_struct = MyArguments {
-                        ...
+                        number: (#(#tuple_variables),*,),
+                        #(#named_arguments),*,
+                        rest,
                     };
                     Ok((parser, args_struct))  // Returns the parser and args from the scope.
                 },
-                Err(e) => e,
+                Err(e) => Err(e),
             }
         }
-    }.into()
+    }.into();
+    println!("{}", out);
+    out
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -382,7 +476,14 @@ fn parse_argument_type(stream: &mut Peekable<IntoIter>, position_type: PositionT
             Delimiter::Bracket | Delimiter::Parenthesis => {
                 stream.next(); // Consume the list.
                 let group = group.stream().into_iter();
-                quote! { #arg_type(vec![ #(#group),* ]) }
+                // TODO: generate predicates based on syntax: "exact", /match/.
+                let predicates = group.map(|predicate| match predicate {
+                    TokenTree::Literal(literal) => quote! {
+                        crate::parse::macros::ArgPredicate::Exactly(String::from(#literal))
+                    },
+                    token => token.into_token_stream(),
+                });
+                quote! { #arg_type(vec![ #(#predicates)* ]) }
             },
             _ => panic!("Unexpected list delimiter"),
         },

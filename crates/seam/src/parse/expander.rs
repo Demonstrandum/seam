@@ -1,4 +1,3 @@
-use super::macros::*;
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
 
@@ -20,14 +19,17 @@ use colored::*;
 use formatx;
 use unicode_width::UnicodeWidthStr;
 
+// proc macros for generating macros.
+use seam_argparse_proc_macro::arguments;
+
 /// Error type for errors while expanding macros.
 #[derive(Debug, Clone)]
 pub struct ExpansionError<'a>(pub String, pub Site<'a>);
 
 impl<'a> ExpansionError<'a> {
     /// Create a new error given the ML, the message, and the site.
-    pub fn new(msg: &str, site: &Site<'a>) -> Self {
-        Self(msg.to_owned(), site.to_owned())
+    pub fn new<S: Into<String>>(msg: S, site: &Site<'a>) -> Self {
+        Self(msg.into(), site.to_owned())
     }
 }
 
@@ -140,6 +142,12 @@ impl<'a> Expander<'a> {
             contexts.push(copy);
         }
         self.latest_context().unwrap()
+    }
+
+    /// Delete a subcontext from the current context.
+    fn remove_subcontext(&self) -> () {
+        let mut contexts = self.subcontexts.borrow_mut();
+        contexts.pop();
     }
 
     /// Get the latest subparser added.
@@ -430,6 +438,7 @@ impl<'a> Expander<'a> {
 
     fn expand_os_env_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
         let [ref var] = *params else {
             return Err(ExpansionError::new(
                 "`%os/env' expects excatly one argument.",
@@ -453,6 +462,7 @@ impl<'a> Expander<'a> {
 
     fn expand_format_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
         let [format_str, ..] = &*params else {
             return Err(ExpansionError::new(
                 "`%format' expects at a format-string.",
@@ -593,15 +603,24 @@ impl<'a> Expander<'a> {
 
     fn expand_join_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let args: ArgRules = arguments! {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
             mandatory(1): literal,
-            mandatory(2): number fn(_v: ParseNode) { true },
             optional("trailing"): literal["true", "false"],
             rest: literal,
-        };
-        let arg_parser = args.parser(&params);
+        }?;
 
-        todo!()
+        let sep = &args.number.1.value;
+        let trailing = args.trailing.map(|n| n.value == "true").unwrap_or(false);
+        let items: Vec<&str> = args.rest.iter().map(|n| n.value.as_str()).collect();
+        let joined = items.join(sep) + if trailing { sep } else { "" };
+        Ok(Box::new([
+            ParseNode::String(Node {
+                value: joined,
+                site: node.owned_site(),
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            })
+        ]))
     }
 
     fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
@@ -638,6 +657,8 @@ impl<'a> Expander<'a> {
         if let Some(first_node) = expanded.get_mut(0) {
             first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
         }
+        // Finished expanding macro, delete the subcontext.
+        self.remove_subcontext();
         Ok(expanded.into_boxed_slice())
     }
 

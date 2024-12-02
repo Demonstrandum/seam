@@ -132,7 +132,7 @@ impl<'a> Lexer {
     }
 
     /// Check if source-code at current possition starts with a pattern.
-    fn starts_with<P>(&'a self, pat: P) -> bool where P: Pattern<'a> {
+    fn starts_with<P>(&self, pat: P) -> bool where P: Pattern {
         self.source[self.byte_offset.get()..].starts_with(pat)
     }
 
@@ -242,7 +242,7 @@ impl<'a> Lexer {
                 } else {
                     reading_escape = false;
                 }
-                self.increment_byte_offsets(1);
+                let _ = self.consume_char();
             }
             let end_of_string = self.byte_offset.get();
             self.increment_byte_offsets(3);
@@ -273,7 +273,7 @@ impl<'a> Lexer {
                 } else {
                     reading_escape = false;
                 }
-                self.increment_byte_offsets(1);
+                let _ = self.consume_char();
             }
             let end_of_string = self.byte_offset.get();
             self.increment_byte_offsets(1);
