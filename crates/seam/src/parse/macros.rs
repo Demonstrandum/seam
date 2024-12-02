@@ -1,5 +1,6 @@
 //! Expander macros argument parsing utilities.
-use std::{borrow::Borrow, collections::HashMap, iter::zip};
+use std::{collections::HashMap, iter::zip};
+use std::fmt::Write as _;
 
 use regex::Regex;
 
@@ -17,7 +18,15 @@ pub enum ArgPredicate {
 
 impl ArgPredicate {
     pub fn check_node<'tree>(&self, node: &Node<'tree>) -> Result<(), ExpansionError<'tree>> {
-        Ok(())
+        match self {
+            Self::Exactly(value) => if node.value == *value { Ok(()) } else {
+                Err(ExpansionError(
+                    format!("value must be equal to `{}`.", value),
+                    node.site.to_owned(),
+                ))
+            }
+            _ => Ok(())
+        }
     }
     pub fn check<'tree>(&self, node: &ParseNode<'tree>) -> Result<(), ExpansionError<'tree>> {
         Ok(())
@@ -54,9 +63,13 @@ fn check_all_node<'tree>(preds: &Vec<ArgPredicate>, node: &Node<'tree>) -> Resul
     }
     if issues.is_empty() { return Ok(()); }
     // Amalgamate errors.
-    let mut error = String::from("This argument's value did not satisfy one of the follwining:\n");
-    for issue in issues {
-        error += &format!(" * {}", issue.0);
+    let mut error = String::new();
+    let _ = writeln!(error, "This argument's value did not satisfy one of the follwining:");
+    for (i, issue) in issues.iter().enumerate() {
+        let _ = write!(error, "    * {}", issue.0);
+        if i != issues.len() - 1 {
+            let _ = write!(error, "\n");
+        }
     }
     Err(ExpansionError(error, node.site.clone()))
 }
@@ -154,7 +167,7 @@ impl Arg {
 
 /// Positonal or named argument position.
 #[derive(Debug, Clone)]
-enum ArgPos<'a> { Int(usize), Str(&'a str) }
+pub enum ArgPos<'a> { Int(usize), Str(&'a str) }
 /// What kind of types can be matched against
 /// when determining an arguments positionality.
 pub trait ArgMatcher {
@@ -261,7 +274,6 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
         let mut named = HashMap::with_capacity(params.len());
         let mut trailing = vec![];
         let mut mandatory_count: usize = 0;
-        println!("going through params: {:?}", params);
 
         for param in params {
             let matcher: Box<dyn ArgMatcher + 'rules>;
@@ -278,10 +290,8 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
             // Check if they do actually match with any of the rules.
             let mut arg_rule = None;
             for rule in &rules.patterns {
-                println!("calling matcher");
                 // First check that there is a valid place for this argument.
                 let is_valid_argument = (rule.pattern)(&matcher);
-                println!("checked pattern {:?} against {:?} and got {:?}", rule.pattern, matcher.unwrap(), is_valid_argument);
                 if is_valid_argument {
                     arg_rule = Some(rule);
                     break;
@@ -291,7 +301,6 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
             // check if it can be given as trailing argument.
             match arg_rule {
                 Some(rule) => {
-                    println!("matched param against rule: {:?}", rule);
                     // Now check that the types are satisfied.
                     let argtype = rule.argument.argtype();
                     argtype.check(param_node)?;
@@ -302,10 +311,7 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
                     };
                     // Register if a mandatory argument was consumed.
                     match rule.argument {
-                        Arg::Mandatory(..) => {
-                            println!("found mand");
-                            mandatory_count += 1
-                        },
+                        Arg::Mandatory(..) => mandatory_count += 1,
                         _ => {},
                     };
                 },
