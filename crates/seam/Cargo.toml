@@ -21,7 +21,7 @@ name = "seam"
 path = "src/bin.rs"
 
 [dependencies]
-seam_argparse_proc_macro = { path = "../seam_argparse_proc_macro" }
+seam_argparse_proc_macro = { version = "0.1.0", path = "../seam_argparse_proc_macro" }
 colored = "2.1"
 chrono = "0.4"
 unicode-width = "0.2.0"
