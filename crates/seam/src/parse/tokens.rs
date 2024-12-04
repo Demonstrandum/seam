@@ -1,4 +1,4 @@
-use std::fmt::{self, Display};
+use std::{fmt::{self, Display}, hash::{DefaultHasher, Hash, Hasher}};
 use unicode_width::UnicodeWidthStr;
 
 /// Precise source-code location a parsed (or lexed) node (or token).
@@ -40,6 +40,13 @@ impl<'a> Site<'a> {
             bytes_from_start_of_line,
             bytes_span,
         }
+    }
+
+    pub fn uuid(&self) -> String {
+        let mut hasher = DefaultHasher::new();
+        self.source.hash(&mut hasher);
+        let hash = hasher.finish();
+        format!("{}-{}", hash, self.bytes_from_start)
     }
 
     pub const fn unknown() -> Self { UNKNOWN_SITE }

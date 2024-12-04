@@ -91,7 +91,11 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ```
 
 ## Checklist
- - [ ] A *splat* operation: `(%splat (a b c))` becomes `a b c`.
+ - [ ] User `(%error msg)` macro for aborting compilation.
+ - [ ] Pattern-matching `(%match expr (pat1 ...) (pat2 ...) default)` macro.
+   Pattern matching is already implemented for `%define` internally.
+ - [x] Implement `(%strip ...)` which evaluates to the `...` without any of the leading whitespace.
+ - [x] Implement *splat* operation: `(%splat (a b c))` becomes `a b c`.
  - [x] `(%define x %body)` evaluates `%body` eagerly (at definition),
        while `(%define (y) %body)` only evaluates `%body` per call-site `(%y)`.
  - [x] Namespace macro `(%namespace ns (%include "file.sex"))` will prefix all definitions in its body with `ns/`, e.g. `%ns/defn`.
@@ -101,28 +105,23 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] First argument in a macro invocation should have its whitespace stripped.
  - [x] `(%os/env ENV_VAR)` environment variable macro.
  - [ ] Lazy evaluation for *user* macros (like in `ifdef`) with use of new `(%eval ...)` macro.
- - [ ] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
- - [ ] Escape evaluating macros with `\%`.
+ - [x] `(%apply name x y z)` macro which is equivalent to `(%name x y z)`.
+ - [x] `(%lambda (x y) ...)` macro which just evaluates to an secret symbol, e.g. `__lambda0`.
+       used by applying `%apply`, e.g. `(%apply (%lambda (a b) b a) x y)` becomes `y x`
+ - [x] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
  - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.
  - [ ] `(%formatter/text)` can take any other source code, for which it just embeds the expanded code (plain-text formatter).
  - [ ] `(%formatter/html ...)` etc. which call the respective available formatters.
  - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
  - [x] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
- - [ ] Variadic arguments via `&rest` syntax.
- - [ ] Type-checking facilities for user macros (?).
- - [ ] Delayed evaluation of macros by `%(...)` syntax.
-   [ ] For example `%(f x y)` is the same as `(%f x y)`, so you can have `(%define uneval f x)` and then write `%(%uneval y)`.
- - [ ] `%list` macro which expands from `(p (%list a b c))` to `(p a b c)`.
-   Defined as such:
-   ```lisp
-   (%define (list &rest) rest)
-   ```
+ - [x] Variadic arguments via `&rest` syntax.
+ - [ ] Type-checking facilities for user macros.
+ - [x] `%list` macro which expands from `(%list %a %b %c)` to `( %a %b %c )` but *without* calling `%a` as a macro with `%b` and `%c` as argument.
  - [ ] `%for`-loop macro, iterating over `%list`s.
  - [ ] `%glob` which returns a list of files/directories matching a glob.
- - [ ] `%markdown` renders Markdown given to it as html.
- - [ ] `%html`, `%xml`, `%css`, etc. macros which goes into the specific rendering mode.
- - [ ] Add variadic and keyword macro arguments.
+ - [ ] `%markdown` renders Markdown given to it as `%raw` html-string.
+ - [ ] Add keyword macro arguments.
  - [ ] Caching or checking time-stamps as to not regenerate unmodified source files.
  - [ ] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
  - [ ] Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
@@ -133,7 +132,6 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
    (const f (=> (a b) (+ a b))
    ((. console log) (== (f y z) x))
    ```
- - [ ] Add more helpful/generic macros (e.g. `(%include ...)`, which already exists).
  - [ ] Allow for arbitrary embedding of code, that can be run by
    a LISP interpreter (or any other langauge), for example.  (e.g. `(%chez (+ 1 2))` executes
    `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source

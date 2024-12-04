@@ -230,7 +230,7 @@ impl<'a> Lexer {
                 let Some(next_char) = self.peek_char() else {
                     let site = Site::new(&self.source_path, &self.source, line_no, start, line_offset, 3);
                     return Err(LexError(
-                        String::from("Unclosed tripple-quoted string."),
+                        String::from("Unclosed triple-quoted string."),
                         site));
                 };
                 if next_char == '\n' { self.next_line(); }

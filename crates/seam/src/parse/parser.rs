@@ -14,6 +14,19 @@ pub struct Node<'a> {
     pub leading_whitespace: String,
 }
 
+impl<'a> PartialEq for Node<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+impl<'a> Eq for Node<'a> { }
+
+impl<'a> std::hash::Hash for Node<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.value.hash(state)
+    }
+}
+
 impl<'a> Node<'a> {
     pub fn new(value: &str, site: &Site<'a>, leading_whitespace: &str) -> Self {
         Self {
@@ -47,12 +60,84 @@ pub enum ParseNode<'a> {
     },
 }
 
+impl<'a> PartialEq for ParseNode<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Self::Symbol(node0) => match other {
+                Self::Symbol(node1) => node0 == node1,
+                _ => false,
+            },
+            Self::Number(node0) => match other {
+                Self::Number(node1) => node0 == node1,
+                _ => false,
+            },
+            Self::String(node0) => match other {
+                Self::String(node1) => node0 == node1,
+                _ => false,
+            },
+            Self::Raw(node0) => match other {
+                Self::Raw(node1) => node0 == node1,
+                _ => false,
+            },
+            Self::List { nodes: nodes0, .. } => match other {
+                Self::List { nodes: nodes1, .. } => nodes0 == nodes1,
+                _ => false,
+            },
+            Self::Attribute { keyword: keyword0, node: node0, .. } => match other {
+                Self::Attribute { keyword: keyword1, node: node1, .. } =>
+                    keyword0 == keyword1 && node0 == node1,
+                _ => false,
+            }
+        }
+    }
+}
+impl<'a> Eq for ParseNode<'a> { }
+
+impl<'a> std::hash::Hash for ParseNode<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Symbol(node) => {
+                state.write_u8(0);
+                node.hash(state);
+            },
+            Self::Number(node) => {
+                state.write_u8(1);
+                node.hash(state);
+            },
+            Self::String(node) =>{
+                state.write_u8(2);
+                node.hash(state);
+            },
+            Self::Raw(node) => {
+                state.write_u8(3);
+                node.hash(state);
+            },
+            Self::List { nodes, .. } => {
+                state.write_u8(4);
+                nodes.hash(state);
+            },
+            Self::Attribute { keyword, node, .. } => {
+                state.write_u8(5);
+                keyword.hash(state);
+                node.hash(state);
+            },
+        }
+    }
+}
+
 impl<'a> ParseNode<'a> {
+    /// Returns true if and only if self is the empty list `()`.
+    pub fn null(&self) -> bool {
+        match self {
+            Self::List { nodes, .. } => nodes.is_empty(),
+            _ => false,
+        }
+    }
+
     /// Unwrap a literal node if it is a symbol or number.
     pub fn symbolic(&self) -> Option<&Node<'a>> {
         match self {
-            Self::Symbol(ref node)
-            | Self::Number(ref node) => Some(node),
+            Self::Symbol(ref node) | Self::Number(ref node) => Some(node),
             _ => None,
         }
     }
@@ -65,6 +150,22 @@ impl<'a> ParseNode<'a> {
         }
     }
 
+    /// Unwrap a number node into a [`Node<'a>`].
+    pub fn number(&self) -> Option<&Node<'a>> {
+        match self {
+            Self::Number(ref node) => Some(node),
+            _ => None,
+        }
+    }
+
+    /// Unwrap a symbol node into a [`Node<'a>`].
+    pub fn symbol(&self) -> Option<&Node<'a>> {
+        match self {
+            Self::Symbol(ref node) => Some(node),
+            _ => None,
+        }
+    }
+
     /// Unwrap literal (atomic) nodes into their underlying [`Node`].
     pub fn atomic(&self) -> Option<&Node<'a>> {
         match self {
@@ -72,6 +173,22 @@ impl<'a> ParseNode<'a> {
             | Self::Number(ref node)
             | Self::String(ref node)
             | Self::Raw(ref node) => Some(node),
+            _ => None,
+        }
+    }
+
+    /// Unwrap list node into vector of nodes.
+    pub fn list(&self) -> Option<&ParseTree<'a>> {
+        match self {
+            Self::List { nodes, .. } => Some(nodes),
+            _ => None,
+        }
+    }
+
+    /// Unwrap attribute node into keyword and value.
+    pub fn attribute(&self) -> Option<(&str, &Box<ParseNode<'a>>)> {
+        match self {
+            Self::Attribute { keyword, node, .. } => Some((keyword, node)),
             _ => None,
         }
     }
@@ -149,21 +266,13 @@ impl<'a> ParseNode<'a> {
         }
     }
 
+    pub fn is_symbolic(&self) -> bool { self.symbolic().is_some() }
     pub fn is_atomic(&self) -> bool { self.atomic().is_some() }
-
-    pub fn is_list(&self) -> bool {
-        match self {
-            Self::List { .. } => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_attribute(&self) -> bool {
-        match self {
-            Self::Attribute { .. } => true,
-            _ => false,
-        }
-    }
+    pub fn is_symbol(&self) -> bool { self.symbol().is_some() }
+    pub fn is_number(&self) -> bool { self.number().is_some() }
+    pub fn is_string(&self) -> bool { self.string().is_some() }
+    pub fn is_list(&self) -> bool { self.list().is_some() }
+    pub fn is_attribute(&self) -> bool { self.attribute().is_some() }
 }
 
 // Try to convert a [`ParseNode`] enum value into
@@ -408,7 +517,7 @@ impl<'a> Parser {
     }
 }
 
-/// Santize any escaped characters by removing their leading backslash.
+/// Sanitize any escaped characters by removing their leading backslash.
 fn escape_sanitize(string: &str) -> String {
     let mut builder = String::with_capacity(string.len());
     let mut chars = string.chars();
@@ -424,10 +533,10 @@ fn escape_sanitize(string: &str) -> String {
 fn escape_string<'a>(string: &'a str, site: &Site<'a>) -> Result<String, LexError<'a>> {
     string.to_unescaped()
         .map(|s| s.to_string())
-        .map_err(|index| {
+        .map_err(|invalid| {
             LexError(
                 format!("Invalid escape `\\{}' at byte-index {}.",
-                    string.chars().nth(index).unwrap_or('?'), index),
+                    string.chars().nth(invalid.index).unwrap_or('?'), invalid.index),
                 site.clone())
         })
 }

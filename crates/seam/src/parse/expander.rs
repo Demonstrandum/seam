@@ -55,11 +55,12 @@ impl<'a> Error for ExpansionError<'a> { }
 /// A macro consists of:
 /// - its name;
 /// - its argument list (if any);
-/// - and its defintion (i.e. *body*).
+/// - and its definition (i.e. *body*).
 #[derive(Debug, Clone)]
 pub struct Macro<'a> {
+    #[allow(dead_code)]
     name: String,
-    params: Box<[String]>,
+    params: Box<[ParseNode<'a>]>,
     body: Box<[ParseNode<'a>]>
 }
 // TODO: Macro to also store its own scope (at place of definition)
@@ -108,7 +109,7 @@ impl<'a> Expander<'a> {
         self.parser.get_source()
     }
 
-    /// Supply additonal include-directories for the macros
+    /// Supply additional include-directories for the macros
     /// to use when searching for files to include/emebed.
     /// Files are searched for in the order that of the directories.
     pub fn add_includes<T: Iterator>(&mut self, dirs: T)
@@ -180,6 +181,214 @@ impl<'a> Expander<'a> {
         self.definitions.borrow().get(name).map(|m| m.clone())
     }
 
+    /// Pattern-matching variable bind for two nodes (the pattern and the value).
+    fn bind(&self, pattern: &ParseNode<'a>, value: &ParseNode<'a>)
+    -> Result<(), ExpansionError<'a>> {
+        match pattern {
+            // Bind :named argument.
+            ParseNode::Attribute { keyword: k0, node: node0, .. } => match value {
+                ParseNode::Attribute { keyword: k1, node: node1, .. } => if k0 == k1 {
+                    self.bind(node0, node1)
+                } else {
+                    Err(ExpansionError(
+                        format!("Mismatch named argument, looking for :{}, found :{}.", k0, k1),
+                        value.owned_site(),
+                    ))
+                },
+                _ => Err(ExpansionError(
+                    format!("Looking for named argument :{}, got {} instead.", k0, value.node_type()),
+                    value.owned_site(),
+                )),
+            },
+            // Bind a list containing &-rest syntax and :named arguments.
+            ParseNode::List { nodes: nodes0, .. } => match value {
+                ParseNode::List { nodes: nodes1, .. } => self.bind_list(value, nodes0, nodes1),
+                _ => Err(ExpansionError(
+                    format!("Cannot assign {} to a list.", value.node_type()),
+                    value.owned_site(),
+                ))
+            },
+            // Symbols are simply assigned as variable names.
+            ParseNode::Symbol(symbol) => {
+                self.insert_variable(symbol.value.clone(), Rc::new(Macro {
+                    name: symbol.value.clone(),
+                    params: Box::new([]),
+                    body: Box::new([ value.clone() ]),
+                }));
+                Ok(())
+            },
+            // Other literals must match exactly and no assignment takes place.
+            ParseNode::Number(number0) => match value {
+                ParseNode::Number(number1) => if number0 == number1 { Ok(()) } else {
+                    Err(ExpansionError(
+                        format!("Expected the number {} here, got the number {} instead.",
+                            number0.value, number1.value),
+                        number1.site.to_owned(),
+                    ))
+                },
+                _ => Err(ExpansionError(
+                    format!("Expected a number here, got {} instead.", value.node_type()),
+                    value.owned_site(),
+                )),
+            },
+            ParseNode::String(string0) | ParseNode::Raw(string0) => match value {
+                ParseNode::String(string1) | ParseNode::Raw(string1) => if string0 == string1 { Ok(()) } else {
+                    Err(ExpansionError(
+                        format!("Expected the string {:?} here, got the string {:?} instead.",
+                            string0.value, string1.value),
+                        string1.site.to_owned(),
+                    ))
+                },
+                _ => Err(ExpansionError(
+                    format!("Expected a string here, got {} instead.", value.node_type()),
+                    value.owned_site(),
+                )),
+            }
+        }
+    }
+
+    fn bind_list(&self, assigned: &ParseNode<'a>, nodes0: &ParseTree<'a>, nodes1: &ParseTree<'a>)
+    -> Result<(), ExpansionError<'a>> {
+        let mut rest_node = None;
+        let mut rhs_index: usize = 0;
+        let mut expected: usize = 0;
+        let mut rhs_named = HashMap::new();
+        let mut lhs_named = HashMap::new();
+        // We loop this way (not a for loop) so we can control
+        // when exactly we advance to the next LHS node, potentially
+        // doing multiple iterations on the same node.
+        let mut nodes0_iter = nodes0.iter();
+        let mut maybe_node0 = nodes0_iter.next();
+        while let Some(node0) = maybe_node0 {
+            // Named arguments (attributes) can appear out of order.
+            // We'll remember them from later.
+            if let ParseNode::Attribute { keyword, node, .. } = node0 {
+                lhs_named.insert(keyword, node);
+                // A named argument in the LHS does not mean we saw one in the RHS,
+                // so we continue and do not increment rhs_index.
+                maybe_node0 = nodes0_iter.next();
+                continue;
+            }
+            let found_rest = node0.symbol().map(|name| name.value.starts_with('&')).unwrap_or(false);
+            if found_rest {
+                // If another &-rest node has been found, report an error.
+                if rest_node.is_some() {
+                    return Err(ExpansionError::new(
+                        "Found multiple nodes matching &-rest syntax.",
+                        node0.site(),
+                    ));
+                }
+                // Otherwise, make note of the node it corresponds to.
+                rest_node = Some(node0);
+                // Note that we don't increment the `rhs_index`,
+                // since a &rest node does not match the corresponding item in the RHS.
+                maybe_node0 = nodes0_iter.next();
+                continue;
+            }
+            // Assign matched node unless the RHS has too few nodes.
+            if rhs_index >= nodes1.len() {
+                return Err(ExpansionError(
+                    format!("Too few values given, looking for value {} out of only {}.", rhs_index + 1, nodes1.len()),
+                    assigned.owned_site(),
+                ));
+            }
+            let node1 = &nodes1[rhs_index];
+            if let ParseNode::Attribute { keyword, node, .. } = node1 {
+                // This is a named argument given in the RSH, so it does not correspond to
+                // the specific non-named argument in the LHS, so we keep looking until we
+                // get to it, and remember all the named arguments we find along the way.
+                rhs_named.insert(keyword.clone(), node);
+                rhs_index += 1;
+                // Continue without advancing to the next LHS `node0`.
+                continue;
+            }
+            self.bind(node0, node1)?;
+            maybe_node0 = nodes0_iter.next();
+            expected += 1;
+            rhs_index += 1;
+        }
+        // Assign any remaining arguments in the RHS to &rest.
+        let mut rest = vec![];
+        while rhs_index < nodes1.len() {
+            let node1 = &nodes1[rhs_index];
+            if let ParseNode::Attribute { keyword, node, .. } = node1 {
+                // There might be remaining named argument further down the RHS list.
+                rhs_named.insert(keyword.clone(), node);
+            } else {
+                rest.push(node1.clone());
+            }
+            rhs_index += 1;
+        }
+        // Now, whether the &rest argument was given or not...
+        if let Some(rest_node) = rest_node {
+            // Assign the &rest variable to a list containing the extra nodes.
+            let rest_symbol = rest_node.symbol().unwrap();
+            let rest_name = rest_symbol.value[1..].to_owned();
+            self.insert_variable(
+                rest_name.to_owned(),
+                Rc::new(Macro {
+                    name: rest_name,
+                    params: Box::new([]),
+                    body: rest.into_boxed_slice(),
+                }),
+            );
+        } else if let Some(last_excess_node) = rest.last() {
+            // No &rest node mentioned, but excess arguments collected? That's an error.
+            let got = expected + rest.len();
+            return Err(ExpansionError(
+                format!("Excess number of arguments, expected {}, got {}.", expected, got),
+                last_excess_node.owned_site(),
+            ));
+        }
+        // Assign all the named arguments.
+        for (keyword, default) in lhs_named.iter() {
+            // Remove memory of assigned node from RHS.
+            let value = match rhs_named.remove(*keyword) {
+                // Found the named argument in the RHS, so don't use the default.
+                Some(value) => value,
+                // No named corresponding argument in the RHS means we have to use its default.
+                None => default,
+            };
+            // Bind it to a symbol with the same name as the keyword.
+            self.insert_variable(
+                (*keyword).to_owned(),
+                Rc::new(Macro {
+                    name: (*keyword).to_owned(),
+                    params: Box::new([]),
+                    body: Box::new([ *value.clone() ]),
+                }),
+            );
+        }
+        // Any remaining RHS named nodes not covered by the LHS, are excess/errors.
+        if !rhs_named.is_empty() {
+            // Go through RHS named nodes and list all the excess/invalid names.
+            let mut excess_keywords: Vec<&str> = vec![];
+            let mut rhs = rhs_named.iter();
+            let (keyword, some_node) = rhs.next().unwrap(); // Non-empty.
+            excess_keywords.push(keyword);
+            for (keyword, _) in rhs {
+                excess_keywords.push(keyword.as_ref());
+            }
+            let known_keywords: Vec<String> = lhs_named
+                .iter()
+                .map(|(kw, _)| format!(":{}", kw))
+                .collect();
+            let known_keywords = known_keywords.join(", ");
+            let excess_keywords = excess_keywords.join(", ");
+            return Err(ExpansionError(
+                format!(concat!(
+                        "Unknown excess keywords provided, namely: {}.",
+                        "\n", "Expected one of: {}."
+                    ),
+                    excess_keywords,
+                    known_keywords,
+                ),
+                some_node.owned_site(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Define a macro with `(%define a b)` --- `a` is a symbol or a list `(c ...)` where `c` is a symbol.
     /// macro definitions will eliminate any preceding whitespace, so make sure trailing whitespace provides
     /// the whitespace you need.
@@ -188,66 +397,50 @@ impl<'a> Expander<'a> {
         let [head, nodes@..] = &*params else {
             return Err(ExpansionError(
                 format!("`%define` macro takes at least \
-                    two (2) arguments ({} were given.", params.len()),
+                    two (2) arguments, while {} were given.", params.len()),
                 node.owned_site()));
         };
 
         // If head is atomic, we assign to a 'variable'.
-        // Aditionally, we evaluate its body *eagerly*.
-        let def_macro = if let Some(variable) = head.atomic() {
+        // Additionally, we evaluate its body *eagerly*.
+        let (name, arguments, body): (String, Vec<ParseNode<'a>>, ParseTree)
+        = if let Some(variable) = head.symbol() {
             let nodes = nodes.to_owned().into_boxed_slice();
             let body = self.expand_nodes(nodes)?;
-            Rc::new(Macro {
-                name: variable.value.clone(),
-                params: Box::new([]),
-                body,
-            })
+            (variable.value.clone(), vec![], body)
         } else {  // Otherwise, we are assigning to a 'function'.
             let ParseNode::List { nodes: defn_nodes, .. } = head else {
                 return Err(ExpansionError(
                     "First argument of `%define` macro must be a list \
                         or variable name/identifier.".to_owned(),
-                    node.site().to_owned()));
+                    head.site().to_owned()));
             };
             let [name, params@..] = &**defn_nodes else {
                 return Err(ExpansionError(
                     "`%define` macro definition must at \
                         least have a name.".to_owned(),
-                    node.site().to_owned()));
+                    head.site().to_owned()));
             };
-            let mut arguments: Vec<String> = Vec::with_capacity(params.len());
-            for param_node in params {  // Verify arguments are symbols.
-                if let ParseNode::Symbol(param) = param_node {
-                    arguments.push(param.value.clone());
-                } else {
-                    return Err(ExpansionError(
-                        "`define` function arguments must be \
-                            symbols/identifers.".to_owned(),
-                        node.site().to_owned()));
-                };
-            }
+            let arguments: Vec<ParseNode<'a>> = params.to_vec();
             let ParseNode::Symbol(name_node) = name else {
                 return Err(ExpansionError(
                     "`define` function name must be \
                         a symbol/identifier.".to_owned(),
-                    node.site().to_owned()));
+                    name.site().to_owned()));
             };
             let name = name_node.value.clone();
 
-            Rc::new(Macro {
-                name,
-                params: arguments.into_boxed_slice(),
-                body: nodes.to_owned().into_boxed_slice(),
-            })
+            let body = nodes.to_owned().into_boxed_slice();
+            (name, arguments, body)
         };
 
-        self.insert_variable(def_macro.name.to_owned(), def_macro);
+        self.create_macro(name, arguments, body)?;
         Ok(Box::new([]))
     }
 
     /// `(%ifdef symbol a b)` --- `b` is optional, however, if not provided *and*
     /// the symbol is not defined, it will erase the whole expression, and whitespace will not
-    /// be preseved before it. If that's a concern, provide `b` as the empty string `""`.
+    /// be preserved before it. If that's a concern, provide `b` as the empty string `""`.
     fn expand_ifdef_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         if params.len() < 2 || params.len() > 3 {
@@ -260,10 +453,9 @@ impl<'a> Expander<'a> {
         let symbol = if let Some(node) = params[0].atomic() {
             node.value.to_owned()
         } else {
-            // FIXME: Borrow-checker won't let me use params[0].site() as site!
             return Err(ExpansionError(
                 "The first argument to `ifdef` must be a symbol/name.".to_string(),
-                node.site().clone()));
+                params[0].owned_site()));
         };
 
         let mut expanded = if self.has_variable(&symbol) {
@@ -527,12 +719,12 @@ impl<'a> Expander<'a> {
             return Err(ExpansionError::new("Expected a namespace name.", node.site()));
         };
         // Parse options to macro.
-        let mut seperator = "/";  // Default namespace seperator is `/`.
+        let mut separator = "/";  // Default namespace separator is `/`.
         while let Some(ParseNode::Attribute { keyword, node, site, .. }) = args.peek() {
             let _ = args.next();
             match keyword.as_str() {
                 "separator" => match node.atomic() {
-                    Some(Node { value, .. }) => seperator = &value,
+                    Some(Node { value, .. }) => separator = &value,
                     None => return Err(ExpansionError(
                         format!("`%namespace' separator must be a symbol, got a {}.", node.node_type()),
                         node.owned_site())),
@@ -543,13 +735,13 @@ impl<'a> Expander<'a> {
             }
         }
         // Find all the definitions made within the context of the
-        // `%namespace` macro and include the defintion prefixed by
+        // `%namespace` macro and include the definition prefixed by
         // the namespace in the *current* scope.
         {
             let mut self_defs = self.definitions.borrow_mut();
             let defs = context.definitions.borrow();
             for (key, value) in defs.iter() {
-                let new_key = format!("{}{}{}", namespace.value, seperator, key);
+                let new_key = format!("{}{}{}", namespace.value, separator, key);
                 self_defs.insert(new_key, value.clone());
             }
         }
@@ -623,6 +815,185 @@ impl<'a> Expander<'a> {
         ]))
     }
 
+
+
+    fn expand_map_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_, args) = arguments! { [&params]
+            mandatory(1): symbol,
+            rest: any,
+        }?;
+
+        let Some(found) = self.get_variable(&args.number.1.value) else {
+            return Err(ExpansionError::new("Unknown macro.", &args.number.1.site));
+        };
+
+        let callee = ParseNode::Symbol(args.number.1);
+        let mut expanded = vec![];
+        for arg in args.rest {
+            expanded.extend(self.apply_macro(found.clone(), &callee, Box::new([arg]))?);
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
+    /// Filters all null nodes (`()`-nodes) out of the list.
+    fn expand_filter_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_, args) = arguments! { [&params]
+            mandatory(1): symbol,
+            rest: any,
+        }?;
+
+        let Some(found) = self.get_variable(&args.number.1.value) else {
+            return Err(ExpansionError::new("Unknown macro.", &args.number.1.site));
+        };
+
+        let callee = ParseNode::Symbol(args.number.1);
+        let mut expanded = vec![];
+        for arg in args.rest {
+            let nodes = self.apply_macro(found.clone(), &callee, Box::new([arg]))?;
+            match &*nodes {
+                [node,] if node.null() => {},
+                _ => expanded.extend(nodes),
+            };
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
+    fn expand_splat_macro(&self, _node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let mut expanded = vec![];
+        for param in params {
+            if let ParseNode::List { nodes, leading_whitespace, ..} = param {
+                let mut nodes = nodes.to_vec();
+                if let [first, ..] = nodes.as_mut_slice() {
+                    first.set_leading_whitespace(leading_whitespace);
+                }
+                expanded.extend(nodes);
+            } else {
+                expanded.push(param.clone());
+            }
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
+    fn expand_list_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let ParseNode::List { site, end_token, leading_whitespace, .. } = node else {
+            panic!("expand macro call given non-list call node.");
+        };
+        Ok(Box::new([
+            ParseNode::List {
+                nodes: params,
+                site: site.to_owned(),
+                end_token: end_token.to_owned(),
+                leading_whitespace: leading_whitespace.to_owned(),
+            }
+        ]))
+    }
+
+    fn expand_strip_macro(&self, _node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut params = self.expand_nodes(params)?; // Eager.
+        if let Some(first) = params.get_mut(0) {
+            first.set_leading_whitespace(String::new());
+        }
+        Ok(params)
+    }
+
+    fn expand_apply_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): symbol,
+            rest: any,
+        }?;
+
+        let Some(found) = self.get_variable(args.number.1.value.as_ref()) else {
+            return Err(ExpansionError(
+                format!("No such macro found under the name `{}`.", args.number.1.value),
+                args.number.1.site.clone(),
+            ))
+        };
+
+        let callee = &ParseNode::Symbol(args.number.1);
+        self.apply_macro(found, callee, args.rest.into_boxed_slice())
+    }
+
+    fn expand_lambda_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): any,
+            rest: any,
+        }?;
+
+        let head: ParseNode<'a> = args.number.1;
+        let arglist = match head.list() {
+            Some(list) => list.to_vec(),
+            None => match head.symbol() {
+                Some(_) => vec![head.clone()],
+                None => Err(ExpansionError::new(
+                    "Expected argument(s) as symbol or list of arguments.",
+                    head.site(),
+                ))?
+            }
+        };
+
+        let name = format!("__lambda{}", node.site().uuid());
+
+        self.create_macro(name.clone(), arglist, args.rest.into_boxed_slice())?;
+
+        Ok(Box::new([
+            ParseNode::Symbol(Node {
+                value: name,
+                site: node.owned_site(),
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            })
+        ]))
+    }
+
+    fn create_macro(&self, name: String, arglist: Vec<ParseNode<'a>>, body: ParseTree<'a>)
+    -> Result<Rc<Macro<'a>>, ExpansionError<'a>> {
+        // Check excess &-macros are not present.
+        let rest_params: Vec<&ParseNode> = arglist.iter()
+            .filter(|node| node.symbol().map(|name| name.value.starts_with('&')).unwrap_or(false))
+            .collect();
+        match rest_params.as_slice() {
+            [_, excess, ..] => return Err(ExpansionError::new(
+                "Excess `&`-variadic argument capture variables.",
+                excess.site()
+            )),
+            _ => {}
+        };
+
+        // Create and insert macro.
+        let mac = Rc::new(Macro {
+            name: name.clone(),
+            params: arglist.into_boxed_slice(),
+            body,
+        });
+        self.insert_variable(name, mac.clone());
+        Ok(mac)
+    }
+
+    fn apply_macro(&self, mac: Rc<Macro<'a>>, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        // Instance of expansion subcontext.
+        let subcontext = self.create_subcontext();
+        // Construct fake list of arguments and parameters and pattern match on them.
+        subcontext.bind_list(node, &mac.params, &params)?;
+        // Expand body.
+        let expanded = subcontext.expand_nodes(mac.body.clone())?.to_vec();
+        // Finished expanding macro, delete the subcontext.
+        self.remove_subcontext();
+        // Return the body of the evaluated macro.
+        Ok(expanded.into_boxed_slice())
+    }
+
     fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Eagerly evaluate parameters passed to macro invocation.
@@ -633,33 +1004,7 @@ impl<'a> Expander<'a> {
                 &format!("Macro not found (`{}').", name), &node.owned_site()))
         };
 
-        // Instance of expansion subcontext.
-        let subcontext = self.create_subcontext();
-        // Check enough arguments were given.
-        if params.len() != mac.params.len() {
-            return Err(ExpansionError(
-                format!("`%{}` macro expects {} arguments, \
-                        but {} were given.", &mac.name, mac.params.len(),
-                        params.len()), node.site().to_owned()));
-        }
-        // Define arguments for body.
-        for i in 0..params.len() {
-            let arg_macro = Macro {
-                name: mac.params[i].to_owned(),
-                params: Box::new([]),
-                body: Box::new([params[i].clone()]), //< Argument as evaluated at call-site.
-            };
-            subcontext.insert_variable(mac.params[i].to_string(), Rc::new(arg_macro));
-        }
-        // Expand body.
-        let mut expanded = subcontext.expand_nodes(mac.body.clone())?.to_vec();
-        // Inherit leading whitespace of invocation.
-        if let Some(first_node) = expanded.get_mut(0) {
-            first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
-        }
-        // Finished expanding macro, delete the subcontext.
-        self.remove_subcontext();
-        Ok(expanded.into_boxed_slice())
+        self.apply_macro(mac, node, params)
     }
 
     fn expand_invocation(&self,
@@ -679,6 +1024,13 @@ impl<'a> Expander<'a> {
             "namespace" => self.expand_namespace_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
             "join"      => self.expand_join_macro(node, params),
+            "map"       => self.expand_map_macro(node, params),
+            "filter"    => self.expand_filter_macro(node, params),
+            "splat"     => self.expand_splat_macro(node, params),
+            "list"      => self.expand_list_macro(node, params),
+            "strip"     => self.expand_strip_macro(node, params),
+            "apply"     => self.expand_apply_macro(node, params),
+            "lambda"    => self.expand_lambda_macro(node, params),
             "log"       => self.expand_log_macro(node, params),
             "format"    => self.expand_format_macro(node, params),
             "os/env"    => self.expand_os_env_macro(node, params),
@@ -701,7 +1053,12 @@ impl<'a> Expander<'a> {
                                     and cannot be used as a variable.", name),
                                 &sym.site))
                         }
-                        Ok(def.body.clone())
+                        let mut expanded = def.body.clone();
+                        // Inherit the whitespace of the call-site.
+                        if let Some(first) = expanded.first_mut() {
+                            first.set_leading_whitespace(sym.leading_whitespace.to_owned());
+                        }
+                        Ok(expanded)
                     } else {  // Not found.
                         Err(ExpansionError(
                             format!("No such macro, `{}`.", name),
@@ -716,12 +1073,14 @@ impl<'a> Expander<'a> {
                 // Recurse over every element.
                 let len = nodes.len();
                 let mut call = nodes.to_vec().into_iter();
-                let head = call.next();
+                let Some(head) = call.next() else {
+                    return Ok(Box::new([node]));
+                };
 
                 // Pathway: (%_ _ _) macro invocation.
-                if let Some(ref symbol@ParseNode::Symbol(..)) = head {
+                if let Some(symbol) = head.symbol() {
                     let node = self.register_invocation(node.clone());
-                    let name = symbol.atomic().unwrap().value.clone();
+                    let name = symbol.value.clone();
                     if name.starts_with("%") {
                         // Rebuild node...
                         let name = &name[1..];
@@ -737,7 +1096,7 @@ impl<'a> Expander<'a> {
                 }
                 // Otherwise, if not a macro, just expand child nodes incase they are macros.
                 let mut expanded_list = Vec::with_capacity(len);
-                expanded_list.extend(self.expand_node(head.unwrap().clone())?);
+                expanded_list.extend(self.expand_node(head.clone())?);
                 for elem in call {
                     expanded_list.extend(self.expand_node(elem)?);
                 }

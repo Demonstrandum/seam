@@ -107,7 +107,7 @@ impl fmt::Display for dyn MarkupFormatter {
     }
 }
 
-/// Parforms the following escapes:
+/// Performs the following escapes:
 /// - `<` → `&lt;`
 /// - `>` → `&gt;`
 /// - `"` → `&quot;`

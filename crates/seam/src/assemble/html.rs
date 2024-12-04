@@ -148,7 +148,7 @@ impl<'a> HTMLFormatter<'a> {
                 //   - <svg> and <math> contain XML, not HTML;
                 //   - <pre>, <textarea> and <title> contain raw text, not parsed as HTML;
                 //   - <pre> will display raw text found in source code;
-                //   - <textarea> and <title> however, are escapable (evaluete macros);
+                //   - <textarea> and <title> however, are escapable (evaluate macros);
                 //   - <script> contains JavaScript, maybe we will parse this in the future!;
                 //   - <style> contains CSS, which we have our own parser for already.
                 match tag.as_str() {

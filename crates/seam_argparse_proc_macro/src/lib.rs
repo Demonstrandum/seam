@@ -1,6 +1,7 @@
 //! Procedural macro for the `arguments! { ... }`
 //! macro-argument parser for seam macros.
 //! TODO: Convert all `panic!(..)` calls to actual compiler errors.
+#![feature(proc_macro_span)]
 #![feature(proc_macro_diagnostic)]
 
 use std::{collections::{HashMap, HashSet}, iter::Peekable};
@@ -85,6 +86,8 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let stream = stream.into_iter().peekable();
     let mut stream = stream.into_iter();
 
+    let struct_name: TokenStream = format!("MyArgs_{}", Span::call_site().line()).parse().unwrap();
+
     // Parse the provided runtime argument vector.
     let Some(args_vec) = stream.next().and_then(|tokens| match tokens {
         TokenTree::Group(group) => Some(group
@@ -147,12 +150,10 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 }
                 let argument_type = parse_argument_type(&mut stream, PositionTypes::Rest);
                 let arg_type = argument_type.source_code;
-                let code = quote! {
-                    {
-                        let arg_type = #arg_type;
-                        rules.register_remaining(arg_type);
-                    };
-                };
+                let code = quote! {{
+                    let arg_type = #arg_type;
+                    rules.register_remaining(arg_type);
+                }};
                 out.extend(code);
                 // Register argument struct type.
                 let rust_type = argument_type.properties.rust_type;
@@ -166,7 +167,7 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     t => {
                         let span: proc_macro::Span = t.span().unwrap();
                         Diagnostic::spanned(span, proc_macro::Level::Error, "expected a paranthesised pattern matching the argument position here.").emit();
-                        panic!("failed to parse.");
+                        panic!("expected a position pattern.");
                     },
                 };
                 // Skip `:`
@@ -183,19 +184,17 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     PositionTypes::Optional  => quote! { crate::parse::macros::Arg::Optional  },
                     _ => unreachable!(),
                 };
-                let code = quote! {
-                    {
-                        let arg_type = #arg_type;
-                        let arg = #arg_pos(arg_type);
-                        fn position_matcher<'b>(pattern: &Box<dyn crate::parse::macros::ArgMatcher + 'b>) -> bool {
-                            match pattern.into() {
-                                Some(#position_pattern) => true,
-                                _ => false,
-                            }
+                let code = quote! {{
+                    let arg_type = #arg_type;
+                    let arg = #arg_pos(arg_type);
+                    fn position_matcher<'b>(pattern: &Box<dyn crate::parse::macros::ArgMatcher + 'b>) -> bool {
+                        match pattern.into() {
+                            Some(#position_pattern) => true,
+                            _ => false,
                         }
-                        rules.register(position_matcher, arg);
-                    };
-                };
+                    }
+                    rules.register(position_matcher, arg);
+                }};
                 out.extend(code);
                 // Register argument struct type.
                 let rust_type = argument_type.properties.rust_type;
@@ -230,13 +229,13 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 match match token {
                     Some(TokenTree::Punct(punct)) if punct.as_char() == ',' => Ok(()),
                     Some(t) => Err(t.span().unwrap()),
-                    None => Err(Span::call_site()),
+                    None => Ok(()),
                 } {
                     Ok(()) => {},
                     Err(span) => {
                         Diagnostic::spanned(span, proc_macro::Level::Error,
                             "Expected a comma after defining an argument rule.").emit();
-                        panic!("failed to parse");
+                        panic!("expected a comma");
                     }
                 };
                 // Otherwise, switch back to trying tp parse a new rule.
@@ -337,24 +336,25 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     // Assemble code that builds argument parser context and argument struct.
     let out = out.into_iter();
-    let out = quote! {
+    quote! {
         {
             #(#out)*;
-            #[derive(Debug, Clone)]
-            struct MyArguments<'a> {
+            #[allow(non_camel_case_types)]
+            #[derive(Clone, Debug)]
+            struct #struct_name<'a> {
                 number: (#(#tuple_types),*,),
-                #(#named_arguments: #named_types),*,
+                #(#named_arguments: #named_types,)*
                 rest: Vec<#rest_rust_type>,
             }
-            let parser_result = crate::parse::macros::ArgParser::new(rules, #params);
+            let parser_result = crate::parse::macros::ArgParser::new(rules, &node, #params);
             match parser_result {
                 Ok(parser) => {
                     #(#tuple_variable_initializations)*
                     #(let #named_arguments: #named_types = #named_values;)*
                     let rest = #trailing_arguments;
-                    let args_struct = MyArguments {
+                    let args_struct = #struct_name {
                         number: (#(#tuple_variables),*,),
-                        #(#named_arguments),*,
+                        #(#named_arguments,)*
                         rest,
                     };
                     Ok((parser, args_struct))  // Returns the parser and args from the scope.
@@ -362,9 +362,7 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 Err(e) => Err(e),
             }
         }
-    }.into();
-    println!("{}", out);
-    out
+    }.into()
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -487,22 +485,25 @@ fn parse_argument_type(stream: &mut Peekable<IntoIter>, position_type: PositionT
             },
             _ => panic!("Unexpected list delimiter"),
         },
-        // Parse a function which matches the arguemnt.
+        // Parse a function which matches the argument.
         Some(TokenTree::Ident(ident)) if ident.to_string() == "fn" => {
             stream.next(); // Consume the `fn` keyword.
+            // Consume the function argument list.
             let fn_arguments = match stream.next() {
                 Some(TokenTree::Group(group)) => group.stream().into_iter(),
                 None => panic!("Unexpected EOF"),
                 _ => panic!("Unexpected token"),
             };
+            // Consume the function body.
             let Some(fn_body) = stream.next() else { panic!("Unexpected EOF") };
             quote! {{
-                fn predicate(#(#fn_arguments),*) -> bool { #fn_body }
-                let arg_pred = crate::parse::macros::ArgPredicate::Satisfying(Box::new(predicate));
+                fn predicate<'tree>(#(#fn_arguments),*) -> Result<(), ExpansionError<'tree>> { #fn_body }
+                let arg_pred = crate::parse::macros::ArgPredicate::Satisfying(predicate);
                 #arg_type(vec![arg_pred])
             }}
         }
         _ => quote! { #arg_type(vec![]) },
+        //_ => panic!("Unexpected tokens after argument type rules.")
     };
 
     ArgumentType {
