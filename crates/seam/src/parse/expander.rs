@@ -369,16 +369,20 @@ impl<'a> Expander<'a> {
             for (keyword, _) in rhs {
                 excess_keywords.push(keyword.as_ref());
             }
+            let excess_keywords: Vec<String> = excess_keywords
+                .iter()
+                .map(|kw| format!("`:{}`", kw))
+                .collect();
             let known_keywords: Vec<String> = lhs_named
                 .iter()
-                .map(|(kw, _)| format!(":{}", kw))
+                .map(|(kw, _)| format!("`:{}`", kw))
                 .collect();
             let known_keywords = known_keywords.join(", ");
             let excess_keywords = excess_keywords.join(", ");
             return Err(ExpansionError(
                 format!(concat!(
-                        "Unknown excess keywords provided, namely: {}.",
-                        "\n", "Expected one of: {}."
+                        "Unknown excess keywords provided: {};",
+                        " expected keyword arguments are: {}."
                     ),
                     excess_keywords,
                     known_keywords,
@@ -815,8 +819,6 @@ impl<'a> Expander<'a> {
         ]))
     }
 
-
-
     fn expand_map_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
@@ -825,14 +827,9 @@ impl<'a> Expander<'a> {
             rest: any,
         }?;
 
-        let Some(found) = self.get_variable(&args.number.1.value) else {
-            return Err(ExpansionError::new("Unknown macro.", &args.number.1.site));
-        };
-
-        let callee = ParseNode::Symbol(args.number.1);
         let mut expanded = vec![];
         for arg in args.rest {
-            expanded.extend(self.apply_macro(found.clone(), &callee, Box::new([arg]))?);
+            expanded.extend(self.expand_invocation(args.number.1.value.as_ref(), node, Box::new([arg]))?);
         }
         Ok(expanded.into_boxed_slice())
     }
@@ -846,14 +843,9 @@ impl<'a> Expander<'a> {
             rest: any,
         }?;
 
-        let Some(found) = self.get_variable(&args.number.1.value) else {
-            return Err(ExpansionError::new("Unknown macro.", &args.number.1.site));
-        };
-
-        let callee = ParseNode::Symbol(args.number.1);
         let mut expanded = vec![];
         for arg in args.rest {
-            let nodes = self.apply_macro(found.clone(), &callee, Box::new([arg]))?;
+            let nodes = self.expand_invocation(args.number.1.value.as_ref(), node, Box::new([arg]))?;
             match &*nodes {
                 [node,] if node.null() => {},
                 _ => expanded.extend(nodes),
@@ -913,15 +905,7 @@ impl<'a> Expander<'a> {
             rest: any,
         }?;
 
-        let Some(found) = self.get_variable(args.number.1.value.as_ref()) else {
-            return Err(ExpansionError(
-                format!("No such macro found under the name `{}`.", args.number.1.value),
-                args.number.1.site.clone(),
-            ))
-        };
-
-        let callee = &ParseNode::Symbol(args.number.1);
-        self.apply_macro(found, callee, args.rest.into_boxed_slice())
+        self.expand_invocation(args.number.1.value.as_ref(), node, args.rest.into_boxed_slice())
     }
 
     fn expand_lambda_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
