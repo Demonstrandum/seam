@@ -52,7 +52,7 @@ struct ArgumentStructTypes {
 /// Macro that generates an argument parser and builds a custom struct
 /// holding provided arguments, given a schema and the list of arguments.
 /// ### Example
-/// ```
+/// ```ignore
 /// let (parser, args) = arguments! { [&params]
 ///     mandatory(1..=3): literal,
 ///     mandatory(4): number fn(n: ParseNode) {
