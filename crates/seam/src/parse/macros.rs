@@ -21,7 +21,7 @@ impl<'tree> ArgPredicate<'tree> {
         match self {
             Self::Exactly(value) => if node.value == *value { Ok(()) } else {
                 Err(ExpansionError(
-                    format!("value must be equal to `{}`", value),
+                    format!("value must be equal to `{}'", value),
                     node.site.to_owned(),
                 ))
             },
@@ -81,7 +81,12 @@ fn check_all<'tree>(preds: &Vec<ArgPredicate<'tree>>, node: &ParseNode<'tree>) -
     if issues.is_empty() { return Ok(()); }
     // Amalgamate errors.
     let mut error = String::new();
-    let _ = writeln!(error, "This argument's value did not satisfy one of the following:");
+    if let Some(literal) = node.atomic() {
+        let _ = writeln!(error, "This argument's value (`{}') did not satisfy one of the following:", literal.value);
+    } else {
+        let _ = writeln!(error, "This argument's value did not satisfy one of the following:");
+
+    }
     for (i, issue) in issues.iter().enumerate() {
         let _ = write!(error, "    * {}", issue.0);
         if i != issues.len() - 1 {
@@ -127,7 +132,7 @@ impl<'tree> ArgType<'tree> {
             },
             ParseNode::List { nodes, .. } => match self {
                 List(arg_types) => {
-                    if nodes.len() != arg_types.len() {
+                    if arg_types.len() != 0 && nodes.len() != arg_types.len() {
                         return Err(ExpansionError(
                             format!("Unexpected number of items in list, expected {} items, got {}.",
                                 arg_types.len(), nodes.len()),

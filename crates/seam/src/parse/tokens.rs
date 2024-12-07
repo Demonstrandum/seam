@@ -44,7 +44,7 @@ impl<'a> Site<'a> {
 
     pub fn uuid(&self) -> String {
         let mut hasher = DefaultHasher::new();
-        self.source.hash(&mut hasher);
+        self.hash(&mut hasher);
         let hash = hasher.finish();
         format!("{}-{}", hash, self.bytes_from_start)
     }
@@ -95,6 +95,16 @@ impl<'a> Site<'a> {
     pub fn line_column(&self) -> usize {
         let preceeding = &self.source_code[self.start_of_line()..self.bytes_from_start];
         UnicodeWidthStr::width(preceeding) + 1
+    }
+}
+
+impl<'a> Hash for Site<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.source.hash(state);
+        self.line.hash(state);
+        self.bytes_from_start.hash(state);
+        self.bytes_from_start_of_line.hash(state);
+        self.bytes_span.hash(state);
     }
 }
 

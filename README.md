@@ -93,7 +93,15 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ## Checklist
  - [ ] User `(%error msg)` macro for aborting compilation.
  - [ ] Pattern-matching `(%match expr (pat1 ...) (pat2 ...) default)` macro.
-   Pattern matching is already implemented for `%define` internally.
+       Pattern matching is already implemented for `%define` internally.
+ - [ ] The trailing keyword-matching operator. `&&rest` matches excess keyword.
+       Extracting a value from a map `(:a 1 :b 2 :c 3)` is done with:
+       `(%match h (:b () &&_) %b)`.
+ - [ ] `%get` macro: `(%get b (:a 1 :b 2))` becomes `2`; `(%get 0 (a b c))` becomes `a`.
+ - [ ] `(%yaml "...")`, `(%toml "...")` and `(%json "...")` converts
+       whichever config-lang definition into a seam `%define`-definition.
+ - [ ] `(%do ...)` which just expands to the `...`; the identity function.
+ - [ ] Catch expansion errors: `(%try :catch index-error (%do code-to-try) :error the-error (%do caught-error %the-error))`.
  - [x] Implement `(%strip ...)` which evaluates to the `...` without any of the leading whitespace.
  - [x] Implement *splat* operation: `(%splat (a b c))` becomes `a b c`.
  - [x] `(%define x %body)` evaluates `%body` eagerly (at definition),
@@ -109,17 +117,20 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] `(%lambda (x y) ...)` macro which just evaluates to an secret symbol, e.g. `__lambda0`.
        used by applying `%apply`, e.g. `(%apply (%lambda (a b) b a) x y)` becomes `y x`
  - [x] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
+ - [x] `(%concat ...)` which is just `(%join "" ...)`.
+ - [ ] `(%basename )`, `(%dirname)` and `(%extension)` macro for paths.
+ - [ ] Add options to `%glob` for sorting by type, date(s), name, etc.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
  - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.
- - [ ] `(%formatter/text)` can take any other source code, for which it just embeds the expanded code (plain-text formatter).
+ - [ ] `(%formatter/text ...)` can take any seam (sexp) source code, for which it just embeds the expanded code (plain-text formatter).
  - [ ] `(%formatter/html ...)` etc. which call the respective available formatters.
  - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
  - [x] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
  - [x] Variadic arguments via `&rest` syntax.
  - [ ] Type-checking facilities for user macros.
  - [x] `%list` macro which expands from `(%list %a %b %c)` to `( %a %b %c )` but *without* calling `%a` as a macro with `%b` and `%c` as argument.
- - [ ] `%for`-loop macro, iterating over `%list`s.
- - [ ] `%glob` which returns a list of files/directories matching a glob.
+ - [x] `%for`-loop macro, iterating over `%list`s.
+ - [x] `%glob` which returns a list of files/directories matching a glob.
  - [ ] `%markdown` renders Markdown given to it as `%raw` html-string.
  - [ ] Add keyword macro arguments.
  - [ ] Caching or checking time-stamps as to not regenerate unmodified source files.

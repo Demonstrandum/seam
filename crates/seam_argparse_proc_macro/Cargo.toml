@@ -4,7 +4,7 @@ description = "proc-macro crate for seam `arguments!` macro."
 license-file = "../../LICENSE"
 authors = ["Demonstrandum <samuel@knutsen.co>"]
 edition = "2021"
-version = "0.1.0"
+version = "0.1.1"
 
 [lib]
 proc-macro = true

@@ -1,7 +1,6 @@
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
 
-use std::fmt::Display;
 use std::{
     fmt,
     cell::RefCell,
@@ -17,7 +16,9 @@ use std::{
 
 use colored::*;
 use formatx;
+use glob::glob;
 use unicode_width::UnicodeWidthStr;
+use markdown;
 
 // proc macros for generating macros.
 use seam_argparse_proc_macro::arguments;
@@ -377,8 +378,17 @@ impl<'a> Expander<'a> {
                 .iter()
                 .map(|(kw, _)| format!("`:{}`", kw))
                 .collect();
-            let known_keywords = known_keywords.join(", ");
             let excess_keywords = excess_keywords.join(", ");
+            if known_keywords.is_empty() {
+                return Err(ExpansionError(
+                    format!(
+                        "This macro does not expect any keyword arguments, however the following were provided: {}",
+                        excess_keywords,
+                    ),
+                    some_node.owned_site(),
+                ));
+            }
+            let known_keywords = known_keywords.join(", ");
             return Err(ExpansionError(
                 format!(concat!(
                         "Unknown excess keywords provided: {};",
@@ -497,7 +507,7 @@ impl<'a> Expander<'a> {
         };
 
         // Open file, and parse contents!
-        let include_error = |error: Box<dyn Display>| ExpansionError(
+        let include_error = |error: Box<dyn fmt::Display>| ExpansionError(
             format!("{}", error), site.to_owned());
         let mut parser: Result<Parser, ExpansionError> = Err(
             include_error(Box::new("No path tested.")));
@@ -566,11 +576,11 @@ impl<'a> Expander<'a> {
         };
 
         // Open file, and read contents!
-        let embed_error = |error: Box<dyn Display>| ExpansionError(
+        let embed_error = |error: Box<dyn fmt::Display>| ExpansionError(
             format!("{}", error), site.to_owned());
         let mut value: Result<String, ExpansionError> = Err(
             embed_error(Box::new("No path tested.")));
-        // Try all include directories until one is succesful.
+        // Try all include directories until one is successful.
         for include_dir in &self.includes {
             let path = include_dir.join(path);
             value = std::fs::read_to_string(path)
@@ -585,6 +595,141 @@ impl<'a> Expander<'a> {
                 leading_whitespace: node.leading_whitespace().to_owned(),
             }),
         ]))
+    }
+
+    /// The `(%markdown ...)` macro parses both the fenced `--- ... ---` metadata at the
+    /// top of the file (which it expands to `%define`s), and converts the rest of the
+    /// markdown file into a raw-string containing the converted plain HTML.
+    fn expand_markdown_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): string,
+            optional("only"): literal["frontmatter", "content"],
+            optional("separator"): literal,
+        }?;
+        // Parse the makdown content only, the frontmatter only, or do both.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Only { Frontmatter, Content, Both }
+        // Extract arguments and options.
+        let contents = args.number.1.value;
+        let only = args.only.map_or(Only::Both, |option| match option.value.as_ref() {
+            "frontmatter" => Only::Frontmatter,
+            "content" => Only::Content,
+            _ => unreachable!(),
+        });
+        // Default to using the '/' namespace separator for frontmatter definitions.
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        // Live dangerously / trust the author:
+        let danger = markdown::CompileOptions {
+          allow_dangerous_html: true,
+          allow_dangerous_protocol: true,
+          ..markdown::CompileOptions::default()
+        };
+        // Flavour options:
+        let flavour = markdown::ParseOptions {
+            gfm_strikethrough_single_tilde: false,
+            math_text_single_dollar: true,
+            constructs: markdown::Constructs {
+                frontmatter: true,
+                gfm_table: true,
+                gfm_task_list_item: true,
+                ..markdown::Constructs::default()
+            },
+            ..markdown::ParseOptions::default()
+        };
+        // Options.
+        let options = markdown::Options { parse: flavour, compile: danger, };
+
+        // How to convert to HTML.
+        let to_html = | | -> Result<ParseTree, _> {
+            // Convert to HTML.
+            let html = match markdown::to_html_with_options(contents.as_ref(), &options) {
+                Ok(html) => html,
+                Err(err) => return Err(ExpansionError(
+                    format!("Failed to render markdown: {}", err),
+                    args.number.1.site.to_owned(),
+                ))
+            };
+            // Return the raw html.
+            Ok(Box::new([
+                ParseNode::Raw(Node {
+                    value: html,
+                    site: node.owned_site(),
+                    leading_whitespace: node.leading_whitespace().to_owned(),
+                }),
+            ]))
+        };
+
+        // How to extract front-matter.
+        let extract_frontmatter = | | -> Result<(), _> {
+            use markdown::mdast;
+            let ast = match markdown::to_mdast(contents.as_ref(), &options.parse) {
+                Ok(ast) => ast,
+                Err(err) => return Err(ExpansionError(
+                    format!("Failed to render markdown: {}", err),
+                    args.number.1.site.to_owned(),
+                ))
+            };
+            let mdast::Node::Root(root) = ast else { unreachable!() };
+            let root = root.children;
+            let root: &[mdast::Node] = root.as_ref();
+            match root {
+                [mdast::Node::Yaml(mdast::Yaml { value: yaml, .. }), ..] => {
+                    // Parse the YAML and convert it into macro definitions.
+                    let _ = expand_yaml(self, yaml, &sep, node.site())?;
+                    Ok(())
+                },
+                [mdast::Node::Toml(mdast::Toml { value: toml, .. }), ..] => {
+                    // Parse the TOML and convert it into macro definitions.
+                    let _ = expand_toml(self, toml, &sep, node.site())?;
+                    Ok(())
+                },
+                _ => return Err(ExpansionError::new(
+                    "This markdown does not contain any frontmatter.",
+                    &args.number.1.site,
+                ))
+            }
+        };
+
+        match only {
+            Only::Frontmatter => {
+                extract_frontmatter()?;
+                Ok(Box::new([]))
+            },
+            Only::Content     => to_html(),
+            Only::Both => {
+                // Ignore any errors if no frontmatter exists.
+                let _ = extract_frontmatter();
+                to_html()
+            },
+        }
+    }
+
+    fn expand_yaml_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): string,
+            optional("separator"): literal,
+        }?;
+        let yaml = args.number.1.value;
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+
+        expand_yaml(self, &yaml, &sep, node.site())
+    }
+
+    fn expand_toml_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): string,
+            optional("separator"): literal,
+        }?;
+        let yaml = args.number.1.value;
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+
+        expand_toml(self, &yaml, &sep, node.site())
     }
 
     fn expand_date_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
@@ -753,6 +898,81 @@ impl<'a> Expander<'a> {
         Ok(args.cloned().collect())
     }
 
+    fn expand_for_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): any,
+            mandatory(2): symbol["in"],
+            mandatory(3): list,
+            rest: any,
+        }?;
+        let it = args.number.1;
+        let list = args.number.3;
+        let list = self.expand_nodes(list.into_boxed_slice())?;
+        let body = args.rest.into_boxed_slice();
+
+        let context = self.clone();
+        let mut expanded = Vec::with_capacity(list.len());
+        for item in list {
+            context.bind(&it, &item)?;
+            let evaluated = context.expand_nodes(body.clone())?;
+            expanded.extend(evaluated);
+        }
+
+        Ok(expanded.into_boxed_slice())
+    }
+
+    fn expand_glob_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): literal,
+            optional("type"): literal["file", "directory", "any"]
+        }?;
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum PathTypes { File, Dir, Any }
+
+        let path_types = args.r#type.map(|typ| match typ.value.as_ref() {
+            "file" => PathTypes::File,
+            "directory" => PathTypes::Dir,
+            "any" => PathTypes::Any,
+            _ => unreachable!(),
+        }).unwrap_or(PathTypes::Any);
+
+        let pattern: &str = args.number.1.value.as_ref();
+        let paths = match glob(pattern) {
+            Ok(paths) => paths,
+            Err(err) => return Err(ExpansionError(
+                format!("Failed to read glob pattern: {}", err),
+                args.number.1.site.to_owned(),
+            )),
+        };
+
+        let mut expanded = vec![];
+        for path in paths {
+            let path = match path {
+                Ok(path) => path,
+                Err(err) => return Err(ExpansionError(
+                    format!("glob failed: {}", err),
+                    args.number.1.site.to_owned(),
+                )),
+            };
+            let meta = std::fs::metadata(&path).unwrap();
+            match path_types {
+                PathTypes::File if !meta.is_file() => continue,
+                PathTypes::Dir  if !meta.is_dir()  => continue,
+                _ => {},
+            }
+            expanded.push(ParseNode::String(Node {
+                value: path.to_string_lossy().to_string(),
+                site: args.number.1.site.to_owned(),
+                leading_whitespace: args.number.1.leading_whitespace.to_owned(),
+            }));
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
     fn expand_raw_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let mut builder = String::new();
@@ -810,6 +1030,27 @@ impl<'a> Expander<'a> {
         let trailing = args.trailing.map(|n| n.value == "true").unwrap_or(false);
         let items: Vec<&str> = args.rest.iter().map(|n| n.value.as_str()).collect();
         let joined = items.join(sep) + if trailing { sep } else { "" };
+        Ok(Box::new([
+            ParseNode::String(Node {
+                value: joined,
+                site: node.owned_site(),
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            })
+        ]))
+    }
+
+    fn expand_concat_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            rest: literal,
+        }?;
+
+        let joined: String = args.rest.iter().fold
+            (String::new(),
+            |acc, x| acc + x.value.as_ref()
+        );
+
         Ok(Box::new([
             ParseNode::String(Node {
                 value: joined,
@@ -1006,8 +1247,15 @@ impl<'a> Expander<'a> {
             "include"   => self.expand_include_macro(node, params),
             "embed"     => self.expand_embed_macro(node, params),
             "namespace" => self.expand_namespace_macro(node, params),
+            "markdown"  => self.expand_markdown_macro(node, params),
+            "yaml"      => self.expand_yaml_macro(node, params),
+            "json"      => self.expand_yaml_macro(node, params),
+            "toml"      => self.expand_toml_macro(node, params),
+            "glob"      => self.expand_glob_macro(node, params),
+            "for"       => self.expand_for_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
             "join"      => self.expand_join_macro(node, params),
+            "concat"    => self.expand_concat_macro(node, params),
             "map"       => self.expand_map_macro(node, params),
             "filter"    => self.expand_filter_macro(node, params),
             "splat"     => self.expand_splat_macro(node, params),
@@ -1121,4 +1369,251 @@ impl<'a> Expander<'a> {
         let expanded = self.expand_nodes(tree)?;
         Ok(expanded)
     }
+}
+
+/// For example, the YAML below,
+/// ```yaml
+/// a: 2
+/// b: hello
+/// nested:
+///     hello: world
+///     array:
+///     - aa: 0
+///       bb: 1
+///     - aa: 2
+///       bb: 3
+/// ```
+/// evaluates to the following variables:
+/// ```text
+/// (%yaml "...") #=> (:a 2 :b hello (:hello world :array ((:aa 0 :bb 1) (:aa 2 :bb 3)))))
+/// a #=> 2
+/// b #=> "hello"
+/// nested #=> (:hello world :array ((:aa 0 :bb 1) (:aa 2 :bb 3)))
+/// nested/hello #=> world
+/// nested/array #=> ((:aa 0 :bb 1) (:aa 2 :bb 3))
+/// nested/array/0 #=> (:aa 0 :bb 1)
+/// nested/array/1 #=> (:aa 2 :bb 3)
+/// nested/array/0/aa #=> 0
+/// nested/array/0/bb #=> 1
+/// nested/array/1/aa #=> 2
+/// nested/array/1/bb #=> 3
+/// ```
+fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a>) -> Result<ParseTree<'a>, ExpansionError<'a>> {
+    use yaml_rust2 as yaml;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Mode { Map, Seq, }
+
+    struct EventSink<'a, 'b> {
+        /// The macro expansion context.
+        context: &'b Expander<'a>,
+        /// A variable name if the YAML parser is currently parsing
+        /// the assignment of an item in a map.
+        defining: Option<String>,
+        /// The collection of nodes which eventually get assigned
+        /// to a `ParseNode::List` after a map or array is parsed.
+        nodes: Vec<ParseNode<'a>>,
+        parent: Vec<Vec<ParseNode<'a>>>,
+        /// The sequence of qualifiers for a nested name definition.
+        prefix: Vec<String>,
+        /// The namespace separator (e.g. `/` or `.`).
+        sep: String,
+        /// Whether we're parsing a map or a sequence (array).
+        mode: Option<Mode>,
+        modes: Vec<Mode>,
+        /// The site of the original YAML-parsing macro.
+        site: Site<'a>,
+    }
+
+    impl<'a, 'b> EventSink<'a, 'b> {
+        fn qualified(&self, name: &str) -> String {
+            if self.prefix.is_empty() {
+                name.to_owned()
+            } else {
+                let prefix = self.prefix.join(&self.sep);
+                format!("{}{}{}", prefix, self.sep, name)
+            }
+        }
+    }
+
+    impl<'a, 'b> yaml::parser::EventReceiver for EventSink<'a, 'b> {
+        fn on_event(&mut self, event: yaml::Event) {
+            /*
+            eprintln!("---");
+            eprintln!("event:  {:?}", event);
+            eprintln!("mode:   {:?}", self.mode);
+            eprintln!("defn:   {:?}", self.defining);
+            eprintln!("prefix: {:?}", self.prefix);
+            eprintln!("nodes:  [{}]", self.nodes.iter().map(|node| node.to_string()).collect::<Vec<String>>().join("; "));
+            eprintln!("parent: {:?}", self.parent);
+            */
+            let the_dreaded_rparen = crate::parse::tokens::Token::new(
+                crate::parse::tokens::Kind::RParen,
+                ")", "", self.site.clone()
+            );
+            match event {
+                // Either defining a new variable or setting a variable to a string.
+                yaml::Event::Scalar(ref value, ..) => {
+                    let mut string = ParseNode::String(Node {
+                        value: value.clone(),
+                        site: self.site.clone(),
+                        leading_whitespace: String::from(" "),
+                    });
+                    match self.defining {
+                        Some(ref name) => {
+                            // Define a variable under `name` with `value`.
+                            let qualified_name = self.qualified(name);
+                            self.context.insert_variable(qualified_name.clone(), Rc::new(Macro {
+                                name: qualified_name,
+                                params: Box::new([]),
+                                body: Box::new([string.clone()]),
+                            }));
+                            match self.mode {
+                                Some(Mode::Map) => {
+                                    // Wait for next name.
+                                    let keyword = name.clone();
+                                    // Push keyword attribute.
+                                    let attr = ParseNode::Attribute {
+                                        keyword,
+                                        node: Box::new(string),
+                                        site: self.site.clone(),
+                                        leading_whitespace: String::from(if self.nodes.is_empty() {
+                                            ""
+                                        } else {
+                                            " "
+                                        }),
+                                    };
+                                    self.nodes.push(attr);
+                                    self.defining = None;
+                                },
+                                Some(Mode::Seq) => {
+                                    // Push list item.
+                                    if self.nodes.is_empty() {
+                                        string.set_leading_whitespace(String::new());
+                                    }
+                                    self.nodes.push(string);
+                                    self.defining = Some(format!("{}", self.nodes.len()));
+                                },
+                                None => panic!("cannot be defining an item outside of a map or sequence.")
+                            }
+                        },
+                        None => match self.mode {
+                            // Otherwise, we are defining a new variable under this name.
+                            Some(Mode::Map) => self.defining = Some(value.clone()),
+                            Some(Mode::Seq) => panic!("seq is always defining something."),
+                            None => {
+                                // Push item.
+                                if self.nodes.is_empty() {
+                                    string.set_leading_whitespace(String::new());
+                                }
+                                self.nodes.push(string);
+                            },
+                        }
+                    }
+                },
+                // Start parsing a YAML map.
+                yaml::Event::MappingStart(..) => {
+                    if let Some(ref defining) = self.defining {
+                        self.prefix.push(defining.clone());
+                    }
+                    self.defining = None;
+                    self.parent.push(self.nodes.clone());
+                    self.nodes = Vec::new();
+                    if let Some(mode) = self.mode {
+                        self.modes.push(mode);
+                    }
+                    self.mode = Some(Mode::Map);
+                },
+                // Start parsing a YAML sequence.
+                yaml::Event::SequenceStart(..) => {
+                    if let Some(ref defining) = self.defining {
+                        self.prefix.push(defining.clone());
+                    }
+                    self.defining = Some(String::from("0"));
+                    self.parent.push(self.nodes.clone());
+                    self.nodes = Vec::new();
+                    if let Some(mode) = self.mode {
+                        self.modes.push(mode);
+                    }
+                    self.mode = Some(Mode::Seq);
+                },
+                // Assign the built-up map or sequence.
+                yaml::Event::MappingEnd | yaml::Event::SequenceEnd => {
+                    self.mode = self.modes.pop(); // Revert to previous mode.
+                    let nodes = self.nodes.clone(); // Nodes in the list.
+                    self.nodes = self.parent.pop().unwrap_or(Vec::new()); // Regain previous collection of nodes.
+                    self.defining = match self.mode {
+                        Some(Mode::Seq) => Some(format!("{}", self.nodes.len() + 1)),
+                        Some(Mode::Map) | None => None
+                    };
+                    let name = self.prefix.pop(); // The name of this map or sequence.
+                    // Construct a `ParseNode::List` containing the collected nodes.
+                    let list = ParseNode::List {
+                        nodes: nodes.into_boxed_slice(),
+                        site: self.site.clone(),
+                        end_token: the_dreaded_rparen,
+                        leading_whitespace: String::from(if self.nodes.is_empty() {
+                            ""
+                        } else {
+                            " "
+                        }),
+                    };
+                    // Handle inserting map/seq list under a qualified variable into the context.
+                    match name {
+                        Some(ref name) => {
+                            let name = self.qualified(name);
+                            self.context.insert_variable(name.clone(), Rc::new(Macro {
+                                name,
+                                params: Box::new([]),
+                                body: Box::new([list.clone()]),
+                            }));
+                        },
+                        None => {},
+                    };
+                    // Handle growing the current nodes with the map/seq.
+                    self.nodes.push(match self.mode {
+                        Some(Mode::Map) => {
+                            let leading_whitespace = list.leading_whitespace().to_owned();
+                            let mut list = list;
+                            list.set_leading_whitespace(String::from(" "));
+                            ParseNode::Attribute {
+                                keyword: name.clone().expect("must always be defining during a map context."),
+                                node: Box::new(list),
+                                site: self.site.clone(),
+                                leading_whitespace,
+                            }
+                        },
+                        Some(Mode::Seq) | None => list,
+                    });
+                },
+                _ => {},
+            }
+        }
+    }
+
+    let mut sink = EventSink {
+        context,
+        defining: None,
+        prefix: Vec::new(),
+        sep: sep.to_string(),
+        mode: None,
+        modes: Vec::new(),
+        nodes: Vec::new(),
+        parent: Vec::new(),
+        site: site.clone(),
+    };
+
+    yaml::parser::Parser::new_from_str(text)
+        .load(&mut sink, false)
+        .map_err(|err| ExpansionError(
+            format!("Failed to parse yaml: {}", err),
+            site.to_owned()
+        ))?;
+
+    Ok(sink.nodes.into_boxed_slice())
+}
+
+/// See [`expand_yaml`], but for the TOML configuration language instead.
+fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a>) -> Result<ParseTree<'a>, ExpansionError<'a>> {
+    Ok(Box::new([]))
 }

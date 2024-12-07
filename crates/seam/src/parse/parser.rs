@@ -639,33 +639,21 @@ impl<'a> SearchTree<'a> for ParseTree<'a> {
 }
 
 /// Pretty printing for parse nodes.
-#[cfg(feature="debug")]
 impl<'a> fmt::Display for ParseNode<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseNode::Symbol(node)
-            | ParseNode::Number(node)  => write!(f, "{}", &node.value),
-            ParseNode::String(node)    => {
-                if node.value.trim().is_empty() {
-                    write!(f, "")
-                } else {
-                    write!(f, "\"{}\"", &node.value)
+            | ParseNode::Number(node) => write!(f, "{}{}", node.leading_whitespace, node.value),
+            ParseNode::String(node)
+            | ParseNode::Raw(node) => write!(f, "{}{:?}", node.leading_whitespace, node.value),
+            ParseNode::Attribute { keyword, node, leading_whitespace, .. } =>
+                write!(f, "{}:{}{}", leading_whitespace, keyword, &*node),
+            ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
+                write!(f, "{}(", leading_whitespace)?;
+                for node in nodes {
+                    write!(f, "{}", node)?;
                 }
-            },
-            ParseNode::Attribute { keyword, node, .. } => write!(f, ":{} {}",
-                &keyword, &*node),
-            ParseNode::List { nodes, .. } => if nodes.len() == 0 {
-                write!(f, "()")
-            } else if let [single] = &**nodes {
-                write!(f, "({})", single)
-            } else {
-                write!(f, "({}{})", nodes[0],
-                nodes[1..].iter().fold(String::new(), |acc, elem| {
-                    let nested = elem.to_string().split('\n')
-                        .fold(String::new(), |acc, e|
-                            acc + "\n  " + &e);
-                    acc + &nested
-                }))
+                write!(f, "{})", end_token.leading_whitespace)
             }
         }
     }

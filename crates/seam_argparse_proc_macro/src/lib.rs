@@ -24,7 +24,7 @@ enum ParseState {
     PositionPattern(PositionTypes),  //< pattern for position or name.
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ArgumentKind {
     Literal,
     String,
@@ -51,35 +51,35 @@ struct ArgumentStructTypes {
 
 /// Macro that generates an argument parser and builds a custom struct
 /// holding provided arguments, given a schema and the list of arguments.
-/// Example:
-///     ```
-///     let (parser, args) = arguments! { [&params]
-///         mandatory(1..=3): literal,
-///         mandatory(4): number fn(n: ParseNode) {
-///             let n = extract_number(n)?;
-///             let Ok(n): u32 = n.value.parse() else {
-///                 return Err("Argument must be an integer.");
-///             }
-///             if n % 2 == 0 {
-///                 Ok(())
-///             } else {
-///                 Err("Integer must be even.")
-///             }
-///         },
-///         optional("trailing"): literal["true", "false"],
-///         rest: number
-///     }?;
-///     println!("first  arg {:?}", args.number.1); // a literal (Node<'a>).
-///     println!("second arg {:?}", args.number.2); // a literal (Node<'a>).
-///     println!("third  arg {:?}", args.number.3); // a literal (Node<'a>).
-///     println!("fourth arg {:?}", args.number.4); // an even integer (Node<'a>).
-///     if let Some(named) = args.trailing {
-///         println!("named arg {:?}", named);  // the literal "true" or "false".
-///     }
-///     for arg in args.rest {
-///         println!("trailing arg: {:?}", arg);  // trailing number args.
-///     }
-///     ```
+/// ### Example
+/// ```
+/// let (parser, args) = arguments! { [&params]
+///     mandatory(1..=3): literal,
+///     mandatory(4): number fn(n: ParseNode) {
+///         let n = extract_number(n)?;
+///         let Ok(n): u32 = n.value.parse() else {
+///             return Err("Argument must be an integer.");
+///         }
+///         if n % 2 == 0 {
+///             Ok(())
+///         } else {
+///             Err("Integer must be even.")
+///         }
+///     },
+///     optional("trailing"): literal["true", "false"],
+///     rest: number
+/// }?;
+/// println!("first  arg {:?}", args.number.1); // a literal (Node<'a>).
+/// println!("second arg {:?}", args.number.2); // a literal (Node<'a>).
+/// println!("third  arg {:?}", args.number.3); // a literal (Node<'a>).
+/// println!("fourth arg {:?}", args.number.4); // an even integer (Node<'a>).
+/// if let Some(named) = args.trailing {
+///     println!("named arg {:?}", named);  // the literal "true" or "false".
+/// }
+/// for arg in args.rest {
+///     println!("trailing arg: {:?}", arg);  // trailing number args.
+/// }
+/// ```
 #[proc_macro]
 pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let stream: TokenStream = stream.into();
@@ -261,7 +261,7 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut named_values: Vec<TokenStream> = vec![];
     for (name, props) in arg_struct.named.iter() {
         let rust_type = props.rust_type.clone();
-        let variable: proc_macro2::TokenStream = name.parse().unwrap();
+        let variable: proc_macro2::TokenStream = format!("r#{}", name).parse().unwrap();
         named_types.push(rust_type);
         named_arguments.push(variable);
         match props.position_type {
@@ -321,17 +321,28 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     // Generate code for extracting the trailing arguments.
     let rest_rust_type = arg_struct.rest.rust_type;
-    let trailing_arguments = quote! {
-        {
-            parser.trailing
-                .iter()
-                .map(|arg| {
-                    let arg: crate::parse::parser::ParseNode = (*arg).clone();
-                    let retrieved: #rest_rust_type = arg.try_into().expect("node type-checked but unwrap failed");
-                    retrieved
-                })
-                .collect()
+    let has_rest_capture = arg_struct.rest.kind != ArgumentKind::None;
+    let trailing_arguments = if has_rest_capture {
+        quote! {
+            {
+                parser.trailing
+                    .iter()
+                    .map(|arg| {
+                        let arg: crate::parse::parser::ParseNode = (*arg).clone();
+                        let retrieved: #rest_rust_type = arg.try_into().expect("node type-checked but unwrap failed");
+                        retrieved
+                    })
+                    .collect()
+            }
         }
+    } else {
+        quote! { () }
+    };
+
+    let rest_struct_decl = if has_rest_capture {
+        quote! {rest: Vec<#rest_rust_type>}
+    } else {
+        quote! {rest: ()}
     };
 
     // Assemble code that builds argument parser context and argument struct.
@@ -344,7 +355,7 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
             struct #struct_name<'a> {
                 number: (#(#tuple_types),*,),
                 #(#named_arguments: #named_types,)*
-                rest: Vec<#rest_rust_type>,
+                #rest_struct_decl
             }
             let parser_result = crate::parse::macros::ArgParser::new(rules, &node, #params);
             match parser_result {
@@ -459,7 +470,7 @@ fn parse_argument_type(stream: &mut Peekable<IntoIter>, position_type: PositionT
             "symbol"   => (AK::Symbol,   quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Symbol   }),
             "number"   => (AK::Number,   quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Number   }),
             "symbolic" => (AK::Symbolic, quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Symbolic }),
-            "list" => (AK::List, quote! { Vec<crate::parse::parser::Node<'a>> }, quote! { crate::parse::macros::ArgType::List }),
+            "list" => (AK::List, quote! { Vec<crate::parse::parser::ParseNode<'a>> }, quote! { crate::parse::macros::ArgType::List }),
             "any" => (AK::Any, quote! { crate::parse::parser::ParseNode<'a> }, quote! { crate::parse::macros::ArgType::Any }),
             _ => panic!("Invalid argument type: `{}`", ident),
         },
