@@ -5,7 +5,7 @@ use unicode_width::UnicodeWidthStr;
 /// Including references to the source-code and path, line number, bytes offsets
 /// within the file, including from start of line, and the number of
 /// bytes it occupies in the source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Site<'a> {
     pub source: &'a str,
     pub source_code: &'a str,
@@ -128,7 +128,7 @@ pub enum Kind {
     Keyword,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Token<'a> {
     pub kind: Kind,
     pub value: &'a str,

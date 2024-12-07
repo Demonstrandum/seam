@@ -223,9 +223,9 @@ impl<'a> ParseNode<'a> {
             Self::Symbol(node)
             | Self::Number(node)
             | Self::String(node)
-            | Self::Raw(node) => node.site.clone(),
-            Self::List { site, .. } => site.clone(),
-            Self::Attribute { site, .. } => site.clone(),
+            | Self::Raw(node) => node.site,
+            Self::List { site, .. } => *site,
+            Self::Attribute { site, .. } => *site,
         }
     }
 

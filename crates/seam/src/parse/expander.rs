@@ -697,7 +697,7 @@ impl<'a> Expander<'a> {
                 extract_frontmatter()?;
                 Ok(Box::new([]))
             },
-            Only::Content     => to_html(),
+            Only::Content => to_html(),
             Only::Both => {
                 // Ignore any errors if no frontmatter exists.
                 let _ = extract_frontmatter();
@@ -1438,15 +1438,6 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
 
     impl<'a, 'b> yaml::parser::EventReceiver for EventSink<'a, 'b> {
         fn on_event(&mut self, event: yaml::Event) {
-            /*
-            eprintln!("---");
-            eprintln!("event:  {:?}", event);
-            eprintln!("mode:   {:?}", self.mode);
-            eprintln!("defn:   {:?}", self.defining);
-            eprintln!("prefix: {:?}", self.prefix);
-            eprintln!("nodes:  [{}]", self.nodes.iter().map(|node| node.to_string()).collect::<Vec<String>>().join("; "));
-            eprintln!("parent: {:?}", self.parent);
-            */
             let the_dreaded_rparen = crate::parse::tokens::Token::new(
                 crate::parse::tokens::Kind::RParen,
                 ")", "", self.site.clone()
@@ -1606,7 +1597,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
     yaml::parser::Parser::new_from_str(text)
         .load(&mut sink, false)
         .map_err(|err| ExpansionError(
-            format!("Failed to parse yaml: {}", err),
+            format!("Failed to parse YAML: {}", err),
             site.to_owned()
         ))?;
 
@@ -1615,5 +1606,135 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
 
 /// See [`expand_yaml`], but for the TOML configuration language instead.
 fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a>) -> Result<ParseTree<'a>, ExpansionError<'a>> {
-    Ok(Box::new([]))
+    use toml;
+
+    let table: toml::Table = text.parse()
+        .map_err(|err| ExpansionError(
+            format!("Failed to parse TOML: {}", err),
+            site.to_owned()
+        ))?;
+
+    struct Traverser<'a, 'b> {
+        context: &'b Expander<'a>,
+        site: Site<'a>,
+        sep: String,
+        prefix: Vec<String>,
+        the_dreaded_rparen: crate::parse::tokens::Token<'a>,
+    }
+
+    fn whitespace(leading: bool) -> String {
+        if leading { String::new() } else { String::from(" ") }
+    }
+
+    impl<'a, 'b> Traverser<'a, 'b> {
+        fn qualified(&self, name: &str) -> String {
+            if self.prefix.is_empty() {
+                name.to_owned()
+            } else {
+                let prefix = self.prefix.join(&self.sep);
+                format!("{}{}{}", prefix, self.sep, name)
+            }
+        }
+
+        fn define(&self, name: String, node: ParseNode<'a>) {
+            let qualified = self.qualified(&name);
+            self.context.insert_variable(qualified, Rc::new(Macro {
+                name,
+                params: Box::new([]),
+                body: Box::new([node]),
+            }));
+        }
+
+        fn traverse_value(&mut self, value: toml::Value, leading: bool) -> ParseNode<'a> {
+            match value {
+                toml::Value::Array(array) => self.traverse_array(array, leading),
+                toml::Value::Table(table) => self.traverse_table(table, leading),
+                toml::Value::String(string) => ParseNode::String(Node {
+                    value: string,
+                    site: self.site,
+                    leading_whitespace: whitespace(leading),
+                }),
+                toml::Value::Integer(int) => ParseNode::Number(Node {
+                    value: format!("{}", int),
+                    site: self.site,
+                    leading_whitespace: whitespace(leading),
+                }),
+                toml::Value::Float(float) => ParseNode::Number(Node {
+                    value: format!("{}", float),
+                    site: self.site,
+                    leading_whitespace: whitespace(leading),
+                }),
+                toml::Value::Datetime(date) => ParseNode::Number(Node {
+                    value: format!("{}", date),
+                    site: self.site,
+                    leading_whitespace: whitespace(leading),
+                }),
+                toml::Value::Boolean(boolean) => ParseNode::Number(Node {
+                    value: format!("{}", boolean),
+                    site: self.site,
+                    leading_whitespace: whitespace(leading),
+                }),
+            }
+        }
+
+        fn traverse_array(&mut self, array: Vec<toml::Value>, leading: bool) -> ParseNode<'a> {
+            let mut first = true;
+            let mut expanded = vec![];
+            let mut i = 0;
+            for value in array {
+                let name = format!("{}", i);
+                self.prefix.push(name.clone());
+                let node = self.traverse_value(value, first);
+                self.prefix.pop();
+                self.define(name, node.clone());
+                expanded.push(node);
+                first = false;
+                i += 1;
+            }
+            ParseNode::List {
+                nodes: expanded.into_boxed_slice(),
+                site: self.site,
+                end_token: self.the_dreaded_rparen,
+                leading_whitespace: whitespace(leading)
+            }
+        }
+
+        fn traverse_table(&mut self, table: toml::Table, leading: bool) -> ParseNode<'a> {
+            let mut nodes = vec![];
+            let mut first = true;
+            for (keyword, value) in table {
+                self.prefix.push(keyword.clone());
+                let node = self.traverse_value(value, false);
+                self.prefix.pop();
+                self.define(keyword.clone(), node.clone());
+                nodes.push(ParseNode::Attribute {
+                    keyword,
+                    node: Box::new(node),
+                    site: self.site,
+                    leading_whitespace: whitespace(first),
+                });
+                first = false;
+            }
+            let nodes = nodes.into_boxed_slice();
+            ParseNode::List {
+                nodes,
+                site: self.site,
+                end_token: self.the_dreaded_rparen,
+                leading_whitespace: whitespace(leading)
+            }
+        }
+    }
+
+    Ok(Box::new([
+        Traverser {
+            context,
+            site: *site,
+            prefix: Vec::new(),
+            sep: sep.to_owned(),
+            the_dreaded_rparen: crate::parse::tokens::Token::new(
+                crate::parse::tokens::Kind::RParen,
+                ")", "", *site
+            ),
+        }.traverse_table(table, true)
+    ]))
 }
