@@ -97,10 +97,10 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [ ] The trailing keyword-matching operator. `&&rest` matches excess keyword.
        Extracting a value from a map `(:a 1 :b 2 :c 3)` is done with:
        `(%match h (:b () &&_) %b)`.
- - [ ] `%get` macro: `(%get b (:a 1 :b 2))` becomes `2`; `(%get 0 (a b c))` becomes `a`.
- - [ ] `(%yaml "...")`, `(%toml "...")` and `(%json "...")` converts
+ - [x] `%get` macro: `(%get b (:a 1 :b 2))` becomes `2`; `(%get 0 (a b c))` becomes `a`.
+ - [x] `(%yaml "...")`, `(%toml "...")` and `(%json "...")` converts
        whichever config-lang definition into a seam `%define`-definition.
- - [ ] `(%do ...)` which just expands to the `...`; the identity function.
+ - [x] `(%do ...)` which just expands to the `...`; the identity function.
  - [ ] Catch expansion errors: `(%try :catch index-error (%do code-to-try) :error the-error (%do caught-error %the-error))`.
  - [x] Implement `(%strip ...)` which evaluates to the `...` without any of the leading whitespace.
  - [x] Implement *splat* operation: `(%splat (a b c))` becomes `a b c`.
@@ -131,19 +131,11 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] `%list` macro which expands from `(%list %a %b %c)` to `( %a %b %c )` but *without* calling `%a` as a macro with `%b` and `%c` as argument.
  - [x] `%for`-loop macro, iterating over `%list`s.
  - [x] `%glob` which returns a list of files/directories matching a glob.
- - [ ] `%markdown` renders Markdown given to it as `%raw` html-string.
- - [ ] Add keyword macro arguments.
+ - [x] `%markdown` renders Markdown given to it as `%raw` html-string.
+ - [x] Add keyword macro arguments.
  - [ ] Caching or checking time-stamps as to not regenerate unmodified source files.
  - [ ] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
  - [ ] Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
- - [ ] Maybe: a whole JavaScript front-end, e.g.
-   ```lisp
-   (let x 2)
-   (let (y 1) (z 1))
-   (const f (=> (a b) (+ a b))
-   ((. console log) (== (f y z) x))
-   ```
- - [ ] Allow for arbitrary embedding of code, that can be run by
-   a LISP interpreter (or any other langauge), for example.  (e.g. `(%chez (+ 1 2))` executes
-   `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source
-   (i.e. `3`).
+ - [ ] Allow for arbitrary embedding of code with their REPLs, that can be run by
+   a LISP interpreter (or any other language), for example.  (e.g. `(%chez (+ 1 2))` executes
+   `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source (i.e. `3`).

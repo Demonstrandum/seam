@@ -487,6 +487,11 @@ impl<'a> Expander<'a> {
         Ok(expanded)
     }
 
+    fn expand_do_macro(&self, _node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        self.expand_nodes(params)
+    }
+
     fn expand_include_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
@@ -730,6 +735,57 @@ impl<'a> Expander<'a> {
         let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
 
         expand_toml(self, &yaml, &sep, node.site())
+    }
+
+    fn expand_get_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): literal,
+            mandatory(2): any,
+            optional("separator"): literal,
+        }?;
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        let path = args.number.1.value.split(&sep);
+
+        let mut view;
+        let mut node = args.number.2;
+        for item in path {
+            // Verify the current node is a list so it can be indexed.
+            if let Some(list) = node.list() {
+                view = list.to_vec();
+            } else {
+                return Err(ExpansionError(
+                    format!("Cannot `%get' on {} node.",node.node_type()),
+                    node.owned_site(),
+                ))
+            }
+            let mut got = Err(ExpansionError(
+                format!("Could not find attribute with keyword `:{}`.", item),
+                node.owned_site(),
+            ));
+            if let Ok(index) = item.parse::<usize>()  {
+                // Try to find n-th element of `view`.
+                got = view.get(index).map(|node| node.clone()).ok_or(ExpansionError(
+                    format!("Index {} is out of bounds in list of length {}.", index, view.len()),
+                    node.owned_site(),
+                ));
+            }
+            if got.is_err() {
+                // Try to find :item attribute in list.
+                for node in view.iter() {
+                    if let ParseNode::Attribute { keyword, node, .. } = node {
+                        if item == keyword {
+                            got = Ok(*node.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            node = got?;
+        }
+
+        Ok(Box::new([node]))
     }
 
     fn expand_date_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
@@ -1242,6 +1298,8 @@ impl<'a> Expander<'a> {
         match name {
             "define"    => self.expand_define_macro(node, params),
             "ifdef"     => self.expand_ifdef_macro(node, params),
+            "do"        => self.expand_do_macro(node, params),
+            "get"       => self.expand_get_macro(node, params),
             "raw"       => self.expand_raw_macro(node, params),
             "string"    => self.expand_string_macro(node, params),
             "include"   => self.expand_include_macro(node, params),
