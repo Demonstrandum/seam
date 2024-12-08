@@ -1,7 +1,6 @@
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
 
-use std::f32::consts::E;
 use std::{
     fmt,
     cell::RefCell,
@@ -332,7 +331,7 @@ impl<'a> Expander<'a> {
         let mut rest = vec![];
         while rhs_index < nodes1.len() {
             let node1 = &nodes1[rhs_index];
-            if let ParseNode::Attribute { keyword, node, .. } = node1 {
+            if let ParseNode::Attribute { keyword, .. } = node1 {
                 // There might be remaining named argument further down the RHS list.
                 rhs_named.insert(keyword.clone(), node1);
             } else {
