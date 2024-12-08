@@ -1,6 +1,7 @@
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
 
+use std::f32::consts::E;
 use std::{
     fmt,
     cell::RefCell,
@@ -251,10 +252,11 @@ impl<'a> Expander<'a> {
     fn bind_list(&self, assigned: &ParseNode<'a>, nodes0: &ParseTree<'a>, nodes1: &ParseTree<'a>)
     -> Result<(), ExpansionError<'a>> {
         let mut rest_node = None;
+        let mut rest_kw_node = None;
         let mut rhs_index: usize = 0;
         let mut expected: usize = 0;
-        let mut rhs_named = HashMap::new();
-        let mut lhs_named = HashMap::new();
+        let mut rhs_named = HashMap::new(); // Contains keyword -> attribute node.
+        let mut lhs_named = HashMap::new(); // Contains keyword -> attr. value node (defaults).
         // We loop this way (not a for loop) so we can control
         // when exactly we advance to the next LHS node, potentially
         // doing multiple iterations on the same node.
@@ -270,6 +272,24 @@ impl<'a> Expander<'a> {
                 maybe_node0 = nodes0_iter.next();
                 continue;
             }
+            // Check for &&-rest keyword matching syntax.
+            let found_kw_rest = node0.symbol().map(|name| name.value.starts_with("&&")).unwrap_or(false);
+            if found_kw_rest {
+                // If another &&-rest node has been found, report an error.
+                if rest_kw_node.is_some() {
+                    return Err(ExpansionError::new(
+                        "Found multiple nodes matching named argument &&-rest syntax.",
+                        node0.site(),
+                    ));
+                }
+                // Otherwise, make note of the node it corresponds to.
+                rest_kw_node = Some(node0);
+                // Note that we don't increment the `rhs_index`,
+                // since a &&rest node does not match the corresponding item in the RHS.
+                maybe_node0 = nodes0_iter.next();
+                continue;
+            }
+            // Check for &-rest regular argument matching syntax.
             let found_rest = node0.symbol().map(|name| name.value.starts_with('&')).unwrap_or(false);
             if found_rest {
                 // If another &-rest node has been found, report an error.
@@ -294,11 +314,11 @@ impl<'a> Expander<'a> {
                 ));
             }
             let node1 = &nodes1[rhs_index];
-            if let ParseNode::Attribute { keyword, node, .. } = node1 {
+            if let ParseNode::Attribute { keyword, .. } = node1 {
                 // This is a named argument given in the RSH, so it does not correspond to
                 // the specific non-named argument in the LHS, so we keep looking until we
                 // get to it, and remember all the named arguments we find along the way.
-                rhs_named.insert(keyword.clone(), node);
+                rhs_named.insert(keyword.clone(), node1);
                 rhs_index += 1;
                 // Continue without advancing to the next LHS `node0`.
                 continue;
@@ -314,7 +334,7 @@ impl<'a> Expander<'a> {
             let node1 = &nodes1[rhs_index];
             if let ParseNode::Attribute { keyword, node, .. } = node1 {
                 // There might be remaining named argument further down the RHS list.
-                rhs_named.insert(keyword.clone(), node);
+                rhs_named.insert(keyword.clone(), node1);
             } else {
                 rest.push(node1.clone());
             }
@@ -346,7 +366,7 @@ impl<'a> Expander<'a> {
             // Remove memory of assigned node from RHS.
             let value = match rhs_named.remove(*keyword) {
                 // Found the named argument in the RHS, so don't use the default.
-                Some(value) => value,
+                Some(attr) => attr.attribute().unwrap().1,
                 // No named corresponding argument in the RHS means we have to use its default.
                 None => default,
             };
@@ -359,6 +379,24 @@ impl<'a> Expander<'a> {
                     body: Box::new([ *value.clone() ]),
                 }),
             );
+        }
+        // Capture remaining named arguments under the &&-macro.
+        if let Some(rest_kw_node) = rest_kw_node {
+            let rest_kw_symbol = rest_kw_node.symbol().unwrap();
+            let rest_kw_name = &rest_kw_symbol.value[2..];
+            // Collect the named arguments.
+            let attrs: Vec<String> = rhs_named.keys().cloned().collect();
+            let mut nodes = Vec::with_capacity(attrs.len());
+            for attr in attrs {
+                let named = rhs_named.remove(&attr).unwrap();
+                nodes.push(named.clone());
+            }
+            // Insert the &&-variable.
+            self.insert_variable(rest_kw_name.to_string(), Rc::new(Macro {
+                name: rest_kw_name.to_string(),
+                params: Box::new([]),
+                body: nodes.into_boxed_slice(),
+            }));
         }
         // Any remaining RHS named nodes not covered by the LHS, are excess/errors.
         if !rhs_named.is_empty() {
@@ -401,6 +439,53 @@ impl<'a> Expander<'a> {
             ));
         }
         Ok(())
+    }
+
+    /// `%(match expr (pattrern1 body1) (pattern2 body2) ...)`
+    fn expand_match_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let (expr, patterns)  = match &*params {
+            [expr, patterns@..] => (expr, patterns),
+            _ => return Err(ExpansionError::new(
+                "Match syntax is: `(%match expr [...(pattern value)])`.",
+                node.site(),
+            )),
+        };
+        let [expr,] = &*self.expand_node(expr.clone())? else {
+            return Err(ExpansionError::new(
+                "Value to match against must be single value.",
+                expr.site(),
+            ));
+        };
+        for pattern in patterns {
+            let Some(pattern_list) = pattern.list() else {
+                return Err(ExpansionError::new(
+                    "Pattern in `%match` must be a list `(pattern ...value)`.",
+                    pattern.site(),
+                ));
+            };
+            let [pattern, value@..] = &**pattern_list else {
+                return Err(ExpansionError::new(
+                    "Empty pattern not allowed in `%match`.",
+                    pattern.site(),
+                ));
+            };
+            let [pattern,] = &*self.expand_node(pattern.clone())? else {
+                return Err(ExpansionError::new(
+                    "Pattern must evaluate to a single node.",
+                    pattern.site(),
+                ));
+            };
+            // Now attempt to `bind` against pattern, successful binds means
+            // we evaluate the RHS of the list and return that.
+            let subcontext = self.clone(); // Subscope.
+            if let Ok(()) = subcontext.bind(pattern, expr) {
+                return subcontext.expand_nodes(value.into());
+            }
+        }
+
+        // No match means no nodes are produced.
+        Ok(Box::new([]))
     }
 
     /// Define a macro with `(%define a b)` --- `a` is a symbol or a list `(c ...)` where `c` is a symbol.
@@ -1239,13 +1324,25 @@ impl<'a> Expander<'a> {
 
     fn create_macro(&self, name: String, arglist: Vec<ParseNode<'a>>, body: ParseTree<'a>)
     -> Result<Rc<Macro<'a>>, ExpansionError<'a>> {
-        // Check excess &-macros are not present.
+        // Check excess &-macros and &&-macros are not present.
         let rest_params: Vec<&ParseNode> = arglist.iter()
-            .filter(|node| node.symbol().map(|name| name.value.starts_with('&')).unwrap_or(false))
+            .filter(|node| node.symbol().map(
+                |name| name.value.starts_with('&') && !name.value.starts_with("&&"))
+            .unwrap_or(false))
             .collect();
         match rest_params.as_slice() {
             [_, excess, ..] => return Err(ExpansionError::new(
                 "Excess `&`-variadic argument capture variables.",
+                excess.site()
+            )),
+            _ => {}
+        };
+        let kw_rest_params: Vec<&ParseNode> = arglist.iter()
+            .filter(|node| node.symbol().map(|name| name.value.starts_with("&&")).unwrap_or(false))
+            .collect();
+        match kw_rest_params.as_slice() {
+            [_, excess, ..] => return Err(ExpansionError::new(
+                "Excess `&&`-variadic named argument capture variables.",
                 excess.site()
             )),
             _ => {}
@@ -1297,6 +1394,7 @@ impl<'a> Expander<'a> {
         //   expand the macros in its arguments individually.
         match name {
             "define"    => self.expand_define_macro(node, params),
+            "match"     => self.expand_match_macro(node, params),
             "ifdef"     => self.expand_ifdef_macro(node, params),
             "do"        => self.expand_do_macro(node, params),
             "get"       => self.expand_get_macro(node, params),
@@ -1722,12 +1820,12 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
-                toml::Value::Datetime(date) => ParseNode::Number(Node {
+                toml::Value::Datetime(date) => ParseNode::Symbol(Node {
                     value: format!("{}", date),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
-                toml::Value::Boolean(boolean) => ParseNode::Number(Node {
+                toml::Value::Boolean(boolean) => ParseNode::Symbol(Node {
                     value: format!("{}", boolean),
                     site: self.site,
                     leading_whitespace: whitespace(leading),

@@ -92,11 +92,11 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 
 ## Checklist
  - [ ] User `(%error msg)` macro for aborting compilation.
- - [ ] Pattern-matching `(%match expr (pat1 ...) (pat2 ...) default)` macro.
+ - [x] Pattern-matching `(%match expr (pat1 ...) (pat2 ...))` macro.
        Pattern matching is already implemented for `%define` internally.
- - [ ] The trailing keyword-matching operator. `&&rest` matches excess keyword.
+ - [x] The trailing keyword-matching operator. `&&rest` matches excess keyword.
        Extracting a value from a map `(:a 1 :b 2 :c 3)` is done with:
-       `(%match h (:b () &&_) %b)`.
+       `(%match %h ((:b default &&_) %b))`.
  - [x] `%get` macro: `(%get b (:a 1 :b 2))` becomes `2`; `(%get 0 (a b c))` becomes `a`.
  - [x] `(%yaml "...")`, `(%toml "...")` and `(%json "...")` converts
        whichever config-lang definition into a seam `%define`-definition.
