@@ -5,7 +5,7 @@ keywords = ["markup", "lisp", "macro", "symbolic-expression", "sexp"]
 license-file = "../../LICENSE"
 readme = "../../README.md"
 homepage = "https://git.knutsen.co/seam"
-version = "0.4.1"
+version = "0.4.2"
 authors = ["Demonstrandum <samuel@knutsen.co>"]
 edition = "2021"
 

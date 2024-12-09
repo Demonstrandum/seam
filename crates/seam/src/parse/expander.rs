@@ -875,20 +875,26 @@ impl<'a> Expander<'a> {
     fn expand_date_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?;
-        let [date_format] = &*params else {
-            return Err(ExpansionError::new(
-                "`%date' macro only expects one formatting argument.",
-                node.site()))
+        let (_, args) = arguments! { [&params]
+            mandatory(1): literal,
+            optional(2): number,
+        }?;
+        let date_format = args.number.1.value;
+        let time = if let Some(time) = args.number.2 {
+            let Ok(secs) = time.value.parse::<i64>() else {
+                return Err(ExpansionError::new(
+                    "Timestamp not a valid UNIX epoch signed integer.",
+                    &time.site,
+                ));
+            };
+            match chrono::DateTime::from_timestamp(secs, 0) {
+                Some(time) => time,
+                None => return Err(ExpansionError::new("Invalid timestamp.", &time.site)),
+            }
+        } else {
+            chrono::Utc::now()
         };
-
-        let Some(Node { value: date_format, .. }) = date_format.atomic() else {
-            return Err(ExpansionError::new(
-                "`%date' macro needs string (or atomic) \
-                formatting argument.", node.site()))
-        };
-
-        let now = chrono::Local::now();
-        let formatted = now.format(&date_format).to_string();
+        let formatted = time.format(&date_format).to_string();
         let date_string_node = ParseNode::String(Node {
             value: formatted,
             site: node.site().clone(),
@@ -898,7 +904,7 @@ impl<'a> Expander<'a> {
     }
 
     /// `(%log ...)` logs to `STDERR` when called and leaves *no* node behind.
-    /// This means whitespace preceeding `(%log ...)` will be removed!
+    /// This means whitespace preceding `(%log ...)` will be removed!
     fn expand_log_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let mut words = Vec::with_capacity(params.len());

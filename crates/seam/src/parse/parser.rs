@@ -236,9 +236,9 @@ impl<'a> ParseNode<'a> {
             Self::Symbol(ref node)
             | Self::Number(ref node)
             | Self::String(ref node)
-            | Self::Raw(ref node) => &node.leading_whitespace,
-            Self::List { ref leading_whitespace, .. } => leading_whitespace,
-            Self::Attribute { ref leading_whitespace, .. } => leading_whitespace,
+            | Self::Raw(ref node) => node.leading_whitespace.as_str(),
+            Self::List { leading_whitespace, .. } => leading_whitespace.as_str(),
+            Self::Attribute { leading_whitespace, .. } => leading_whitespace.as_str(),
         }
     }
 
