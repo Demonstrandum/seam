@@ -64,4 +64,20 @@ mod tests {
             "\"2024-12-09 20:42:46\""
         );
     }
+
+    #[test]
+    fn test_date_timezones() {
+        assert_output_eq(
+            "(%date \"%Y-%m-%d %H:%M:%S%Z\" 999999999 :timezone +1)",
+            "\"2001-09-09 02:46:39+01:00\""
+        );
+        assert_output_eq(
+            "(%date \"%Y-%m-%d %H:%M:%S%Z\" 999999999 :timezone +3.5)",
+            "\"2001-09-09 05:16:39+03:30\""
+        );
+        assert_output_eq(
+            "(%date \"%Y-%m-%d %H:%M:%S%Z\" 999999999 :timezone -2.25)",
+            "\"2001-09-08 23:31:39-02:15\""
+        );
+    }
 }

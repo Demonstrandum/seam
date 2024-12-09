@@ -36,7 +36,7 @@ fn character_kind(character: char)
         '('       => Some(tokens::Kind::LParen),
         ')'       => Some(tokens::Kind::RParen),
         '0'..='9' => Some(tokens::Kind::Number),
-        '-'       => Some(tokens::Kind::Number),
+        '+' | '-' => Some(tokens::Kind::Number),
         ':'       => Some(tokens::Kind::Keyword),
         '"'       => Some(tokens::Kind::String),
         _         => Some(tokens::Kind::Symbol)

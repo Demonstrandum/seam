@@ -15,6 +15,7 @@ use std::{
 };
 
 use colored::*;
+use fixed;
 use formatx;
 use glob::glob;
 use unicode_width::UnicodeWidthStr;
@@ -878,7 +879,18 @@ impl<'a> Expander<'a> {
         let (_, args) = arguments! { [&params]
             mandatory(1): literal,
             optional(2): number,
+            optional("timezone"): number,
         }?;
+        let timezone_offset: i32 = match args.timezone {
+            Some(ref offset) => match offset.value.parse::<fixed::types::I32F32>() {
+                Ok(offset) => (offset * 60 * 60).round().to_num(),
+                Err(_) => return Err(ExpansionError::new(
+                    "Invalid (decimal) timezone offset in hours.",
+                    &offset.site,
+                )),
+            },
+            None => 0,
+        };
         let date_format = args.number.1.value;
         let time = if let Some(time) = args.number.2 {
             let Ok(secs) = time.value.parse::<i64>() else {
@@ -894,6 +906,14 @@ impl<'a> Expander<'a> {
         } else {
             chrono::Utc::now()
         };
+
+        let Some(timezone) = chrono::FixedOffset::east_opt(timezone_offset) else {
+            return Err(ExpansionError(
+                format!("Failed to compute UTC+(east) offset of {} seconds", timezone_offset),
+                args.timezone.map_or(node.owned_site(), |node| node.site),
+            ));
+        };
+        let time = time.with_timezone(&timezone);
         let formatted = time.format(&date_format).to_string();
         let date_string_node = ParseNode::String(Node {
             value: formatted,

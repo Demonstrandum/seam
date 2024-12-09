@@ -25,6 +25,7 @@ path = "src/bin.rs"
 seam_argparse_proc_macro = { version = "0.1.1", path = "../seam_argparse_proc_macro" }
 colored = "2.1"
 chrono = "0.4"
+fixed = "1.28.0"
 unicode-width = "0.2.0"
 descape = "2.0.3"
 formatx = "0.2.2"
