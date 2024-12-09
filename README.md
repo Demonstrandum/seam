@@ -6,15 +6,15 @@
 
 Because all markup is terrible, especially XML/SGML and derivatives.
 
-But mainly, for easier static markup code generation, such as with
-macros, code includes and such.
+But mainly, for easier static markup code generation, such as by
+macros and code includes and such.
 
 ## Try it out
 
-This may be used as a library, such as from within a server,
+This may be used as a Rust library, such as from within a server,
 generating HTML (or any other supported markup) before it is served to the
-client.  Personally, I am currently just using the `seam` binary to statically
-generate some personal and project websites.
+client.  Personally, I just use the `seam` binary to statically
+generate my personal websites through a Makefile.
 
 Read the [USAGE.md](USAGE.md) file for code examples and documentation.
 
@@ -28,7 +28,7 @@ Read the [USAGE.md](USAGE.md) file for code examples and documentation.
 
 ### Installation
 
-You may clone the repo, then build and install
+You may clone the repo, then build and install by
 ```sh
 git clone git://git.knutsen.co/seam
 cd seam
@@ -46,7 +46,7 @@ with it, comes `cargo`.
 
 ### Using The Binary
 
-You may use it by doing
+You may use it by passing in a file and piping from STDOUT.
 ```sh
 seam test.sex --html > test.html
 ```
@@ -54,13 +54,13 @@ seam test.sex --html > test.html
 `test.sex` contains your symbolic-expressions, which is used to generate
 HTML, saved in `test.html`.
 
-Likewise, you may read from `STDIN`
+Likewise, you may read from STDIN
 ```sh
 seam --html < example.sex > example.html
-# Which is the same as
+# ... same as
 cat example.sex | seam --html > example.html
 ```
-You may also very well use here-strings and here-docs, if your shell
+You may also use here-strings or here-docs, if your shell
 supports it.
 ```sh
 seam --html <<< "(p Hello World)"
@@ -92,6 +92,11 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 
 ## Checklist
  - [ ] User `(%error msg)` macro for aborting compilation.
+ - [ ] List reverse macro `(%reverse (...))`.
+ - [x] Sorting macro `(%sort (...))` which sorts alphanumerically on literals.
+       Allow providing a `:key` to sort "by field": e.g. sort by title name `(%sort :key (%lambda ((:title _ &&_)) %title) %posts)`
+ - [ ] Extend the strftime-style `(%date)` to be able to read UNIX numeric timestamps and display relative to timezones.
+       Add complementary strptime-style utility `(%timestamp)` to convert date-strings to timestamps (relative to a timezone).
  - [x] Pattern-matching `(%match expr (pat1 ...) (pat2 ...))` macro.
        Pattern matching is already implemented for `%define` internally.
  - [x] The trailing keyword-matching operator. `&&rest` matches excess keyword.
@@ -118,8 +123,8 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
        used by applying `%apply`, e.g. `(%apply (%lambda (a b) b a) x y)` becomes `y x`
  - [x] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
  - [x] `(%concat ...)` which is just `(%join "" ...)`.
- - [ ] `(%basename )`, `(%dirname)` and `(%extension)` macro for paths.
- - [ ] Add options to `%glob` for sorting by type, date(s), name, etc.
+ - [ ] `(%basename)`, `(%dirname)` and `(%extension)` macros for paths.
+ - [x] Add options to `%glob` for sorting by type, date(s), name, etc.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
  - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.
  - [ ] `(%formatter/text ...)` can take any seam (sexp) source code, for which it just embeds the expanded code (plain-text formatter).

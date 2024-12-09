@@ -1067,18 +1067,34 @@ impl<'a> Expander<'a> {
         let params = self.expand_nodes(params)?; // Eager.
         let (_parser, args) = arguments! { [&params]
             mandatory(1): literal,
-            optional("type"): literal["file", "directory", "any"]
+            optional("type"): literal["file", "directory", "any"],
+            optional("sort"): literal["modified", "created", "name", "type", "none"],
+            optional("order"): literal["ascending", "descending"],
         }?;
 
-        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum PathTypes { File, Dir, Any }
 
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum SortBy { Modified, Created, Name, Type, None }
+        // Default to both files and dirs.
         let path_types = args.r#type.map(|typ| match typ.value.as_ref() {
             "file" => PathTypes::File,
             "directory" => PathTypes::Dir,
             "any" => PathTypes::Any,
             _ => unreachable!(),
         }).unwrap_or(PathTypes::Any);
+        // Default to no ordering.
+        let sortby = args.sort.map(|typ| match typ.value.as_ref() {
+            "modified" => SortBy::Modified,
+            "created" => SortBy::Created,
+            "name" => SortBy::Name,
+            "type" => SortBy::Type,
+            "none" => SortBy::None,
+            _ => unreachable!(),
+        }).unwrap_or(SortBy::None);
+        // Default to ascending order.
+        let is_ascending_order = args.order.map_or(true, |node| node.value == "ascending");
 
         let pattern: &str = args.number.1.value.as_ref();
         let paths = match glob(pattern) {
@@ -1089,7 +1105,81 @@ impl<'a> Expander<'a> {
             )),
         };
 
-        let mut expanded = vec![];
+        struct GlobPath<'a> {
+            node: ParseNode<'a>,
+            meta: std::fs::Metadata,
+            path: PathBuf,
+            sortby: SortBy,
+        }
+        impl<'a> PartialEq for GlobPath<'a> {
+            fn eq(&self, other: &Self) -> bool {
+                self.path == other.path
+            }
+        }
+        impl<'a> Eq for GlobPath<'a> { }
+        impl<'a> PartialOrd for GlobPath<'a> {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                if self.sortby != other.sortby { return None };
+                let sortby = self.sortby;
+                match sortby {
+                    SortBy::Created => {
+                        let Ok(d0) = self.meta.created() else { return Some(std::cmp::Ordering::Less) };
+                        let Ok(d1) = other.meta.created() else { return Some(std::cmp::Ordering::Less) };
+                        if d0 == d1 { // If created at the same time, default to alphabetical.
+                            self.path.partial_cmp(&other.path)
+                        } else {
+                            // "ascending" order should be in terms of age.
+                            d0.partial_cmp(&d1).map(|ord| ord.reverse()) // New < Old
+                        }
+                    },
+                    SortBy::Modified => {
+                        let Ok(d0) = self.meta.modified() else { return Some(std::cmp::Ordering::Less) };
+                        let Ok(d1) = other.meta.modified() else { return Some(std::cmp::Ordering::Less) };
+                        if d0 == d1 { // If modified at the same time, default to alphabetical.
+                            self.path.partial_cmp(&other.path)
+                        } else {
+                            // "ascending" order should be in terms of recentness.
+                            d0.partial_cmp(&d1).map(|ord| ord.reverse()) // New < Old
+                        }
+                    },
+                    SortBy::Name => self.path.partial_cmp(&other.path),
+                    SortBy::Type => {
+                        // First sort by file vs. dir.
+                        if self.meta.is_dir() && other.meta.is_file() {
+                            Some(std::cmp::Ordering::Less) // Folder < File
+                        } else if self.meta.is_file() && other.meta.is_dir() {
+                            Some(std::cmp::Ordering::Greater) // File > Folder
+                        } else if let Some(ext) = self.path.extension() {
+                            if let Some(other_ext) = other.path.extension() {
+                                if ext == other_ext {
+                                    self.path.partial_cmp(&other.path) // Sort by name when extension are the same.
+                                } else {
+                                    ext.partial_cmp(other_ext) // Sort by different file extensions before name.
+                                }
+                            } else {
+                                Some(std::cmp::Ordering::Greater) // With ext. > No ext.
+                            }
+                        } else {
+                            if let Some(_) = other.path.extension() {
+                                Some(std::cmp::Ordering::Less) // No ext. < With ext.
+                            } else {
+                                self.path.partial_cmp(&other.path) // Sort by name when neither have extensions.
+                            }
+                        }
+                    }
+                    SortBy::None => Some(std::cmp::Ordering::Less),
+                }
+            }
+        }
+        impl<'a> Ord for GlobPath<'a> {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                assert_eq!(self.sortby, other.sortby);
+                self.partial_cmp(other).unwrap()
+            }
+        }
+
+        // Collect paths.
+        let mut collection: std::collections::BTreeSet<GlobPath> = Default::default();
         for path in paths {
             let path = match path {
                 Ok(path) => path,
@@ -1104,13 +1194,22 @@ impl<'a> Expander<'a> {
                 PathTypes::Dir  if !meta.is_dir()  => continue,
                 _ => {},
             }
-            expanded.push(ParseNode::String(Node {
+            let node = ParseNode::String(Node {
                 value: path.to_string_lossy().to_string(),
                 site: args.number.1.site.to_owned(),
-                leading_whitespace: args.number.1.leading_whitespace.to_owned(),
-            }));
+                leading_whitespace: String::from(" "),
+            });
+            collection.insert(GlobPath { node, meta, path, sortby });
         }
-        Ok(expanded.into_boxed_slice())
+        let mut expanded = if is_ascending_order {
+            collection.into_iter().map(|path| path.node).collect::<ParseTree>()
+        } else {
+            collection.into_iter().rev().map(|path| path.node).collect::<ParseTree>()
+        };
+        if let Some(first) = expanded.first_mut() {
+            first.set_leading_whitespace(String::new());
+        }
+        Ok(expanded)
     }
 
     fn expand_raw_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
@@ -1154,6 +1253,101 @@ impl<'a> Expander<'a> {
                 site: node.owned_site(),
                 leading_whitespace: node.leading_whitespace().to_owned(),
             })
+        ]))
+    }
+
+    fn expand_sort_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): any,
+            optional("order"): literal["ascending", "descending"],
+            optional("key"): symbol,
+        }?;
+
+        let call_node = node;
+        let key_fn_site = args.key.clone().map_or(call_node.owned_site(), |key_fn| key_fn.site);
+        let key_fn = args.key.map_or(String::from("do"), |key| key.value);
+        let ascending = args.order.map_or(true, |order| order.value == "ascending");
+
+        /// Keeps track of nodes and the key by which to sort them by.
+        struct SortItem<'b> {
+            node: ParseNode<'b>,
+            key: String,
+        }
+
+        let ParseNode::List { nodes, site, end_token, .. } = args.number.1 else {
+            return Err(ExpansionError(
+                format!("`%sort` expects a list, was given {}.", args.number.1.node_type()),
+                args.number.1.owned_site(),
+            ))
+        };
+
+        let mut items = Vec::with_capacity(nodes.len());
+        let mut whitespace = Vec::with_capacity(nodes.len()); // Preserve whitespace order.
+        for node in nodes {
+            let key = match self.expand_invocation(&key_fn, call_node, Box::new([node.clone()])) {
+                Ok(key) => key,
+                Err(err) => return Err(ExpansionError(
+                    format!("Error evaluating `:key` macro:\n{}", err),
+                    key_fn_site,
+                ))
+            };
+            if key.len() > 1 {
+                return Err(ExpansionError(
+                    format!("`:key` macro expanded to more than one value (namely {} values).", key.len()),
+                    key_fn_site,
+                ));
+            } else if key.len() != 1 {
+                return Err(ExpansionError::new(
+                    "`:key` macro did not yield any value to compare against.",
+                    &key_fn_site,
+                ));
+            }
+
+            let key = key[0].clone();
+            let key_type = key.node_type();
+            let key_site = key.owned_site();
+            let Some(key) = key.into_atomic() else {
+                return Err(ExpansionError(
+                    format!("List items in `%sort` must resolve to literals under `:key`; got {} instead.", key_type),
+                    key_site,
+                ));
+            };
+            let key = key.value;
+            whitespace.push(node.leading_whitespace().to_owned());
+            items.push(SortItem { node, key });
+        }
+        // Whitespace is reversed so .pop() removes the first item.
+        whitespace.reverse();
+        // Sort by the evaluated .key string.
+        items.sort_by(|item0, item1| {
+            let (item0, item1) = if ascending { (item0, item1) } else { (item1, item0) };
+            // First try to compare as integers, failing that, as floats, and then strings.
+            if let (Ok(n0), Ok(n1)) = (item0.key.parse::<i64>(), item1.key.parse::<i64>()) {
+                return n0.cmp(&n1)
+            }
+            if let (Ok(f0), Ok(f1)) = (item0.key.parse::<f64>(), item1.key.parse::<f64>()) {
+                if let Some(ord) = f0.partial_cmp(&f1) {
+                    return ord;
+                }
+            }
+            item0.key.cmp(&item1.key)
+        });
+        // Extract nodes and amend whitespace.
+        let nodes = items.into_iter().map(|item| {
+            let mut node = item.node;
+            node.set_leading_whitespace(whitespace.pop().unwrap());
+            node
+        }).collect();
+
+        Ok(Box::new([
+            ParseNode::List {
+                nodes,
+                site,
+                end_token,
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            }
         ]))
     }
 
@@ -1408,6 +1602,7 @@ impl<'a> Expander<'a> {
             "toml"      => self.expand_toml_macro(node, params),
             "glob"      => self.expand_glob_macro(node, params),
             "for"       => self.expand_for_macro(node, params),
+            "sort"      => self.expand_sort_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
             "join"      => self.expand_join_macro(node, params),
             "concat"    => self.expand_concat_macro(node, params),

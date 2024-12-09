@@ -81,3 +81,7 @@ pub fn tree_builder_stream(stream: &mut impl io::Read)
     stream.read_to_string(&mut contents)?;
     Ok(tree_builder(Option::<&Path>::None, contents))
 }
+
+#[cfg(test)]
+#[path = "./tests.rs"]
+mod tests;

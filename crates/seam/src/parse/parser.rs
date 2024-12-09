@@ -450,7 +450,7 @@ impl<'a> Parser {
         // Check we are able to consume next expression for keyword's value.
         {
             let no_expr_error = ParseError(
-                format!("Keyword `:{}' expects an expression follwing it.", token.value),
+                format!("Keyword `:{}' expects an expression following it.", token.value),
                 token.site.to_owned());
             if self.lexer.eof() { Err(no_expr_error.clone())? ;}
             match self.lexer.peek()? {
