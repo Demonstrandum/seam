@@ -1344,6 +1344,32 @@ impl<'a> Expander<'a> {
         ]))
     }
 
+    fn expand_number_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            rest: literal,
+        }?;
+        let mut expanded = Vec::with_capacity(args.rest.len());
+        for node in args.rest {
+            expanded.push(ParseNode::Number(node));
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
+    fn expand_symbol_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            rest: literal,
+        }?;
+        let mut expanded = Vec::with_capacity(args.rest.len());
+        for node in args.rest {
+            expanded.push(ParseNode::Symbol(node));
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
     fn expand_reverse_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
@@ -1708,6 +1734,8 @@ impl<'a> Expander<'a> {
             "get"       => self.expand_get_macro(node, params),
             "raw"       => self.expand_raw_macro(node, params),
             "string"    => self.expand_string_macro(node, params),
+            "number"    => self.expand_number_macro(node, params),
+            "symbol"    => self.expand_symbol_macro(node, params),
             "include"   => self.expand_include_macro(node, params),
             "embed"     => self.expand_embed_macro(node, params),
             "namespace" => self.expand_namespace_macro(node, params),

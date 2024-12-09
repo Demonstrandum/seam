@@ -93,10 +93,10 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ## Checklist
  - [ ] User `(%error msg)` macro for aborting compilation.
  - [x] List reverse macro `(%reverse (...))`.
- - [ ] Literal/atomic conversion macros: `(%symbol lit)`, `(%number lit)`, `(%string lit)`, `(%raw lit)`.
+ - [x] Literal/atomic conversion macros: `(%symbol lit)`, `(%number lit)`, `(%string lit)`, `(%raw lit)`.
  - [x] Sorting macro `(%sort (...))` which sorts alphanumerically on literals.
        Allow providing a `:key` to sort "by field": e.g. sort by title name `(%sort :key (%lambda ((:title _ &&_)) %title) %posts)`
- - [ ] Extend the strftime-style `(%date)` to be able to read UNIX numeric timestamps and display relative to timezones.
+ - [x] Extend the strftime-style `(%date)` to be able to read UNIX numeric timestamps and display relative to timezones.
        Add complementary strptime-style utility `(%timestamp)` to convert date-strings to timestamps (relative to a timezone).
  - [x] Pattern-matching `(%match expr (pat1 ...) (pat2 ...))` macro.
        Pattern matching is already implemented for `%define` internally.
