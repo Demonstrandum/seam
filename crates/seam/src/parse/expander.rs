@@ -1256,6 +1256,33 @@ impl<'a> Expander<'a> {
         ]))
     }
 
+    fn expand_reverse_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?; // Eager.
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): list,
+        }?;
+        let list = args.number.1;
+        let mut reversed = Vec::with_capacity(list.len());
+
+        for i in 0..list.len() {
+            let mut item = list[list.len() - i - 1].clone();
+            item.set_leading_whitespace(list[i].leading_whitespace().to_owned());
+            reversed.push(item);
+        }
+
+        let ParseNode::List { site, end_token, leading_whitespace, .. }
+            = params[0].clone() else { unreachable!() };
+        Ok(Box::new([
+            ParseNode::List {
+                nodes: reversed.into_boxed_slice(),
+                site,
+                end_token,
+                leading_whitespace
+            }
+        ]))
+    }
+
     fn expand_sort_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
@@ -1603,6 +1630,7 @@ impl<'a> Expander<'a> {
             "glob"      => self.expand_glob_macro(node, params),
             "for"       => self.expand_for_macro(node, params),
             "sort"      => self.expand_sort_macro(node, params),
+            "reverse"   => self.expand_reverse_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
             "join"      => self.expand_join_macro(node, params),
             "concat"    => self.expand_concat_macro(node, params),

@@ -92,7 +92,7 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 
 ## Checklist
  - [ ] User `(%error msg)` macro for aborting compilation.
- - [ ] List reverse macro `(%reverse (...))`.
+ - [x] List reverse macro `(%reverse (...))`.
  - [x] Sorting macro `(%sort (...))` which sorts alphanumerically on literals.
        Allow providing a `:key` to sort "by field": e.g. sort by title name `(%sort :key (%lambda ((:title _ &&_)) %title) %posts)`
  - [ ] Extend the strftime-style `(%date)` to be able to read UNIX numeric timestamps and display relative to timezones.
