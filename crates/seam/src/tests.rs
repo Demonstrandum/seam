@@ -80,4 +80,27 @@ mod tests {
             "\"2001-09-08 23:31:39-02:15\""
         );
     }
+
+    #[test]
+    fn test_timestamp_macro() {
+        let timestamp = "419083754"; // 13 Apr 1983.
+        assert_output_eq(
+            "(%timestamp \"%Y %b %d %H:%M:%S%.3f %z\" \"1983 Apr 13 12:09:14.274 +0000\")",
+            timestamp
+        );
+        assert_output_eq(
+            "(%timestamp \"%Y %b %d %H:%M:%S%.3f\" \"1983 Apr 13 12:09:14.274\" :timezone 0)",
+            timestamp
+        );
+        // Same time *locally* but in a timezone of -02:00.
+        let timestamp_minus_2h = "419090954";
+        assert_output_eq(
+            "(%timestamp \"%Y %b %d %H:%M:%S%.3f %z\" \"1983 Apr 13 12:09:14.274 -0200\")",
+            timestamp_minus_2h
+        );
+        assert_output_eq(
+            "(%timestamp \"%Y %b %d %H:%M:%S%.3f\" \"1983 Apr 13 12:09:14.274\" :timezone -2)",
+            timestamp_minus_2h
+        );
+    }
 }

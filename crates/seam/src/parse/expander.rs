@@ -14,6 +14,7 @@ use std::{
     },
 };
 
+use chrono::TimeZone;
 use colored::*;
 use fixed;
 use formatx;
@@ -889,7 +890,7 @@ impl<'a> Expander<'a> {
                     &offset.site,
                 )),
             },
-            None => 0,
+            None => chrono::Local::now().offset().local_minus_utc(),
         };
         let date_format = args.number.1.value;
         let time = if let Some(time) = args.number.2 {
@@ -921,6 +922,67 @@ impl<'a> Expander<'a> {
             leading_whitespace: node.leading_whitespace().to_string(),
         });
         Ok(Box::new([date_string_node]))
+    }
+
+    fn expand_timestamp_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let (_, args) = arguments! { [&params]
+            mandatory(1): literal,
+            mandatory(2): literal,
+            optional("timezone"): number,
+        }?;
+        let format = args.number.1.value;
+        let date_string = args.number.2.value;
+
+        let timezone_offset: i32 = match args.timezone {
+            Some(ref offset) => match offset.value.parse::<fixed::types::I32F32>() {
+                Ok(offset) => (offset * 60 * 60).round().to_num(),
+                Err(_) => return Err(ExpansionError::new(
+                    "Invalid (decimal) timezone offset in hours.",
+                    &offset.site,
+                )),
+            },
+            None => chrono::Local::now().offset().local_minus_utc(),
+        };
+
+        let Some(timezone) = chrono::FixedOffset::east_opt(timezone_offset) else {
+            return Err(ExpansionError(
+                format!("Failed to compute UTC+(east) offset of {} seconds", timezone_offset),
+                args.timezone.map_or(node.owned_site(), |node| node.site),
+            ));
+        };
+
+        let timestamp = if let Ok(datetime) = chrono::DateTime::parse_from_str(&date_string, &format) {
+            // Timezone information already given. Ignore any `:timezone` attribute.
+            datetime.timestamp()
+        } else {
+            // Parse NaiveDateTime instead and get timzone from attribute, or default to local time.
+            let datetime = match chrono::NaiveDateTime::parse_from_str(&date_string, &format) {
+                Ok(datetime) => datetime,
+                Err(err) => return Err(ExpansionError(
+                    format!("Failed to parse date: {}", err),
+                    node.owned_site(),
+                )),
+            };
+            let datetime = timezone.from_local_datetime(&datetime);
+            let datetime = match datetime.earliest() {
+                Some(local) => local,
+                None => return Err(ExpansionError::new(
+                    "Timezone: local time falls in a gap in local time.",
+                    node.site(),
+                ))
+            };
+            datetime.timestamp()
+        };
+
+        Ok(Box::new([
+            ParseNode::Number(Node {
+                value: format!("{}", timestamp),
+                site: node.owned_site(),
+                leading_whitespace: node.leading_whitespace().to_owned(),
+            })
+        ]))
     }
 
     /// `(%log ...)` logs to `STDERR` when called and leaves *no* node behind.
@@ -1658,6 +1720,7 @@ impl<'a> Expander<'a> {
             "sort"      => self.expand_sort_macro(node, params),
             "reverse"   => self.expand_reverse_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
+            "timestamp" => self.expand_timestamp_macro(node, params),
             "join"      => self.expand_join_macro(node, params),
             "concat"    => self.expand_concat_macro(node, params),
             "map"       => self.expand_map_macro(node, params),
