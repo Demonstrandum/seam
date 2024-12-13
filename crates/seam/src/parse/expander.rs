@@ -1780,7 +1780,7 @@ impl<'a> Expander<'a> {
                                     and cannot be used as a variable.", name),
                                 &sym.site))
                         }
-                        let mut expanded = def.body.clone();
+                        let mut expanded = self.expand_nodes(def.body.clone())?;
                         // Inherit the whitespace of the call-site.
                         if let Some(first) = expanded.first_mut() {
                             first.set_leading_whitespace(sym.leading_whitespace.to_owned());

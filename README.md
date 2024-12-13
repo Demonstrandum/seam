@@ -91,6 +91,22 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ```
 
 ## Checklist
+ - [ ] Literate mode for parser+lexer, where string nodes are not escaped and parentheses are converted to symbols.
+       The only time strings are escaped and parentheses make lists is inside a `(%` and `)` pair, i.e. when calling a macro.
+       So `hello world (earth) (%do (p letter "\x61")) "\x61"` turns in to (in HTML mode)
+       `hello world <earth></earth> <p>hi a</p> a` normally, but in *literate* (HTML) mode turns into
+       `hello world (earth) <p>letter a</p> "\x61"`. Parentheses and quotes have been preserved.
+       Markdown source in `(%markdown ...)` should be parsed as literate files by default.
+       Provide command line `--literate` option; `%include` and `%embed` should also have options for enabling literate mode.
+ - [ ] Way to match on unknown keywords in attributes, examples when `(%define dict (:a 1 :b 2 :c 3))`:
+       - `(%for (kw val) in (%items  %dict) (%log %kw = %val))`
+       - `(%for  kw      in (%keys   %dict) (%log %kw = (%get %kw %dict)))`
+       - `(%for     val  in (%values %dict) (%log ___ = %val))`
+ - [ ] Extend `%get` to work with slicing `(%get (1 3) (a b c d e))` becomes `b c d`; negative indices `(%get -1 (a b c))` becomes `c`.
+ - [ ] Shell-style `${var:...}` string manipulation.
+ - [ ] `%while`, `%take`, `%drop`, `%split` on symbols in lists, `%intercalate`.
+ - [ ] `(%basename :suffix "txt" /path/file.txt)` (-> `file`), `(%dirname /path/file.txt)` (-> `/path`) and `(%extension /path/file.txt)` (-> `txt`), macros for paths.
+ - [ ] Math operators: `+`, `-`, `*`, `/`, `mod`, `pow`, `exp`, `sqrt`, `log`, `ln`, `hypot`.
  - [ ] User `(%error msg)` macro for aborting compilation.
  - [x] List reverse macro `(%reverse (...))`.
  - [x] Literal/atomic conversion macros: `(%symbol lit)`, `(%number lit)`, `(%string lit)`, `(%raw lit)`.
@@ -124,7 +140,6 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
        used by applying `%apply`, e.g. `(%apply (%lambda (a b) b a) x y)` becomes `y x`
  - [x] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
  - [x] `(%concat ...)` which is just `(%join "" ...)`.
- - [ ] `(%basename)`, `(%dirname)` and `(%extension)` macros for paths.
  - [x] Add options to `%glob` for sorting by type, date(s), name, etc.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
  - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.
