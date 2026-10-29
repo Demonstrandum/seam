@@ -699,6 +699,7 @@ impl<'a> Expander<'a> {
             mandatory(1): string,
             optional("only"): literal["frontmatter", "content"],
             optional("separator"): literal,
+            optional("allow-html"): literal["true", "false"],
         }?;
         // Parse the makdown content only, the frontmatter only, or do both.
         #[derive(Clone, Copy, PartialEq, Eq)]
@@ -712,9 +713,11 @@ impl<'a> Expander<'a> {
         });
         // Default to using the '/' namespace separator for frontmatter definitions.
         let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        // Embedded HTML is passed through by default, `:allow-html false` escapes it.
+        let allow_html = args.allow_html.map_or(true, |option| option.value == "true");
         // Live dangerously / trust the author:
         let danger = markdown::CompileOptions {
-          allow_dangerous_html: true,
+          allow_dangerous_html: allow_html,
           allow_dangerous_protocol: true,
           ..markdown::CompileOptions::default()
         };

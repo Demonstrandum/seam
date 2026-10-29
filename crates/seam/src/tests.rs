@@ -103,4 +103,18 @@ mod tests {
             timestamp_minus_2h
         );
     }
+
+    #[test]
+    fn test_markdown_allow_html() {
+        // embedded HTML is passed through by default.
+        assert_output_eq(
+            "(%markdown \"Hi <b>there</b>\")",
+            "\"<p>Hi <b>there</b></p>\""
+        );
+        // and escaped with `:allow-html false`.
+        assert_output_eq(
+            "(%markdown :allow-html false \"Hi <b>there</b>\")",
+            "\"<p>Hi &lt;b&gt;there&lt;/b&gt;</p>\""
+        );
+    }
 }
