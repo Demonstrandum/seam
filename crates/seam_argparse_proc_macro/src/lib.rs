@@ -49,6 +49,20 @@ struct ArgumentStructTypes {
     rest: ArgumentProperties,
 }
 
+/// Convert an argument keyword (e.g. `allow-html`) into a valid
+/// raw Rust identifier (e.g. `r#allow_html`) for the generated struct field.
+fn to_ident(name: &str) -> String {
+    // Replace any character that cannot appear in an identifier.
+    let mut ident: String = name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    // Identifiers cannot start with a digit.
+    if ident.starts_with(|c: char| c.is_numeric()) {
+        ident.insert(0, '_');
+    }
+    format!("r#{}", ident)
+}
+
 /// Macro that generates an argument parser and builds a custom struct
 /// holding provided arguments, given a schema and the list of arguments.
 /// ### Example
@@ -259,9 +273,15 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut named_arguments: Vec<TokenStream> = vec![];
     let mut named_types: Vec<TokenStream> = vec![];
     let mut named_values: Vec<TokenStream> = vec![];
+    let mut named_idents: HashMap<String, &String> = HashMap::new();
     for (name, props) in arg_struct.named.iter() {
         let rust_type = props.rust_type.clone();
-        let variable: proc_macro2::TokenStream = format!("r#{}", name).parse().unwrap();
+        let ident = to_ident(name);
+        // Distinct keywords (e.g. `a-b` and `a_b`) may map to the same field.
+        if let Some(other) = named_idents.insert(ident.clone(), name) {
+            panic!("Named arguments `{}` and `{}` both map to the field `{}`.", other, name, ident);
+        }
+        let variable: proc_macro2::TokenStream = ident.parse().unwrap();
         named_types.push(rust_type);
         named_arguments.push(variable);
         match props.position_type {
