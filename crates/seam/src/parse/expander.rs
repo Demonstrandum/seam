@@ -3,7 +3,7 @@ use super::tokens::Site;
 
 use std::{
     fmt,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     ffi::OsString,
     error::Error,
@@ -66,19 +66,9 @@ pub struct Macro<'a> {
     #[allow(dead_code)]
     name: String,
     params: Box<[ParseNode<'a>]>,
-    body: Box<[ParseNode<'a>]>
-}
-// TODO: Macro to also store its own scope (at place of definition)
-// in order to implement lexical scoping.
-
-impl<'a> Macro<'a> {
-    pub fn new(name: &str) -> Macro<'a> {
-        Macro {
-            name: name.to_string(),
-            params: Box::new([]),
-            body:   Box::new([]),
-        }
-    }
+    body: Box<[ParseNode<'a>]>,
+    /// The scope the macro was defined in, which its body is expanded in.
+    env: &'a Scope<'a>,
 }
 
 /// Owns everything that outlives a single macro expansion:
@@ -91,6 +81,8 @@ pub struct Context<'a> {
     scopes: Arena<Scope<'a>>,
     /// Include directories, in order of search.
     includes: RefCell<BTreeSet<PathBuf>>,
+    /// Number of lambdas created so far, used to give each a unique name.
+    lambdas: Cell<usize>,
 }
 
 impl<'a> Context<'a> {
@@ -99,6 +91,7 @@ impl<'a> Context<'a> {
             parsers: Arena::new(),
             scopes: Arena::new(),
             includes: RefCell::new(BTreeSet::from([PathBuf::from(".")])),
+            lambdas: Cell::new(0),
         }
     }
 }
@@ -115,7 +108,7 @@ impl<'a> fmt::Debug for Context<'a> {
     }
 }
 
-/// A variable scope: the macros defined directly within it,
+/// A variable (lexical) scope: the macros defined directly within it,
 /// and the scope it is nested in (if any).
 #[derive(Debug)]
 pub struct Scope<'a> {
@@ -185,10 +178,39 @@ impl<'a> Expander<'a> {
 
     /// An expander for a new scope nested in the current one.
     fn child(&self) -> Self {
+        self.child_of(self.scope)
+    }
+
+    /// An expander for a new scope nested in the given one.
+    fn child_of(&self, parent: &'a Scope<'a>) -> Self {
         Self {
-            scope: self.context.scopes.alloc(Scope::new(Some(self.scope))),
+            scope: self.context.scopes.alloc(Scope::new(Some(parent))),
             ..*self
         }
+    }
+
+    /// An expander for an existing scope.
+    fn within(&self, scope: &'a Scope<'a>) -> Self {
+        Self { scope, ..*self }
+    }
+
+    /// The outermost (top-level) scope.
+    fn root_scope(&self) -> &'a Scope<'a> {
+        let mut scope = self.scope;
+        while let Some(parent) = scope.parent {
+            scope = parent;
+        }
+        scope
+    }
+
+    /// Define a variable (a macro without parameters) in this scope.
+    fn define_value(&self, name: String, body: ParseTree<'a>) {
+        self.insert_variable(name.clone(), Rc::new(Macro {
+            name,
+            params: Box::new([]),
+            body,
+            env: self.scope,
+        }));
     }
 
     /// Update variable (macro) for this scope.
@@ -235,11 +257,7 @@ impl<'a> Expander<'a> {
             },
             // Symbols are simply assigned as variable names.
             ParseNode::Symbol(symbol) => {
-                self.insert_variable(symbol.value.clone(), Rc::new(Macro {
-                    name: symbol.value.clone(),
-                    params: Box::new([]),
-                    body: Box::new([ value.clone() ]),
-                }));
+                self.define_value(symbol.value.clone(), Box::new([ value.clone() ]));
                 Ok(())
             },
             // Other literals must match exactly and no assignment takes place.
@@ -368,14 +386,7 @@ impl<'a> Expander<'a> {
             // Assign the &rest variable to a list containing the extra nodes.
             let rest_symbol = rest_node.symbol().unwrap();
             let rest_name = rest_symbol.value[1..].to_owned();
-            self.insert_variable(
-                rest_name.to_owned(),
-                Rc::new(Macro {
-                    name: rest_name,
-                    params: Box::new([]),
-                    body: rest.into_boxed_slice(),
-                }),
-            );
+            self.define_value(rest_name.to_owned(), rest.into_boxed_slice());
         } else if let Some(last_excess_node) = rest.last() {
             // No &rest node mentioned, but excess arguments collected? That's an error.
             let got = expected + rest.len();
@@ -394,14 +405,7 @@ impl<'a> Expander<'a> {
                 None => default,
             };
             // Bind it to a symbol with the same name as the keyword.
-            self.insert_variable(
-                (*keyword).to_owned(),
-                Rc::new(Macro {
-                    name: (*keyword).to_owned(),
-                    params: Box::new([]),
-                    body: Box::new([ *value.clone() ]),
-                }),
-            );
+            self.define_value((*keyword).to_owned(), Box::new([ *value.clone() ]));
         }
         // Capture remaining named arguments under the &&-macro.
         if let Some(rest_kw_node) = rest_kw_node {
@@ -415,11 +419,7 @@ impl<'a> Expander<'a> {
                 nodes.push(named.clone());
             }
             // Insert the &&-variable.
-            self.insert_variable(rest_kw_name.to_string(), Rc::new(Macro {
-                name: rest_kw_name.to_string(),
-                params: Box::new([]),
-                body: nodes.into_boxed_slice(),
-            }));
+            self.define_value(rest_kw_name.to_string(), nodes.into_boxed_slice());
         }
         // Any remaining RHS named nodes not covered by the LHS, are excess/errors.
         if !rhs_named.is_empty() {
@@ -1668,9 +1668,16 @@ impl<'a> Expander<'a> {
             }
         };
 
-        let name = format!("__lambda{}", node.site().uuid());
+        // Every evaluation of a `%lambda` makes a distinct closure.
+        let id = self.context.lambdas.get();
+        self.context.lambdas.set(id + 1);
+        let name = format!("__lambda{}", id);
 
-        self.create_macro(name.clone(), arglist, args.rest.into_boxed_slice())?;
+        // The lambda closes over the current scope, but its name is defined
+        // at the top-level so it can be applied from anywhere it is passed to.
+        let mac = self.create_macro(name.clone(), arglist, args.rest.into_boxed_slice())?;
+        self.scope.definitions.borrow_mut().remove(&name);
+        self.within(self.root_scope()).insert_variable(name.clone(), mac);
 
         Ok(Box::new([
             ParseNode::Symbol(Node {
@@ -1707,11 +1714,12 @@ impl<'a> Expander<'a> {
             _ => {}
         };
 
-        // Create and insert macro.
+        // Create and insert macro, it remembers the scope it was defined in.
         let mac = Rc::new(Macro {
             name: name.clone(),
             params: arglist.into_boxed_slice(),
             body,
+            env: self.scope,
         });
         self.insert_variable(name, mac.clone());
         Ok(mac)
@@ -1719,8 +1727,9 @@ impl<'a> Expander<'a> {
 
     fn apply_macro(&self, mac: Rc<Macro<'a>>, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        // Instance of expansion subcontext.
-        let subcontext = self.child();
+        // The body is expanded in a new scope within the scope the macro
+        // was defined in (lexical scoping), not the scope of the caller.
+        let subcontext = self.child_of(mac.env);
         // Construct fake list of arguments and parameters and pattern match on them.
         subcontext.bind_list(node, &mac.params, &params)?;
         // Expand body.
@@ -1801,7 +1810,7 @@ impl<'a> Expander<'a> {
                                     and cannot be used as a variable.", name),
                                 &sym.site))
                         }
-                        let mut expanded = self.expand_nodes(def.body.clone())?;
+                        let mut expanded = self.within(def.env).expand_nodes(def.body.clone())?;
                         // Inherit the whitespace of the call-site.
                         if let Some(first) = expanded.first_mut() {
                             first.set_leading_whitespace(sym.leading_whitespace.to_owned());
@@ -1970,11 +1979,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                         Some(ref name) => {
                             // Define a variable under `name` with `value`.
                             let qualified_name = self.qualified(name);
-                            self.context.insert_variable(qualified_name.clone(), Rc::new(Macro {
-                                name: qualified_name,
-                                params: Box::new([]),
-                                body: Box::new([string.clone()]),
-                            }));
+                            self.context.define_value(qualified_name.clone(), Box::new([string.clone()]));
                             match self.mode {
                                 Some(Mode::Map) => {
                                     // Wait for next name.
@@ -2069,11 +2074,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                     match name {
                         Some(ref name) => {
                             let name = self.qualified(name);
-                            self.context.insert_variable(name.clone(), Rc::new(Macro {
-                                name,
-                                params: Box::new([]),
-                                body: Box::new([list.clone()]),
-                            }));
+                            self.context.define_value(name, Box::new([list.clone()]));
                         },
                         None => {},
                     };
@@ -2154,11 +2155,7 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
 
         fn define(&self, name: String, node: ParseNode<'a>) {
             let qualified = self.qualified(&name);
-            self.context.insert_variable(qualified, Rc::new(Macro {
-                name,
-                params: Box::new([]),
-                body: Box::new([node]),
-            }));
+            self.context.define_value(qualified, Box::new([node]));
         }
 
         fn traverse_value(&mut self, value: toml::Value, leading: bool) -> ParseNode<'a> {
