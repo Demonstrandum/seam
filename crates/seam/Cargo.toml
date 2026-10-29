@@ -35,3 +35,6 @@ markdown = "1.0.0-alpha.21"
 yaml-rust2 = "0.9.0"
 toml = "0.8.19"
 typed-arena = "2.0.2"
+
+[lints]
+workspace = true

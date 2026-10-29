@@ -1,7 +1,7 @@
 use crate::parse::tokens::Site;
 use std::{convert, error::Error, fmt::{self, Debug}};
 
-use colored::*;
+use colored::Colorize;
 use unicode_width::UnicodeWidthStr;
 
 /// Error type for specific errors with generating
@@ -15,6 +15,7 @@ pub struct GenerationError<'a> {
 
 impl<'a> GenerationError<'a> {
     /// Create a new error given the ML, the message, and the site.
+    #[must_use]
     pub fn new(ml: &'static str, msg: &str, site: &Site<'a>) -> Self {
         Self {
             markup: ml,
@@ -24,13 +25,13 @@ impl<'a> GenerationError<'a> {
     }
 }
 
-/// Implement fmt::Display for user-facing error output.
-impl<'a> fmt::Display for GenerationError<'a> {
+/// Implement `fmt::Display` for user-facing error output.
+impl fmt::Display for GenerationError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let line_prefix = format!("  {} |", self.site.line);
         let line_view = self.site.line_slice();
-        writeln!(f, "")?;
-        writeln!(f, "{} {}", line_prefix, line_view)?;
+        writeln!(f)?;
+        writeln!(f, "{line_prefix} {line_view}")?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=self.site.line_column() - 1,
@@ -47,27 +48,27 @@ impl<'a> fmt::Display for GenerationError<'a> {
     }
 }
 
-/// Implements std::error::Error.
-impl<'a> Error for GenerationError<'a> { }
+/// Implements `std::error::Error`.
+impl Error for GenerationError<'_> { }
 
-/// Convert from an io::Error to a generation error.
-impl<'a> From<std::io::Error> for GenerationError<'a> {
+/// Convert from an `io::Error` to a generation error.
+impl From<std::io::Error> for GenerationError<'_> {
     fn from(e: std::io::Error) -> Self {
         Self {
             markup: "<markup>",
-            message: format!("IO error: {}", e),
+            message: format!("IO error: {e}"),
             site: Site::unknown(),
         }
     }
 }
 
-/// An fmt::Error can be cast to an equally horribly
-/// ambiguous GenerationError.
-impl<'a> convert::From<fmt::Error> for GenerationError<'a> {
+/// An `fmt::Error` can be cast to an equally horribly
+/// ambiguous `GenerationError`.
+impl convert::From<fmt::Error> for GenerationError<'_> {
     fn from(e: fmt::Error) -> Self {
         Self {
             markup: "<markup>",
-            message: format!("Format buffer error: {}", e),
+            message: format!("Format buffer error: {e}"),
             site: Site::unknown(),
         }
     }
@@ -98,9 +99,9 @@ pub trait MarkupFormatter<'a>: Debug {
     }
 }
 
-/// Automatically implement fmt::Display as a wrapper around
-/// MarkupFormatter::generate, but throws away the useful error message.
-impl<'a> fmt::Display for dyn MarkupFormatter<'a> + '_ {
+/// Automatically implement `fmt::Display` as a wrapper around
+/// `MarkupFormatter::generate`, but throws away the useful error message.
+impl fmt::Display for dyn MarkupFormatter<'_> + '_ {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.generate(f).map_err(|_| fmt::Error)
     }
@@ -112,6 +113,7 @@ impl<'a> fmt::Display for dyn MarkupFormatter<'a> + '_ {
 /// - `"` → `&quot;`
 /// - `'` → `&apos;`
 /// - `&` → `&amp;`
+#[must_use]
 pub fn escape_xml(string: &str) -> String {
     let mut escaped = String::with_capacity(string.len());
     for c in string.chars() {

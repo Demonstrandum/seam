@@ -9,22 +9,22 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Debug, Clone)]
 pub struct LexError<'a>(pub String, pub Site<'a>);
 
-impl<'a> fmt::Display for LexError<'a> {
+impl fmt::Display for LexError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let LexError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();
-        writeln!(f, "")?;
-        writeln!(f, "{} {}", line_prefix, line_view)?;
+        writeln!(f)?;
+        writeln!(f, "{line_prefix} {line_view}")?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=site.line_column() - 1,
             length=site.width())?;
-        writeln!(f, "[**] Lexical Error {}: {}", site, msg)
+        writeln!(f, "[**] Lexical Error {site}: {msg}")
     }
 }
 
-impl<'a> Error for LexError<'a> { }
+impl Error for LexError<'_> { }
 
 fn is_whitespace(character: char) -> bool {
     ['\n', '\r', '\t', ' '].contains(&character)
@@ -36,8 +36,7 @@ fn character_kind(character: char)
         '\n' | '\r' | ' ' | '\t' => None,
         '('       => Some(tokens::Kind::LParen),
         ')'       => Some(tokens::Kind::RParen),
-        '0'..='9' => Some(tokens::Kind::Number),
-        '+' | '-' => Some(tokens::Kind::Number),
+        '0'..='9' | '+' | '-' => Some(tokens::Kind::Number),
         ':'       => Some(tokens::Kind::Keyword),
         '"'       => Some(tokens::Kind::String),
         _         => Some(tokens::Kind::Symbol)
@@ -56,6 +55,7 @@ pub struct Lexer {
 }
 
 impl<'a> Lexer {
+    #[must_use]
     pub fn new(source_path: String, source: String) -> Self {
         Self {
             source_path,
@@ -140,7 +140,7 @@ impl<'a> Lexer {
         if c == Some('\n') {
             self.next_line();
         }
-        return c;
+        c
     }
 
     fn consume_lparen(&'a self, whitespace: &'a str) -> Token<'a> {
@@ -230,10 +230,10 @@ impl<'a> Lexer {
                 if self.starts_with(r#"""""#) && !reading_escape {
                     break;  // End-of-string.
                 }
-                if !reading_escape {
-                    reading_escape = next_char == '\\';
-                } else {
+                if reading_escape {
                     reading_escape = false;
+                } else {
+                    reading_escape = next_char == '\\';
                 }
                 let _ = self.consume_char();
             }
@@ -261,10 +261,10 @@ impl<'a> Lexer {
                 if next_char == '"' && !reading_escape {
                     break;  // End-of-string.
                 }
-                if !reading_escape {
-                    reading_escape = next_char == '\\';
-                } else {
+                if reading_escape {
                     reading_escape = false;
+                } else {
+                    reading_escape = next_char == '\\';
                 }
                 let _ = self.consume_char();
             }
@@ -295,6 +295,10 @@ impl<'a> Lexer {
         Site::new(&self.source_path, &self.source, self.line.get(), file_offset, line_offset, span)
     }
 
+    /// Consume the next token.
+    ///
+    /// # Panics
+    /// Panics if called at the end of the file.
     pub fn consume(&'a self) -> Result<Token<'a>, LexError<'a>> {
         // Swallow up leading whitespace.
         let whitespace = self.consume_whitespace();

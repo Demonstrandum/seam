@@ -26,6 +26,7 @@ pub const UNKNOWN_SITE: Site<'static> = Site {
 };
 
 impl<'a> Site<'a> {
+    #[must_use]
     pub fn new(source: &'a str,
                source_code: &'a str,
                line: usize,
@@ -42,6 +43,7 @@ impl<'a> Site<'a> {
         }
     }
 
+    #[must_use]
     pub fn uuid(&self) -> String {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
@@ -49,28 +51,32 @@ impl<'a> Site<'a> {
         format!("{}-{}", hash, self.bytes_from_start)
     }
 
+    #[must_use]
     pub const fn unknown() -> Self { UNKNOWN_SITE }
 
     /// Byte-offset in source code for start-of-line where this site is.
+    #[must_use]
     pub fn start_of_line(&self) -> usize {
         self.bytes_from_start - self.bytes_from_start_of_line
     }
 
     /// Find byte-offset in source code of end-of-line where this site is.
+    #[must_use]
     pub fn end_of_line(&self) -> usize {
         let mut i = self.bytes_from_start;
         let bytes = self.source_code.as_bytes();
         while i < self.source_code.len() {
-            if bytes[i] == '\n' as u8 {
+            if bytes[i] == b'\n' {
                 return i;
             }
             i += 1;
         }
-        return i;
+        i
     }
 
     /// Get a string slice into the part of the source-code
     /// which occupies the location this site references.
+    #[must_use]
     pub fn view(&'a self) -> &'a str {
         let start = self.bytes_from_start;
         let end = start + self.bytes_span;
@@ -78,12 +84,14 @@ impl<'a> Site<'a> {
     }
 
     /// Get string view into whole line that this site is referencing.
+    #[must_use]
     pub fn line_slice(&self) -> &'a str {
         &self.source_code[self.start_of_line()..self.end_of_line()]
     }
 
     /// Compute (monospace, terminal) column width of piece of text
     /// referenced by this site in the source code.
+    #[must_use]
     pub fn width(&self) -> usize {
         let text = &self.source_code[self.bytes_from_start..self.bytes_from_start + self.bytes_span];
         UnicodeWidthStr::width(text)
@@ -92,13 +100,14 @@ impl<'a> Site<'a> {
     /// Compute which column the site starts at on the line,
     /// accounting for the rendered number of columns for each character
     /// in a terminal, according to the same procedure as [`Self::width`].
+    #[must_use]
     pub fn line_column(&self) -> usize {
         let preceeding = &self.source_code[self.start_of_line()..self.bytes_from_start];
         UnicodeWidthStr::width(preceeding) + 1
     }
 }
 
-impl<'a> Hash for Site<'a> {
+impl Hash for Site<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.source.hash(state);
         self.line.hash(state);
@@ -108,7 +117,7 @@ impl<'a> Hash for Site<'a> {
     }
 }
 
-impl<'a> Display for Site<'a> {
+impl Display for Site<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "(")?;
         write!(f, "{}:", self.source)?;
@@ -137,6 +146,7 @@ pub struct Token<'a> {
 }
 
 impl<'a> Token<'a> {
+    #[must_use]
     pub fn new(kind: Kind, value: &'a str, leading_whitespace: &'a str, site: Site<'a>) -> Self {
         Self { kind, value, leading_whitespace, site }
     }

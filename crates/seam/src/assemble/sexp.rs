@@ -10,13 +10,14 @@ pub struct SExpFormatter<'a> {
 }
 
 impl<'a> SExpFormatter<'a> {
+    #[must_use]
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self {
             tree
         }
     }
 
-    fn generate_node(&self, f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
+    fn generate_node(f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
         match node {
             ParseNode::Symbol(node)
           | ParseNode::Number(node) => {
@@ -37,7 +38,7 @@ impl<'a> SExpFormatter<'a> {
                 write!(f, "(%raw {:?})", node.value)?;
             },
             ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
-                write!(f, "{}", leading_whitespace)?;
+                write!(f, "{leading_whitespace}")?;
                 write!(f, "(")?;
                 let tree = nodes.to_vec();
                 let sexp_fmt = SExpFormatter::new(tree.into_boxed_slice());
@@ -47,9 +48,9 @@ impl<'a> SExpFormatter<'a> {
 
             },
             ParseNode::Attribute { keyword, node, leading_whitespace, .. } => {
-                write!(f, "{}", leading_whitespace)?;
-                write!(f, ":{}", keyword)?;
-                self.generate_node(f, node)?;
+                write!(f, "{leading_whitespace}")?;
+                write!(f, ":{keyword}")?;
+                Self::generate_node(f, node)?;
             },
         }
         Ok(())
@@ -63,9 +64,9 @@ impl<'a> MarkupFormatter<'a> for SExpFormatter<'a> {
     }
 
     fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
-        let mut tree_iter = self.tree.iter().peekable();
-        while let Some(node) = tree_iter.next() {
-            self.generate_node(f, node)?;
+        let tree_iter = self.tree.iter().peekable();
+        for node in tree_iter {
+            Self::generate_node(f, node)?;
         }
         Ok(())
     }

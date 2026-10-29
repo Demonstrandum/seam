@@ -1,15 +1,16 @@
 use super::*;
+use std::fmt::Write;
 
 fn expand(source: String) -> Result<String, String>  {
     let context = Context::new();
     let expander = tree_builder(&context, Some("<test>"), source);
     let tree = match expander.expand() {
         Ok(tree) => tree,
-        Err(err) => return Err(format!("{}", err)),
+        Err(err) => return Err(format!("{err}")),
     };
     let mut out = String::new();
     for node in tree {
-        out += &format!("{}", node);
+        write!(out, "{node}").unwrap();
     }
     Ok(out)
 }
@@ -17,13 +18,12 @@ fn expand(source: String) -> Result<String, String>  {
 fn assert_output_eq(input: &str, expect: &str) {
     let source = String::from(input);
     let output = match expand(source) {
-        Ok(o) => o,
-        Err(o) => o,
+        Ok(o) | Err(o) => o,
     };
     assert_eq!(output, expect);
 }
 
-mod tests {
+mod cases {
     use super::*;
 
     #[test]

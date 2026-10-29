@@ -9,31 +9,29 @@ pub struct XMLFormatter<'a> {
 }
 
 impl<'a> XMLFormatter<'a> {
+    #[must_use]
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self {
             tree
         }
     }
 
-    fn generate_xml_node(&self, f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
+    fn generate_xml_node(f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
         match node {
             ParseNode::Symbol(node)
-            | ParseNode::Number(node) => {
+            | ParseNode::Number(node)
+            | ParseNode::String(node) => {
                 write!(f, "{}", node.leading_whitespace)?;
                 write!(f, "{}", escape_xml(&node.value))?;
             },
-            ParseNode::String(node) => {
-                write!(f, "{}", node.leading_whitespace)?;
-                write!(f, "{}", escape_xml(&node.value))?
-            },
             ParseNode::List { nodes: list, leading_whitespace, end_token, .. } => {
-                write!(f, "{}", leading_whitespace)?;
+                write!(f, "{leading_whitespace}")?;
                 let head = list.first();
                 let tag: &str;  // xml <tag> name.
                 if let Some(head_node) = head {
                     if let ParseNode::Symbol(head_symbol) = head_node {
                         tag = &head_symbol.value;
-                        write!(f, "<{}", tag)?;
+                        write!(f, "<{tag}")?;
                     } else {
                         // Error, tags can only have symbol values.
                         return Err(GenerationError::new("XML",
@@ -60,7 +58,7 @@ impl<'a> XMLFormatter<'a> {
                         } else {
                             return Err(GenerationError::new("XML",
                                 "Only identifiers and attributes are allowed in declarations.",
-                                &rest[0].site()));
+                                rest[0].site()));
                         }
                         rest = &rest[1..];
                     }
@@ -73,7 +71,7 @@ impl<'a> XMLFormatter<'a> {
                 }
 
                 while let Some(attr@ParseNode::Attribute { .. }) = rest.first() {
-                    write!(f, " {}", display_attribute(&attr)?)?;
+                    write!(f, " {}", display_attribute(attr)?)?;
                     rest = &rest[1..];
                 }
                 write!(f, ">")?;
@@ -86,27 +84,27 @@ impl<'a> XMLFormatter<'a> {
                 if let Some(first_node) = rest.get_mut(0) {
                     is_first_node_on_next_line = first_node.leading_whitespace().contains('\n');
                     if !is_first_node_on_next_line {
-                        first_node.set_leading_whitespace("".to_owned());
+                        first_node.set_leading_whitespace(String::new());
                     }
                 }
 
-                let xml_fmt = XMLFormatter::new(rest.to_owned().into_boxed_slice());
+                let xml_fmt = XMLFormatter::new(rest.clone().into_boxed_slice());
                 xml_fmt.generate(f)?;
 
                 // Closing tag should be equally as spaced as opening tag (?)
                 if end_token.leading_whitespace.is_empty() {
                     if is_first_node_on_next_line || tag == "style" {
-                        write!(f, "{}", leading_whitespace)?;
+                        write!(f, "{leading_whitespace}")?;
                     }
                 } else {
                     write!(f, "{}", end_token.leading_whitespace)?;
                 }
 
-                write!(f, "</{}>", tag)?;
+                write!(f, "</{tag}>")?;
             },
             _ => return Err(GenerationError::new("XML",
                     &format!("Unexpected {} node when generating.", node.node_type()),
-                    &node.site()))
+                    node.site()))
         }
         Ok(())
     }
@@ -121,17 +119,15 @@ impl<'a> MarkupFormatter<'a> for XMLFormatter<'a> {
         if self.tree.is_empty() {
             return Ok(String::from(DEFAULT));
         }
-        let current_node = self.tree.get(0);
+        let current_node = self.tree.first();
 
         // Check if declaration exists.
         let mut has_declaration = false;
-        if let Some(ParseNode::List { nodes: list, .. }) = current_node.as_ref() {
-            if let Some(ParseNode::Symbol(declaration)) = list.get(0) {
-                if declaration.value.to_lowercase() == "?xml" {
+        if let Some(ParseNode::List { nodes: list, .. }) = current_node.as_ref()
+            && let Some(ParseNode::Symbol(declaration)) = list.first()
+                && declaration.value.to_lowercase() == "?xml" {
                     has_declaration = true;
                 }
-            }
-        }
 
         if !has_declaration {
             doc += DEFAULT;
@@ -143,9 +139,9 @@ impl<'a> MarkupFormatter<'a> for XMLFormatter<'a> {
     }
 
     fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
-        let mut tree_iter = self.tree.iter().peekable();
-        while let Some(node) = tree_iter.next() {
-            self.generate_xml_node(f, node)?;
+        let tree_iter = self.tree.iter().peekable();
+        for node in tree_iter {
+            Self::generate_xml_node(f, node)?;
         }
         Ok(())
     }
@@ -160,6 +156,6 @@ fn display_attribute<'a>(attr: &parser::ParseNode<'a>) -> Result<String, Generat
     } else {
         Err(GenerationError::new("XML",
             "Attribute can only contain symbols, numbers or strings",
-            &(*node).site()))
+            (*node).site()))
     }
 }

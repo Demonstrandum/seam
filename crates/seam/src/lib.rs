@@ -36,7 +36,7 @@ pub fn tree_builder<'a, P: AsRef<Path>>(context: &'a Context<'a>, source_path: O
 
 pub fn tree_builder_file<'a>(context: &'a Context<'a>, path: &Path)
     -> io::Result<expander::Expander<'a>> {
-    let contents = fs::read_to_string(&path)?;
+    let contents = fs::read_to_string(path)?;
     Ok(tree_builder(context, Some(path), contents))
 }
 

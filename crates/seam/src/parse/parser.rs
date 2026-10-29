@@ -14,20 +14,21 @@ pub struct Node<'a> {
     pub leading_whitespace: String,
 }
 
-impl<'a> PartialEq for Node<'a> {
+impl PartialEq for Node<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
-impl<'a> Eq for Node<'a> { }
+impl Eq for Node<'_> { }
 
-impl<'a> std::hash::Hash for Node<'a> {
+impl std::hash::Hash for Node<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.value.hash(state)
+        self.value.hash(state);
     }
 }
 
 impl<'a> Node<'a> {
+    #[must_use]
     pub fn new(value: &str, site: &Site<'a>, leading_whitespace: &str) -> Self {
         Self {
             site: site.to_owned(),
@@ -60,7 +61,7 @@ pub enum ParseNode<'a> {
     },
 }
 
-impl<'a> PartialEq for ParseNode<'a> {
+impl PartialEq for ParseNode<'_> {
     fn eq(&self, other: &Self) -> bool {
         match self {
             Self::Symbol(node0) => match other {
@@ -91,9 +92,9 @@ impl<'a> PartialEq for ParseNode<'a> {
         }
     }
 }
-impl<'a> Eq for ParseNode<'a> { }
+impl Eq for ParseNode<'_> { }
 
-impl<'a> std::hash::Hash for ParseNode<'a> {
+impl std::hash::Hash for ParseNode<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
             Self::Symbol(node) => {
@@ -127,6 +128,7 @@ impl<'a> std::hash::Hash for ParseNode<'a> {
 
 impl<'a> ParseNode<'a> {
     /// Returns true if and only if self is the empty list `()`.
+    #[must_use]
     pub fn null(&self) -> bool {
         match self {
             Self::List { nodes, .. } => nodes.is_empty(),
@@ -135,6 +137,7 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Unwrap a literal node if it is a symbol or number.
+    #[must_use]
     pub fn symbolic(&self) -> Option<&Node<'a>> {
         match self {
             Self::Symbol(node) | Self::Number(node) => Some(node),
@@ -143,6 +146,7 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Unwrap string-like nodes.
+    #[must_use]
     pub fn string(&self) -> Option<&Node<'a>> {
         match self {
             Self::String(node) | Self::Raw(node) => Some(node),
@@ -151,6 +155,7 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Unwrap a number node into a [`Node<'a>`].
+    #[must_use]
     pub fn number(&self) -> Option<&Node<'a>> {
         match self {
             Self::Number(node) => Some(node),
@@ -159,6 +164,7 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Unwrap a symbol node into a [`Node<'a>`].
+    #[must_use]
     pub fn symbol(&self) -> Option<&Node<'a>> {
         match self {
             Self::Symbol(node) => Some(node),
@@ -167,6 +173,7 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Unwrap literal (atomic) nodes into their underlying [`Node`].
+    #[must_use]
     pub fn atomic(&self) -> Option<&Node<'a>> {
         match self {
             Self::Symbol(node)
@@ -178,6 +185,7 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Unwrap list node into vector of nodes.
+    #[must_use]
     pub fn list(&self) -> Option<&ParseTree<'a>> {
         match self {
             Self::List { nodes, .. } => Some(nodes),
@@ -186,15 +194,17 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Unwrap attribute node into keyword and value.
-    pub fn attribute(&self) -> Option<(&str, &Box<ParseNode<'a>>)> {
+    #[must_use]
+    pub fn attribute(&self) -> Option<(&str, &ParseNode<'a>)> {
         match self {
-            Self::Attribute { keyword, node, .. } => Some((keyword, node)),
+            Self::Attribute { keyword, node, .. } => Some((keyword, &**node)),
             _ => None,
         }
     }
 
     /// Same as [`Self::atomic`], but consumes the node,
     /// returning an owned [`Node`].
+    #[must_use]
     pub fn into_atomic(self) -> Option<Node<'a>> {
         match self {
             Self::Symbol(node)
@@ -206,39 +216,42 @@ impl<'a> ParseNode<'a> {
     }
 
     /// Get a reference to the parse node's underlying [`Site`].
+    #[must_use]
     pub fn site(&self) -> &Site<'a> {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
             | Self::String(node)
             | Self::Raw(node) => &node.site,
-            Self::List { site, .. } => site,
-            Self::Attribute { site, .. } => site,
+            Self::List { site, .. }
+            | Self::Attribute { site, .. } => site,
         }
     }
 
     /// Clone the underlying [`Site`] of this parse node.
+    #[must_use]
     pub fn owned_site(&self) -> Site<'a> {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
             | Self::String(node)
             | Self::Raw(node) => node.site,
-            Self::List { site, .. } => *site,
-            Self::Attribute { site, .. } => *site,
+            Self::List { site, .. }
+            | Self::Attribute { site, .. } => *site,
         }
     }
 
     /// Get a reference to the underlying leading whitespace string
     /// of this parse node.
+    #[must_use]
     pub fn leading_whitespace(&self) -> &str {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
             | Self::String(node)
             | Self::Raw(node) => node.leading_whitespace.as_str(),
-            Self::List { leading_whitespace, .. } => leading_whitespace.as_str(),
-            Self::Attribute { leading_whitespace, .. } => leading_whitespace.as_str(),
+            Self::List { leading_whitespace, .. }
+            | Self::Attribute { leading_whitespace, .. } => leading_whitespace.as_str(),
         }
     }
 
@@ -249,12 +262,13 @@ impl<'a> ParseNode<'a> {
             | Self::Number(node)
             | Self::String(node)
             | Self::Raw(node) => node.leading_whitespace = whitespace,
-            Self::List { leading_whitespace, .. } => *leading_whitespace = whitespace,
-            Self::Attribute { leading_whitespace, .. } => *leading_whitespace = whitespace,
-        };
+            Self::List { leading_whitespace, .. }
+            | Self::Attribute { leading_whitespace, .. } => *leading_whitespace = whitespace,
+        }
     }
 
     /// Get a `&'static str` string name of what type of parse node this is.
+    #[must_use]
     pub fn node_type(&self) -> &'static str {
         match self {
             Self::Symbol(..) => "symbol",
@@ -266,12 +280,19 @@ impl<'a> ParseNode<'a> {
         }
     }
 
+    #[must_use]
     pub fn is_symbolic(&self) -> bool { self.symbolic().is_some() }
+    #[must_use]
     pub fn is_atomic(&self) -> bool { self.atomic().is_some() }
+    #[must_use]
     pub fn is_symbol(&self) -> bool { self.symbol().is_some() }
+    #[must_use]
     pub fn is_number(&self) -> bool { self.number().is_some() }
+    #[must_use]
     pub fn is_string(&self) -> bool { self.string().is_some() }
+    #[must_use]
     pub fn is_list(&self) -> bool { self.list().is_some() }
+    #[must_use]
     pub fn is_attribute(&self) -> bool { self.attribute().is_some() }
 }
 
@@ -312,7 +333,7 @@ impl<'a> TryFrom<ParseNode<'a>> for Vec<ParseNode<'a>> {
 /// Trait determining if a [`ParseNode`] can be converted into
 /// a value of a given (usually inferred) type.
 pub trait IntoValue<'a, T>: Sized {
-    fn into_value(&'a self) -> Option<T> { None }
+    fn to_value(&'a self) -> Option<T> { None }
 }
 
 /// A number type.
@@ -333,7 +354,7 @@ impl Num for f64 { }
 
 /// Convert parse-node into value if said value is a number type.
 impl<'a, T: Num + FromStr> IntoValue<'a, T> for ParseNode<'a> {
-    fn into_value(&self) -> Option<T> {
+    fn to_value(&self) -> Option<T> {
         match self {
             ParseNode::Number(node) => node.value.parse().ok(),
             _ => None,
@@ -343,7 +364,7 @@ impl<'a, T: Num + FromStr> IntoValue<'a, T> for ParseNode<'a> {
 
 /// Convert parse-node into value if said value is a symbol/string type.
 impl<'a> IntoValue<'a, &'a str> for ParseNode<'a> {
-    fn into_value(&'a self) -> Option<&'a str> {
+    fn to_value(&'a self) -> Option<&'a str> {
         match self {
             ParseNode::Symbol(node)
           | ParseNode::String(node)
@@ -353,30 +374,6 @@ impl<'a> IntoValue<'a, &'a str> for ParseNode<'a> {
     }
 }
 
-/// TODO: Convert parse-node into value if said value is a list type.
-/*
-impl<'a, V> IntoValue<'a, &'a [V]> for ParseNode<'a> {
-    fn into_value(&'a self) -> Option<&'a [V]> {
-        match self {
-            ParseNode::List { nodes, .. } => {
-                let mut values = Vec::with_capacity(nodes.len());
-                for node in nodes {
-                    let Some(value) = node.into_value() else {
-                        return None;
-                    };
-                    let value: V = value;
-                    values.push(value)
-                }
-                // TODO: fix this.
-                let values: &[V] = &*Box::leak(values.into_boxed_slice());
-                Some(values)
-            },
-            _ => None,
-        }
-    }
-}
-*/
-
 /// An array of parse nodes, like in a [`ParseNode::List`], never grows.
 /// Hence we prefer the `Box<[...]>` representation over a `Vec<...>`.
 pub type ParseTree<'a> = Box<[ParseNode<'a>]>;
@@ -384,13 +381,13 @@ pub type ParseTree<'a> = Box<[ParseNode<'a>]>;
 #[derive(Debug, Clone)]
 pub struct ParseError<'a>(pub String, pub Site<'a>);
 
-impl<'a> fmt::Display for ParseError<'a> {
+impl fmt::Display for ParseError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ParseError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();
-        writeln!(f, "")?;
-        writeln!(f, "{} {}", line_prefix, line_view)?;
+        writeln!(f)?;
+        writeln!(f, "{line_prefix} {line_view}")?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=site.line_column() - 1,
@@ -400,7 +397,7 @@ impl<'a> fmt::Display for ParseError<'a> {
     }
 }
 
-impl<'a> Error for ParseError<'a> { }
+impl Error for ParseError<'_> { }
 
 /// Parser structure walks through source using lexer.
 #[derive(Debug, Clone)]
@@ -424,7 +421,7 @@ impl<'a> Parser {
             let expr = self.parse_expr()?;
             root.push(expr);
         }
-        return Ok(root.into_boxed_slice());
+        Ok(root.into_boxed_slice())
     }
 
     /// Produce a parse node from the current position in the lexer.
@@ -434,7 +431,7 @@ impl<'a> Parser {
             Kind::LParen => self.parse_list(),
             Kind::RParen => Err(ParseError(
                 "Unexpected `)' closing parenthesis.".to_owned(),
-                token.site.to_owned()))?,
+                token.site))?,
             Kind::Keyword => self.parse_keyword(),
             Kind::Symbol => Ok(ParseNode::Symbol(self.parse_atomic()?)),
             // TODO: Parse (escpae) string-literals.
@@ -452,19 +449,16 @@ impl<'a> Parser {
         {
             let no_expr_error = ParseError(
                 format!("Keyword `:{}' expects an expression following it.", token.value),
-                token.site.to_owned());
+                token.site);
             if self.lexer.eof() { Err(no_expr_error.clone())? ;}
-            match self.lexer.peek()? {
-                Token { kind: Kind::RParen, .. } => Err(no_expr_error)?,
-                _ => ()
-            }
+            if let Token { kind: Kind::RParen, .. } = self.lexer.peek()? { Err(no_expr_error)? }
         }
         // Otherwise, parse the value and combine the node.
         let value = self.parse_expr()?;
         Ok(ParseNode::Attribute {
             keyword: token.value.to_owned(),
             node: Box::new(value),
-            site: token.site.to_owned(),
+            site: token.site,
             leading_whitespace: token.leading_whitespace.to_owned(),
         })
     }
@@ -480,12 +474,12 @@ impl<'a> Parser {
         };
         Ok(Node {
             value,
-            site: token.site.clone(),
+            site: token.site,
             leading_whitespace: token.leading_whitespace.to_string(),
         })
     }
 
-    /// Parse a list `( [...] )'.
+    /// Parse a list `( [...] )`.
     fn parse_list(&'a self) -> Result<ParseNode<'a>, Box<dyn Error + 'a>> {
         // Consumed the `(' token.
         let lparen = self.lexer.consume()?;
@@ -507,12 +501,12 @@ impl<'a> Parser {
         let Some(rparen) = rparen else {
             return Err(ParseError(
                 "Expected `)' closing parenthesis.".to_owned(),
-                lparen.site.to_owned()))?;
+                lparen.site))?;
         };
         Ok(ParseNode::List {
             nodes: elements.into_boxed_slice(),
-            site: lparen.site.to_owned(),
-            end_token: rparen.to_owned(),
+            site: lparen.site,
+            end_token: rparen,
             leading_whitespace: lparen.leading_whitespace.to_owned(),
         })
     }
@@ -521,10 +515,10 @@ impl<'a> Parser {
 /// Sanitize any escaped characters by removing their leading backslash.
 fn escape_sanitize(string: &str) -> String {
     let mut builder = String::with_capacity(string.len());
-    let mut chars = string.chars();
-    while let Some(c) = chars.next() {
+    let chars = string.chars();
+    for c in chars {
         if c == '\\' { continue; }
-        builder.push(c)
+        builder.push(c);
     }
     builder
 }
@@ -538,7 +532,7 @@ fn escape_string<'a>(string: &'a str, site: &Site<'a>) -> Result<String, LexErro
             LexError(
                 format!("Invalid escape `\\{}' at byte-index {}.",
                     string.chars().nth(invalid.index).unwrap_or('?'), invalid.index),
-                site.clone())
+                *site)
         })
 }
 
@@ -559,6 +553,7 @@ pub enum SearchType {
 }
 
 impl SearchType {
+    #[must_use]
     pub fn is_a(self, kind: SearchType) -> bool {
         self == SearchType::Any || self == kind
     }
@@ -579,13 +574,11 @@ impl<'a> SearchTree<'a> for ParseNode<'a> {
 
         match self {
             ParseNode::List { nodes, .. } => {
-                if kind.is_a(SearchType::ListHead) {
-                    if let Some(Some(caller)) = nodes.get(0).map(ParseNode::atomic) {
-                        if is_equal(&caller.value) {
+                if kind.is_a(SearchType::ListHead)
+                    && let Some(Some(caller)) = nodes.first().map(ParseNode::atomic)
+                        && is_equal(&caller.value) {
                             return Some(self);
                         }
-                    }
-                }
                 nodes.search_node(kind, value, insensitive, level - 1)
             },
             ParseNode::Symbol(name) => {
@@ -610,11 +603,10 @@ impl<'a> SearchTree<'a> for ParseNode<'a> {
                 }
             },
             ParseNode::Attribute { node, keyword, .. } => {
-                if kind.is_a(SearchType::Attribute) {
-                    if is_equal(keyword) {
+                if kind.is_a(SearchType::Attribute)
+                    && is_equal(keyword) {
                         return Some(node);
                     }
-                }
                 node.search_node(kind, value, insensitive, level - 1)
             },
         }
@@ -640,7 +632,7 @@ impl<'a> SearchTree<'a> for ParseTree<'a> {
 }
 
 /// Pretty printing for parse nodes.
-impl<'a> fmt::Display for ParseNode<'a> {
+impl fmt::Display for ParseNode<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseNode::Symbol(node)
@@ -648,11 +640,11 @@ impl<'a> fmt::Display for ParseNode<'a> {
             ParseNode::String(node)
             | ParseNode::Raw(node) => write!(f, "{}{:?}", node.leading_whitespace, node.value),
             ParseNode::Attribute { keyword, node, leading_whitespace, .. } =>
-                write!(f, "{}:{}{}", leading_whitespace, keyword, &*node),
+                write!(f, "{leading_whitespace}:{keyword}{node}"),
             ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
-                write!(f, "{}(", leading_whitespace)?;
+                write!(f, "{leading_whitespace}(")?;
                 for node in nodes {
-                    write!(f, "{}", node)?;
+                    write!(f, "{node}")?;
                 }
                 write!(f, "{})", end_token.leading_whitespace)
             }

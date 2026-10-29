@@ -6,7 +6,7 @@ use regex::Regex;
 
 use super::{
     expander::ExpansionError,
-    parser::{Node, ParseNode, ParseTree},
+    parser::{Node, ParseNode},
 };
 
 #[derive(Debug, Clone)]
@@ -21,14 +21,14 @@ impl<'tree> ArgPredicate<'tree> {
         match self {
             Self::Exactly(value) => if node.value == *value { Ok(()) } else {
                 Err(ExpansionError(
-                    format!("value must be equal to `{}'", value),
-                    node.site.to_owned(),
+                    format!("value must be equal to `{value}'"),
+                    node.site,
                 ))
             },
             Self::Matching(expr) => if expr.is_match(&node.value) { Ok(()) } else {
                 Err(ExpansionError(
                     format!("value must be match /{}/", expr.as_str()),
-                    node.site.to_owned(),
+                    node.site,
                 ))
             },
             Self::Satisfying(test) => test(parse_node),
@@ -90,7 +90,7 @@ fn check_all<'tree>(preds: &Vec<ArgPredicate<'tree>>, node: &ParseNode<'tree>) -
     for (i, issue) in issues.iter().enumerate() {
         let _ = write!(error, "    * {}", issue.0);
         if i != issues.len() - 1 {
-            let _ = write!(error, "; or\n");
+            let _ = writeln!(error, "; or");
         }
     }
     let _ = write!(error, ".");
@@ -98,8 +98,9 @@ fn check_all<'tree>(preds: &Vec<ArgPredicate<'tree>>, node: &ParseNode<'tree>) -
 }
 
 impl<'tree> ArgType<'tree> {
+    #[must_use]
     pub fn name(&self) -> &'static str {
-        use ArgType::*;
+        use ArgType::{Literal, String, Symbol, Number, Symbolic, List, Any};
         match self {
             Literal(..) => "literal",
             String(..) => "string",
@@ -112,7 +113,7 @@ impl<'tree> ArgType<'tree> {
     }
 
     pub fn check(&self, node: &ParseNode<'tree>) -> Result<(), ExpansionError<'tree>> {
-        use ArgType::*;
+        use ArgType::{Literal, Symbol, Symbolic, Any, String, Number, List};
         // Compute the generic type-mismatch error beforehand, even if not used.
         let mismatch = ExpansionError(
             format!("Expected a {} node, got a {} instead.", self.name(), node.node_type()),
@@ -132,7 +133,7 @@ impl<'tree> ArgType<'tree> {
             },
             ParseNode::List { nodes, .. } => match self {
                 List(arg_types) => {
-                    if arg_types.len() != 0 && nodes.len() != arg_types.len() {
+                    if !arg_types.is_empty() && nodes.len() != arg_types.len() {
                         return Err(ExpansionError(
                             format!("Unexpected number of items in list, expected {} items, got {}.",
                                 arg_types.len(), nodes.len()),
@@ -149,7 +150,7 @@ impl<'tree> ArgType<'tree> {
             },
             ParseNode::Attribute { keyword, .. } => match self {
                 Any(pred) => check_all(pred, node),
-                _ => Err(ExpansionError(format!("Unknown attribute `:{}`.", keyword), node.owned_site()))
+                _ => Err(ExpansionError(format!("Unknown attribute `:{keyword}`."), node.owned_site()))
             },
         }
     }
@@ -163,6 +164,7 @@ pub enum Arg<'tree> {
 }
 
 impl<'tree> Arg<'tree> {
+    #[must_use]
     pub fn argtype(&self) -> &ArgType<'tree> {
         match self {
            Arg::Mandatory(typ) | Arg::Optional(typ) => typ
@@ -184,14 +186,14 @@ impl ArgMatcher for usize {
 impl<'a> ArgMatcher for  &'a str {
     fn unwrap(&self) -> ArgPos<'a> { ArgPos::Str(self) }
 }
-impl<'a> ArgMatcher for ArgPos<'a> {
-    fn unwrap<'b>(&'b self) -> ArgPos<'b> { *self }
+impl ArgMatcher for ArgPos<'_> {
+    fn unwrap(&self) -> ArgPos<'_> { *self }
 }
 impl<'a> From<&'a Box<dyn ArgMatcher + 'a>> for Option<usize> {
     fn from(value: &'a Box<dyn ArgMatcher + 'a>) -> Option<usize> {
         match value.unwrap() {
             ArgPos::Int(int) => Some(int),
-            _ => None,
+            ArgPos::Str(_) => None,
         }
     }
 }
@@ -199,7 +201,7 @@ impl<'a> From<&'a Box<dyn ArgMatcher + 'a>> for Option<&'a str> {
     fn from(value: &'a Box<dyn ArgMatcher + 'a>) -> Option<&'a str> {
         match value.unwrap() {
             ArgPos::Str(str) => Some(str),
-            _ => None,
+            ArgPos::Int(_) => None,
         }
     }
 }
@@ -246,6 +248,7 @@ pub struct ArgRules<'a, 'tree> {
 }
 
 impl<'a, 'tree> ArgRules<'a, 'tree> {
+    #[must_use]
     pub fn new() -> Self {
         Self { patterns: Vec::new(), trailing: None }
     }
@@ -262,19 +265,23 @@ impl<'a, 'tree> ArgRules<'a, 'tree> {
         self.trailing = Some(arg_type);
     }
     /// Turn this structure into a parser.
-    pub fn parser<'params>(self, call_node: &'params ParseNode<'tree>, params: &'params Box<[ParseNode<'tree>]>) -> Result<ArgParser<'params, 'a, 'tree>, ExpansionError<'tree>> {
+    pub fn parser<'params>(self, call_node: &'params ParseNode<'tree>, params: &'params [ParseNode<'tree>]) -> Result<ArgParser<'params, 'a, 'tree>, ExpansionError<'tree>> {
         ArgParser::new(self, call_node, params)
     }
     /// Count how many mandatory arguments there are.
+    #[must_use]
     pub fn count_mandatory(&self) -> usize {
         let mut count = 0;
         for pattern in &self.patterns {
-            match pattern.argument {
-                Arg::Mandatory(..) => count += 1,
-                _ => {}
-            }
+            if let Arg::Mandatory(..) = pattern.argument { count += 1 }
         }
         count
+    }
+}
+
+impl Default for ArgRules<'_, '_> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -290,7 +297,7 @@ pub struct ArgParser<'params: 'rules, 'rules, 'tree> {
 impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
     pub fn new(rules: ArgRules<'rules, 'tree>,
                call_node: &'params ParseNode<'tree>,
-               params: &'params ParseTree<'tree>)
+               params: &'params [ParseNode<'tree>])
     -> Result<Self, ExpansionError<'tree>>  {
         let mut position = 0;
         let mut positional = HashMap::with_capacity(params.len());
@@ -333,10 +340,7 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
                         ArgPos::Str(k) => named.insert(k.to_owned(), param_node),
                     };
                     // Register if a mandatory argument was consumed.
-                    match rule.argument {
-                        Arg::Mandatory(..) => mandatory_count += 1,
-                        _ => {},
-                    };
+                    if let Arg::Mandatory(..) = rule.argument { mandatory_count += 1 }
                 },
                 None => match &rules.trailing {
                     Some(trailing_rule) => {
@@ -350,9 +354,9 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
                         // has been given. Only error on additional erroneous named
                         // arguments if trailing argument capture is enabled.
                         return Err(ExpansionError(if let ParseNode::Attribute { keyword, .. } = param {
-                            format!("Unexpected named argument `:{}`.", keyword)
+                            format!("Unexpected named argument `:{keyword}`.")
                         } else {
-                            format!("Unexpected positional argument in position {}.", position)
+                            format!("Unexpected positional argument in position {position}.")
                         }, param.owned_site()));
                     }
                 }
@@ -361,7 +365,7 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
         // After checking all the arguments are *valid*, now check
         // that all mandatory arguments are given.
         let needed_count =  rules.count_mandatory();
-        let last_site = params.last().map(|node| node.owned_site()).unwrap_or(call_node.owned_site());
+        let last_site = params.last().map_or(call_node.owned_site(), super::parser::ParseNode::owned_site);
         if mandatory_count < needed_count {
             return Err(ExpansionError(
                 format!("Missing {} non-optional argument(s) from macro call.", needed_count - mandatory_count),
@@ -390,14 +394,14 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
             ArgPos::Int(i) => match self.positional.get(&i) {
                 Some(value) => Ok(value),
                 None => Err(ExpansionError(
-                    format!("Argument in position {} not given.", i),
+                    format!("Argument in position {i} not given."),
                     self.call_node.owned_site(),
                 )),
             },
             ArgPos::Str(k) => match self.named.get(k) {
                 Some(value) => Ok(value),
                 None => Err(ExpansionError(
-                    format!("Named argument :{} not given.", k),
+                    format!("Named argument :{k} not given."),
                     self.call_node.owned_site(),
                 )),
             },
@@ -405,7 +409,7 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
     }
 }
 
-pub fn extract_literal<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionError<'a>> {
+pub fn extract_literal(node: ParseNode<'_>) -> Result<Node<'_>, ExpansionError<'_>> {
     match node {
         ParseNode::Symbol(lit)
       | ParseNode::Number(lit)
@@ -418,7 +422,7 @@ pub fn extract_literal<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionErr
     }
 }
 
-pub fn extract_string<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionError<'a>> {
+pub fn extract_string(node: ParseNode<'_>) -> Result<Node<'_>, ExpansionError<'_>> {
     match node {
         ParseNode::String(string)
       | ParseNode::Raw(string) => Ok(string),
@@ -429,7 +433,7 @@ pub fn extract_string<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionErro
     }
 }
 
-pub fn extract_symbol<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionError<'a>> {
+pub fn extract_symbol(node: ParseNode<'_>) -> Result<Node<'_>, ExpansionError<'_>> {
     match node {
         ParseNode::Symbol(sym) => Ok(sym),
         _ => Err(ExpansionError(
@@ -439,7 +443,7 @@ pub fn extract_symbol<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionErro
     }
 }
 
-pub fn extract_number<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionError<'a>> {
+pub fn extract_number(node: ParseNode<'_>) -> Result<Node<'_>, ExpansionError<'_>> {
     match node {
         ParseNode::Number(lit) => Ok(lit),
         _ => Err(ExpansionError(
@@ -449,7 +453,7 @@ pub fn extract_number<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionErro
     }
 }
 
-pub fn extract_symbolic<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionError<'a>> {
+pub fn extract_symbolic(node: ParseNode<'_>) -> Result<Node<'_>, ExpansionError<'_>> {
     match node {
         ParseNode::Symbol(sym)
       | ParseNode::Number(sym) => Ok(sym),
@@ -460,7 +464,7 @@ pub fn extract_symbolic<'a>(node: ParseNode<'a>) -> Result<Node<'a>, ExpansionEr
     }
 }
 
-pub fn extract_list<'a>(node: ParseNode<'a>) -> Result<Vec<ParseNode<'a>>, ExpansionError<'a>> {
+pub fn extract_list(node: ParseNode<'_>) -> Result<Vec<ParseNode<'_>>, ExpansionError<'_>> {
     match node {
         ParseNode::List { nodes, .. } => Ok(nodes.to_vec()),
         _ => Err(ExpansionError(
@@ -470,7 +474,7 @@ pub fn extract_list<'a>(node: ParseNode<'a>) -> Result<Vec<ParseNode<'a>>, Expan
     }
 }
 
-pub fn extract_any<'a>(node: ParseNode<'a>) -> Result<ParseNode<'a>, ExpansionError<'a>> {
+pub fn extract_any(node: ParseNode<'_>) -> Result<ParseNode<'_>, ExpansionError<'_>> {
     Ok(node)
 }
 
