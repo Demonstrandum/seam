@@ -83,6 +83,9 @@ pub struct Context<'a> {
     includes: RefCell<BTreeSet<PathBuf>>,
     /// Number of lambdas created so far, used to give each a unique name.
     lambdas: Cell<usize>,
+    /// Stack of `%with` bindings, which override top-level definitions
+    /// for as long as the body of the `%with` is being expanded.
+    dynamic: RefCell<Vec<HashMap<String, Rc<Macro<'a>>>>>,
 }
 
 impl<'a> Context<'a> {
@@ -92,6 +95,7 @@ impl<'a> Context<'a> {
             scopes: Arena::new(),
             includes: RefCell::new(BTreeSet::from([PathBuf::from(".")])),
             lambdas: Cell::new(0),
+            dynamic: RefCell::new(Vec::new()),
         }
     }
 }
@@ -119,18 +123,6 @@ pub struct Scope<'a> {
 impl<'a> Scope<'a> {
     fn new(parent: Option<&'a Scope<'a>>) -> Self {
         Self { definitions: RefCell::new(HashMap::new()), parent }
-    }
-
-    /// Find a macro in this scope, or any scope enclosing it.
-    fn lookup(&self, name: &str) -> Option<Rc<Macro<'a>>> {
-        let mut scope = Some(self);
-        while let Some(current) = scope {
-            if let Some(mac) = current.definitions.borrow().get(name) {
-                return Some(mac.clone());
-            }
-            scope = current.parent;
-        }
-        None
     }
 }
 
@@ -224,8 +216,25 @@ impl<'a> Expander<'a> {
         self.get_variable(name).is_some()
     }
 
+    /// Find a macro in this scope, or any scope enclosing it.
+    /// Before reaching the top-level scope, any `%with` bindings are
+    /// checked (innermost first), so they override top-level definitions,
+    /// but never local ones (such as macro parameters).
     fn get_variable(&self, name: &str) -> Option<Rc<Macro<'a>>> {
-        self.scope.lookup(name)
+        let mut scope = Some(self.scope);
+        while let Some(current) = scope {
+            if current.parent.is_none() {
+                let dynamic = self.context.dynamic.borrow();
+                if let Some(mac) = dynamic.iter().rev().find_map(|frame| frame.get(name)) {
+                    return Some(mac.clone());
+                }
+            }
+            if let Some(mac) = current.definitions.borrow().get(name) {
+                return Some(mac.clone());
+            }
+            scope = current.parent;
+        }
+        None
     }
 
     /// Pattern-matching variable bind for two nodes (the pattern and the value).
@@ -598,6 +607,47 @@ impl<'a> Expander<'a> {
     fn expand_do_macro(&self, _node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         self.expand_nodes(params)
+    }
+
+    /// `(%with (:name value ...) body...)` expands the body with each `%name`
+    /// overriding any top-level definition of `name`, including for any macros
+    /// called from within the body (dynamic scoping).
+    /// The bindings may be given by any expression evaluating to keyword-value pairs.
+    fn expand_with_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let [bindings, body@..] = &*params else {
+            return Err(ExpansionError::new(
+                "`%with` requires a list of bindings, e.g. `(%with (:name value) ...)`.",
+                node.site(),
+            ));
+        };
+        // Bindings are evaluated eagerly, in the current scope.
+        let bindings = self.expand_node(bindings.clone())?;
+        let bindings = match &*bindings {
+            [ParseNode::List { nodes, .. }] => nodes.clone(),
+            _ => bindings,
+        };
+        let mut frame = HashMap::with_capacity(bindings.len());
+        for binding in &bindings {
+            let Some((keyword, value)) = binding.attribute() else {
+                return Err(ExpansionError(
+                    format!("`%with` bindings must be keyword-value pairs \
+                        (e.g. `:name value`), got {} instead.", binding.node_type()),
+                    binding.owned_site(),
+                ));
+            };
+            frame.insert(keyword.to_owned(), Rc::new(Macro {
+                name: keyword.to_owned(),
+                params: Box::new([]),
+                body: Box::new([*value.clone()]),
+                env: self.scope,
+            }));
+        }
+        // Body is evaluated lazily, with the bindings in effect.
+        self.context.dynamic.borrow_mut().push(frame);
+        let expanded = self.expand_nodes(body.into());
+        self.context.dynamic.borrow_mut().pop();
+        expanded
     }
 
     fn expand_include_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
@@ -1761,6 +1811,7 @@ impl<'a> Expander<'a> {
             "match"     => self.expand_match_macro(node, params),
             "ifdef"     => self.expand_ifdef_macro(node, params),
             "do"        => self.expand_do_macro(node, params),
+            "with"      => self.expand_with_macro(node, params),
             "get"       => self.expand_get_macro(node, params),
             "raw"       => self.expand_raw_macro(node, params),
             "string"    => self.expand_string_macro(node, params),
