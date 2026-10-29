@@ -1,7 +1,8 @@
 use super::*;
 
 fn expand(source: String) -> Result<String, String>  {
-    let expander = tree_builder(Some("<test>"), source);
+    let context = Context::new();
+    let expander = tree_builder(&context, Some("<test>"), source);
     let tree = match expander.expand() {
         Ok(tree) => tree,
         Err(err) => return Err(format!("{}", err)),

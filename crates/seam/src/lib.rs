@@ -23,26 +23,28 @@ pub const VERSION: (u8, u8, u8) = (
 
 /* Library helpers. */
 
-pub fn tree_builder<'a, P: AsRef<Path>>(source_path: Option<P>, string: String)
+pub use expander::Context;
+
+pub fn tree_builder<'a, P: AsRef<Path>>(context: &'a Context<'a>, source_path: Option<P>, string: String)
     -> expander::Expander<'a> {
     let path = source_path.map_or("<stdin>".to_string(),
         |s| s.as_ref().to_string_lossy().to_string());
     let tokenizer = lexer::Lexer::new(path, string);
     let builder = parser::Parser::new(tokenizer);
-    expander::Expander::new(builder)
+    expander::Expander::new(context, builder)
 }
 
-pub fn tree_builder_file<'a>(path: &Path)
+pub fn tree_builder_file<'a>(context: &'a Context<'a>, path: &Path)
     -> io::Result<expander::Expander<'a>> {
     let contents = fs::read_to_string(&path)?;
-    Ok(tree_builder(Some(path), contents))
+    Ok(tree_builder(context, Some(path), contents))
 }
 
-pub fn tree_builder_stream<'a>(stream: &mut impl io::Read)
+pub fn tree_builder_stream<'a>(context: &'a Context<'a>, stream: &mut impl io::Read)
     -> io::Result<expander::Expander<'a>> {
     let mut contents = String::new();
     stream.read_to_string(&mut contents)?;
-    Ok(tree_builder(Option::<&Path>::None, contents))
+    Ok(tree_builder(context, Option::<&Path>::None, contents))
 }
 
 #[cfg(test)]

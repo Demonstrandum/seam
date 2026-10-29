@@ -15,6 +15,7 @@ use std::{
 };
 
 use chrono::TimeZone;
+use typed_arena::Arena;
 use colored::*;
 use fixed;
 use formatx;
@@ -80,99 +81,129 @@ impl<'a> Macro<'a> {
     }
 }
 
-/// Type of variable scope owned by an `Expander` instance.
-pub type Scope<'a> = RefCell<HashMap<String, Rc<Macro<'a>>>>; // Can you believe this type?
+/// Owns everything that outlives a single macro expansion:
+/// every parsed source file and every variable scope.
+/// Parse trees borrow source code from the parsers, and scopes point to
+/// their parents, so both live in arenas which never move or free their
+/// contents until the whole `Context` is dropped.
+pub struct Context<'a> {
+    parsers: Arena<Parser>,
+    scopes: Arena<Scope<'a>>,
+    /// Include directories, in order of search.
+    includes: RefCell<BTreeSet<PathBuf>>,
+}
+
+impl<'a> Context<'a> {
+    pub fn new() -> Self {
+        Self {
+            parsers: Arena::new(),
+            scopes: Arena::new(),
+            includes: RefCell::new(BTreeSet::from([PathBuf::from(".")])),
+        }
+    }
+}
+
+impl<'a> Default for Context<'a> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<'a> fmt::Debug for Context<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Context")
+            .field("includes", &self.includes)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A variable scope: the macros defined directly within it,
+/// and the scope it is nested in (if any).
+#[derive(Debug)]
+pub struct Scope<'a> {
+    definitions: RefCell<HashMap<String, Rc<Macro<'a>>>>,
+    parent: Option<&'a Scope<'a>>,
+}
+
+impl<'a> Scope<'a> {
+    fn new(parent: Option<&'a Scope<'a>>) -> Self {
+        Self { definitions: RefCell::new(HashMap::new()), parent }
+    }
+
+    /// Find a macro in this scope, or any scope enclosing it.
+    fn lookup(&self, name: &str) -> Option<Rc<Macro<'a>>> {
+        let mut scope = Some(self);
+        while let Some(current) = scope {
+            if let Some(mac) = current.definitions.borrow().get(name) {
+                return Some(mac.clone());
+            }
+            scope = current.parent;
+        }
+        None
+    }
+}
 
 /// Macro expansion context, takes a parser and expands
 /// any macro calls found in the generated parse-tree.
-#[derive(Debug, Clone)]
+/// This is only a view into a [`Context`] at a given scope,
+/// so it is cheap to copy.
+#[derive(Debug, Clone, Copy)]
 pub struct Expander<'a> {
-    parser: Parser,
-    /// Include directories, in order of search.
-    includes: BTreeSet<PathBuf>,
-    subparsers: RefCell<Vec<Parser>>,
-    subcontexts: RefCell<Vec<Self>>,
-    definitions: Scope<'a>,
+    context: &'a Context<'a>,
+    parser: &'a Parser,
+    scope: &'a Scope<'a>,
 }
 
 impl<'a> Expander<'a> {
-    pub fn new(parser: Parser) -> Self {
+    pub fn new(context: &'a Context<'a>, parser: Parser) -> Self {
         Self {
-            parser,
-            includes: BTreeSet::from([PathBuf::from(".")]),
-            subparsers: RefCell::new(Vec::new()),
-            subcontexts: RefCell::new(Vec::new()),
-            definitions: RefCell::new(HashMap::new()),
+            context,
+            parser: context.parsers.alloc(parser),
+            scope: context.scopes.alloc(Scope::new(None)),
         }
     }
 
     /// Get underlying source-code of the active parser for current unit.
-    pub fn get_source(&self) -> &str {
+    pub fn get_source(&self) -> &'a str {
         self.parser.get_source()
     }
 
     /// Supply additional include-directories for the macros
     /// to use when searching for files to include/emebed.
     /// Files are searched for in the order that of the directories.
-    pub fn add_includes<T: Iterator>(&mut self, dirs: T)
+    pub fn add_includes<T: Iterator>(&self, dirs: T)
         where T::Item: Into<PathBuf>
     {
+        let mut includes = self.context.includes.borrow_mut();
         for dir in dirs {
-            self.includes.insert(dir.into());
+            includes.insert(dir.into());
         }
     }
 
-    /// Add a subparser owned by the expander context.
+    /// Hand a parser over to the context, which keeps it alive for `'a`.
     fn register_parser(&self, parser: Parser) -> &'a Parser {
-        {
-            let mut parsers = self.subparsers.borrow_mut();
-            parsers.push(parser);
+        self.context.parsers.alloc(parser)
+    }
+
+    /// An expander for a new scope nested in the current one.
+    fn child(&self) -> Self {
+        Self {
+            scope: self.context.scopes.alloc(Scope::new(Some(self.scope))),
+            ..*self
         }
-        self.latest_parser().unwrap()
-    }
-
-    /// Get the latest subparser added.
-    fn latest_parser(&self) -> Option<&'a Parser> {
-        let p = self.subparsers.as_ptr();
-        unsafe { (*p).last() }
-    }
-
-    /// Create and register a subcontext built from the current context.
-    fn create_subcontext(&self) -> &mut Self {
-        {
-            let copy = self.clone();
-            let mut contexts = self.subcontexts.borrow_mut();
-            contexts.push(copy);
-        }
-        self.latest_context().unwrap()
-    }
-
-    /// Delete a subcontext from the current context.
-    fn remove_subcontext(&self) -> () {
-        let mut contexts = self.subcontexts.borrow_mut();
-        contexts.pop();
-    }
-
-    /// Get the latest subparser added.
-    fn latest_context(&self) -> Option<&mut Self> {
-        let contexts = self.subcontexts.as_ptr();
-        unsafe { (*contexts).last_mut() }
     }
 
     /// Update variable (macro) for this scope.
     fn insert_variable(&self, name: String, var: Rc<Macro<'a>>) {
-        let mut defs = self.definitions.borrow_mut();
+        let mut defs = self.scope.definitions.borrow_mut();
         defs.insert(name, var);
     }
 
     /// Check if macro exists in this scope.
     fn has_variable(&self, name: &str) -> bool {
-        let defs = self.definitions.borrow();
-        defs.contains_key(name)
+        self.get_variable(name).is_some()
     }
 
     fn get_variable(&self, name: &str) -> Option<Rc<Macro<'a>>> {
-        self.definitions.borrow().get(name).map(|m| m.clone())
+        self.scope.lookup(name)
     }
 
     /// Pattern-matching variable bind for two nodes (the pattern and the value).
@@ -470,7 +501,7 @@ impl<'a> Expander<'a> {
             };
             // Now attempt to `bind` against pattern, successful binds means
             // we evaluate the RHS of the list and return that.
-            let subcontext = self.clone(); // Subscope.
+            let subcontext = self.child(); // Subscope.
             if let Ok(()) = subcontext.bind(pattern, expr) {
                 return subcontext.expand_nodes(value.into());
             }
@@ -594,7 +625,7 @@ impl<'a> Expander<'a> {
         let mut parser: Result<Parser, ExpansionError> = Err(
             include_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in &self.includes {
+        for include_dir in self.context.includes.borrow().iter() {
             let path = include_dir.join(path);
             parser = super::parser_for_file(&path)
                 .or_else(|err| {
@@ -663,7 +694,7 @@ impl<'a> Expander<'a> {
         let mut value: Result<String, ExpansionError> = Err(
             embed_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in &self.includes {
+        for include_dir in self.context.includes.borrow().iter() {
             let path = include_dir.join(path);
             value = std::fs::read_to_string(path)
                 .map_err(|err| embed_error(Box::new(err)));
@@ -1083,7 +1114,7 @@ impl<'a> Expander<'a> {
     fn expand_namespace_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Start evaluating all the arguments to the macro in a separate context.
-        let context = self.clone();
+        let context = self.child();
         let params =  context.expand_nodes(params)?;
         let mut args = params.iter().peekable();
         let Some(namespace) = args.next().and_then(ParseNode::atomic) else {
@@ -1109,8 +1140,8 @@ impl<'a> Expander<'a> {
         // `%namespace` macro and include the definition prefixed by
         // the namespace in the *current* scope.
         {
-            let mut self_defs = self.definitions.borrow_mut();
-            let defs = context.definitions.borrow();
+            let mut self_defs = self.scope.definitions.borrow_mut();
+            let defs = context.scope.definitions.borrow();
             for (key, value) in defs.iter() {
                 let new_key = format!("{}{}{}", namespace.value, separator, key);
                 self_defs.insert(new_key, value.clone());
@@ -1133,9 +1164,9 @@ impl<'a> Expander<'a> {
         let list = self.expand_nodes(list.into_boxed_slice())?;
         let body = args.rest.into_boxed_slice();
 
-        let context = self.clone();
         let mut expanded = Vec::with_capacity(list.len());
         for item in list {
+            let context = self.child();
             context.bind(&it, &item)?;
             let evaluated = context.expand_nodes(body.clone())?;
             expanded.extend(evaluated);
@@ -1689,15 +1720,11 @@ impl<'a> Expander<'a> {
     fn apply_macro(&self, mac: Rc<Macro<'a>>, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Instance of expansion subcontext.
-        let subcontext = self.create_subcontext();
+        let subcontext = self.child();
         // Construct fake list of arguments and parameters and pattern match on them.
         subcontext.bind_list(node, &mac.params, &params)?;
         // Expand body.
-        let expanded = subcontext.expand_nodes(mac.body.clone())?.to_vec();
-        // Finished expanding macro, delete the subcontext.
-        self.remove_subcontext();
-        // Return the body of the evaluated macro.
-        Ok(expanded.into_boxed_slice())
+        subcontext.expand_nodes(mac.body.clone())
     }
 
     fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
@@ -1853,7 +1880,7 @@ impl<'a> Expander<'a> {
         Ok(expanded.into_boxed_slice())
     }
 
-    pub fn expand(&'a self) -> Result<ParseTree<'a>, Box<dyn 'a + std::error::Error>> {
+    pub fn expand(&self) -> Result<ParseTree<'a>, Box<dyn 'a + std::error::Error>> {
         let tree = self.parser.parse()?;
         let expanded = self.expand_nodes(tree)?;
         Ok(expanded)

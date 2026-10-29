@@ -81,21 +81,23 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if from_stdin {
         let mut stdin = io::stdin();
-        let mut builder = seam::tree_builder_stream(&mut stdin)?;
+        let context = seam::Context::new();
+        let builder = seam::tree_builder_stream(&context, &mut stdin)?;
         builder.add_includes(include_dirs.iter());
-        generate_and_print(&builder, &target, is_doc);
+        generate_and_print(builder, &target, is_doc);
     }
 
     for file in files {
-        let mut builder = seam::tree_builder_file(&file)?;
+        let context = seam::Context::new();
+        let builder = seam::tree_builder_file(&context, &file)?;
         builder.add_includes(include_dirs.iter());
-        generate_and_print(&builder, &target, is_doc);
+        generate_and_print(builder, &target, is_doc);
     }
 
     Ok(())
 }
 
-fn generate_and_print<'a>(expander: &'a seam::parse::expander::Expander<'a>, target: &str, is_doc: bool) {
+fn generate_and_print(expander: seam::parse::expander::Expander, target: &str, is_doc: bool) {
     let tree = match expander.expand() {
         Ok(tree) => tree,
         Err(e) => {
