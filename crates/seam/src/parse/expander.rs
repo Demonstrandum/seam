@@ -42,12 +42,13 @@ impl<'a> fmt::Display for ExpansionError<'a> {
         let ExpansionError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();
+        writeln!(f, "")?;
         writeln!(f, "{} {}", line_prefix, line_view)?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=site.line_column() - 1,
             length=site.width())?;
-        write!(f, "[{}] Error Expanding Macro {}: {}",
+        writeln!(f, "[{}] Error Expanding Macro {}: {}",
             "**".red().bold(), site, msg)
     }
 }
@@ -602,7 +603,7 @@ impl<'a> Expander<'a> {
             format!("{}", error), site.to_owned());
         let mut parser: Result<Parser, ExpansionError> = Err(
             include_error(Box::new("No path tested.")));
-        // Try all include directories until one is succesful.
+        // Try all include directories until one is successful.
         for include_dir in &self.includes {
             let path = include_dir.join(path);
             parser = super::parser_for_file(&path)

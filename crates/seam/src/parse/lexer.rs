@@ -14,12 +14,13 @@ impl<'a> fmt::Display for LexError<'a> {
         let LexError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();
+        writeln!(f, "")?;
         writeln!(f, "{} {}", line_prefix, line_view)?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=site.line_column() - 1,
             length=site.width())?;
-        write!(f, "[**] Lexical Error {}: {}", site, msg)
+        writeln!(f, "[**] Lexical Error {}: {}", site, msg)
     }
 }
 
