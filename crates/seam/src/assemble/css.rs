@@ -64,7 +64,7 @@ const CSS_NON_NESTED_SELECTORS: [&str; 3]
 /// or at least I think.
 const BINARY_OPERATORS: [&str; 4] = ["+", "-", "*", "/"];
 
-fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<'a>> {
+fn convert_value<'a>(node: &ParseNode<'a>) -> Result<String, GenerationError<'a>> {
     match node {
         ParseNode::List { nodes: list, .. } => {
             let result = match &**list {
@@ -119,7 +119,7 @@ fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<
 /// Function responsible for translating a CSS value (i.e.
 /// a value of a CSS property) from some s-expression into
 /// a valid CSS value.
-pub fn css_value<'a>(_property: &str, node: &'a ParseNode<'a>)
+pub fn css_value<'a>(_property: &str, node: &ParseNode<'a>)
 -> Result<String, GenerationError<'a>> {
     // Naïve way (in future consider the type of property,
     //  and take care of special cases):
@@ -132,12 +132,12 @@ pub fn css_value<'a>(_property: &str, node: &'a ParseNode<'a>)
 /// (@symbol :attr arg)                -> @symbol (attr: arg); OR @symbol { attr: arg }
 /// (@symbol (select :prop val))       -> @symbol { select { prop: val; } }
 /// (@sym x :attr arg (sel :prop val)) -> @sym x (attr: arg) { sel { prop: val; } }
-fn generate_special_selector<'a>(f: Formatter,
+fn generate_special_selector<'b, 'a>(f: Formatter,
                                  selector: &str,
-                                 mut arguments: Iter<'a, ParseNode<'a>>)
+                                 mut arguments: Iter<'b, ParseNode<'a>>)
 -> Result<(), GenerationError<'a>> {
     let mut parsing_rules: bool = false;
-    let unexpected_node = |node: &'a ParseNode<'a>, rules: bool| {
+    let unexpected_node = |node: &'b ParseNode<'a>, rules: bool| {
         if rules {
             Err(GenerationError::new("CSS",
                 "Expected list (i.e. a CSS rule) here!",
@@ -191,7 +191,7 @@ fn generate_special_selector<'a>(f: Formatter,
     Ok(())
 }
 
-fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<(), GenerationError<'a>> {
+fn generate_css_rule<'b, 'a>(f: Formatter, iter: Iter<'b, ParseNode<'a>>) -> Result<(), GenerationError<'a>> {
     let mut prop_i = 0; // Index of first property.
     // TODO: Selector functions such as nth-child(...), etc.
     // e.g. (ul li(:nth-child (+ 2n 1))) -> ul li:nth-child(2n + 1).
@@ -240,8 +240,8 @@ fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<
     Ok(())
 }
 
-impl<'a> MarkupFormatter for CSSFormatter<'a> {
-    fn document(&self) -> Result<String, GenerationError> {
+impl<'a> MarkupFormatter<'a> for CSSFormatter<'a> {
+    fn document(&self) -> Result<String, GenerationError<'a>> {
         let mut doc = String::new();
         if self.tree.is_empty() {
             return Ok(String::from(DEFAULT));
@@ -251,7 +251,7 @@ impl<'a> MarkupFormatter for CSSFormatter<'a> {
     }
 
     fn generate(&self, f: Formatter)
-    -> Result<(), GenerationError> {
+    -> Result<(), GenerationError<'a>> {
         let mut tree_iter = self.tree.iter().peekable();
         while let Some(node) = tree_iter.next() {
             match node {

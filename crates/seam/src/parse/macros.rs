@@ -176,10 +176,10 @@ pub enum ArgPos<'a> { Int(usize), Str(&'a str) }
 /// What kind of types can be matched against
 /// when determining an arguments positionality.
 pub trait ArgMatcher {
-    fn unwrap(&self) -> ArgPos;
+    fn unwrap(&self) -> ArgPos<'_>;
 }
 impl ArgMatcher for usize {
-    fn unwrap(&self) -> ArgPos { ArgPos::Int(*self) }
+    fn unwrap(&self) -> ArgPos<'_> { ArgPos::Int(*self) }
 }
 impl<'a> ArgMatcher for  &'a str {
     fn unwrap(&self) -> ArgPos<'a> { ArgPos::Str(self) }

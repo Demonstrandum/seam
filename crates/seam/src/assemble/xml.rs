@@ -1,5 +1,4 @@
 //! Assembles an expanded tree into valid XML.
-use std::cell::RefCell;
 
 use super::{escape_xml, MarkupFormatter, GenerationError, Formatter};
 use crate::parse::parser::{self, ParseNode, ParseTree};
@@ -7,22 +6,12 @@ use crate::parse::parser::{self, ParseNode, ParseTree};
 #[derive(Debug, Clone)]
 pub struct XMLFormatter<'a> {
     pub tree: ParseTree<'a>,
-    formatters: RefCell<Vec<Box<dyn MarkupFormatter + 'a>>>,
 }
 
 impl<'a> XMLFormatter<'a> {
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self {
-            tree,
-            formatters: Default::default(),
-        }
-    }
-
-    fn register_formatter<Fmt: MarkupFormatter + 'a>(&self, formatter: Fmt) -> &'a Box<dyn MarkupFormatter + 'a> {
-        let fmts = self.formatters.as_ptr();
-        unsafe {
-            (*fmts).push(Box::new(formatter));
-            (*fmts).last().unwrap()
+            tree
         }
     }
 
@@ -102,7 +91,6 @@ impl<'a> XMLFormatter<'a> {
                 }
 
                 let xml_fmt = XMLFormatter::new(rest.to_owned().into_boxed_slice());
-                let xml_fmt = self.register_formatter(xml_fmt);
                 xml_fmt.generate(f)?;
 
                 // Closing tag should be equally as spaced as opening tag (?)
@@ -127,8 +115,8 @@ impl<'a> XMLFormatter<'a> {
 pub const DEFAULT: &str =
     "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n";
 
-impl<'a> MarkupFormatter for XMLFormatter<'a> {
-    fn document(&self) -> Result<String, GenerationError> {
+impl<'a> MarkupFormatter<'a> for XMLFormatter<'a> {
+    fn document(&self) -> Result<String, GenerationError<'a>> {
         let mut doc = String::new();
         if self.tree.is_empty() {
             return Ok(String::from(DEFAULT));
@@ -154,7 +142,7 @@ impl<'a> MarkupFormatter for XMLFormatter<'a> {
         Ok(doc)
     }
 
-    fn generate(&self, f: Formatter) -> Result<(), GenerationError> {
+    fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
         let mut tree_iter = self.tree.iter().peekable();
         while let Some(node) = tree_iter.next() {
             self.generate_xml_node(f, node)?;

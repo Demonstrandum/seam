@@ -1,6 +1,5 @@
 //! Output expanded source-code as identical looking to the original
 //! hand-written code as possible.
-use std::cell::RefCell;
 
 use super::{MarkupFormatter, GenerationError, Formatter};
 use crate::parse::parser::{ParseNode, ParseTree};
@@ -8,22 +7,12 @@ use crate::parse::parser::{ParseNode, ParseTree};
 #[derive(Debug, Clone)]
 pub struct SExpFormatter<'a> {
     pub tree: ParseTree<'a>,
-    formatters: RefCell<Vec<Box<dyn MarkupFormatter + 'a>>>,
 }
 
 impl<'a> SExpFormatter<'a> {
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self {
-            tree,
-            formatters: Default::default()
-        }
-    }
-
-    fn register_formatter<Fmt: MarkupFormatter + 'a>(&self, formatter: Fmt) -> &'a Box<dyn MarkupFormatter + 'a> {
-        let fmts = self.formatters.as_ptr();
-        unsafe {
-            (*fmts).push(Box::new(formatter));
-            (*fmts).last().unwrap()
+            tree
         }
     }
 
@@ -52,7 +41,6 @@ impl<'a> SExpFormatter<'a> {
                 write!(f, "(")?;
                 let tree = nodes.to_vec();
                 let sexp_fmt = SExpFormatter::new(tree.into_boxed_slice());
-                let sexp_fmt = self.register_formatter(sexp_fmt);
                 sexp_fmt.generate(f)?;
                 write!(f, "{}", end_token.leading_whitespace)?;
                 write!(f, ")")?;
@@ -69,12 +57,12 @@ impl<'a> SExpFormatter<'a> {
 
 }
 
-impl<'a> MarkupFormatter for SExpFormatter<'a> {
-    fn document(&self) -> Result<String, GenerationError> {
+impl<'a> MarkupFormatter<'a> for SExpFormatter<'a> {
+    fn document(&self) -> Result<String, GenerationError<'a>> {
         self.display()
     }
 
-    fn generate(&self, f: Formatter) -> Result<(), GenerationError> {
+    fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
         let mut tree_iter = self.tree.iter().peekable();
         while let Some(node) = tree_iter.next() {
             self.generate_node(f, node)?;

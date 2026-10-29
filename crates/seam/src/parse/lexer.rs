@@ -115,21 +115,13 @@ impl<'a> Lexer {
                 }
             }
         }
-        unsafe {
-            std::str::from_utf8_unchecked(&bytes[start..self.byte_offset.get()])
-        }
+        &self.source[start..self.byte_offset.get()]
     }
 
     /// Look at immediately following complete character.
     /// Returns `None` if file is at EOF.
     fn peek_char(&self) -> Option<char> {
-        let bytes = self.source.as_bytes();
-        let slice = &bytes[self.byte_offset.get()..];
-        unsafe {
-            let utf8 = std::str::from_utf8_unchecked(slice);
-            let mut chars = utf8.chars();
-            chars.next()
-        }
+        self.source[self.byte_offset.get()..].chars().next()
     }
 
     /// Check if source-code at current possition starts with a pattern.
@@ -298,7 +290,7 @@ impl<'a> Lexer {
     }
 
     /// Generate site from start byte-index.
-    fn site(&self, file_offset: usize, line_offset: usize) -> Site {
+    fn site(&self, file_offset: usize, line_offset: usize) -> Site<'_> {
         let span = self.byte_offset.get() - file_offset;
         Site::new(&self.source_path, &self.source, self.line.get(), file_offset, line_offset, span)
     }

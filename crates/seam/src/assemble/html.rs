@@ -1,5 +1,4 @@
 //! Assembles an expanded tree into valid HTML.
-use std::cell::RefCell;
 
 use super::{escape_xml, GenerationError, MarkupFormatter, Formatter};
 use super::{
@@ -15,22 +14,12 @@ use crate::parse::tokens;
 #[derive(Debug, Clone)]
 pub struct HTMLFormatter<'a> {
     pub tree: ParseTree<'a>,
-    formatters: RefCell<Vec<Box<dyn MarkupFormatter + 'a>>>,
 }
 
 impl<'a> HTMLFormatter<'a> {
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self {
-            tree,
-            formatters: Default::default(),
-        }
-    }
-
-    fn register_formatter<Fmt: MarkupFormatter + 'a>(&self, formatter: Fmt) -> &'a Box<dyn MarkupFormatter + 'a> {
-        let fmts = self.formatters.as_ptr();
-        unsafe {
-            (*fmts).push(Box::new(formatter));
-            (*fmts).last().unwrap()
+            tree
         }
     }
 
@@ -162,7 +151,6 @@ impl<'a> HTMLFormatter<'a> {
                         // We have to reconsititute what the source-code would look like if all
                         // macros were expanded by hand, and read as raw source code.
                         let text_fmt = PlainTextFormatter::new(rest.into_boxed_slice());
-                        let text_fmt = self.register_formatter(text_fmt);
                         text_fmt.generate(f)?;
                     },
                     "style" => {  // <style> tag needs to generate CSS.
@@ -183,7 +171,6 @@ impl<'a> HTMLFormatter<'a> {
                         } else {
                         writeln!(f, "")?;
                             let css_fmt = CSSFormatter::new(rest.into_boxed_slice());
-                            let css_fmt = self.register_formatter(css_fmt);
                             css_fmt.generate(f)?;
                         }
                     },
@@ -191,17 +178,14 @@ impl<'a> HTMLFormatter<'a> {
                         // TODO: Generating JavaScript from S-expressions is not implemented.
                         // For now, just treat it as a completely source-code preserving.
                         let sexp_fmt = SExpFormatter::new(rest.into_boxed_slice());
-                        let sexp_fmt = self.register_formatter(sexp_fmt);
                         sexp_fmt.generate(f)?;
                     },
                     "math" | "svg" => {  // <math> and <svg> are subsets of XML.
                         let xml_fmt = XMLFormatter::new(rest.into_boxed_slice());
-                        let xml_fmt = self.register_formatter(xml_fmt);
                         xml_fmt.generate(f)?;
                     },
                     _ => {  // Tag contains regular old HTML.
                         let html_fmt = HTMLFormatter::new(rest.into_boxed_slice());
-                        let html_fmt = self.register_formatter(html_fmt);
                         html_fmt.generate(f)?;
                     },
                 }
@@ -251,8 +235,8 @@ const VOID_ELEMENTS: [&str; 14] = [
     "wbr",
 ];
 
-impl<'a> MarkupFormatter for HTMLFormatter<'a> {
-    fn document(&self) -> Result<String, GenerationError> {
+impl<'a> MarkupFormatter<'a> for HTMLFormatter<'a> {
+    fn document(&self) -> Result<String, GenerationError<'a>> {
         let mut doc = String::new();
         if self.tree.is_empty() {
             return Ok(String::from(DEFAULT));
@@ -302,7 +286,7 @@ impl<'a> MarkupFormatter for HTMLFormatter<'a> {
         Ok(doc)
     }
 
-    fn generate(&self, f: Formatter) -> Result<(), GenerationError> {
+    fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
         let mut tree_iter = self.tree.iter().peekable();
         while let Some(node) = tree_iter.next() {
             self.generate_html_node(f, node)?;

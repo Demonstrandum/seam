@@ -71,7 +71,7 @@ pub struct Macro<'a> {
 // in order to implement lexical scoping.
 
 impl<'a> Macro<'a> {
-    pub fn new(name: &str) -> Macro {
+    pub fn new(name: &str) -> Macro<'a> {
         Macro {
             name: name.to_string(),
             params: Box::new([]),
@@ -92,7 +92,6 @@ pub struct Expander<'a> {
     includes: BTreeSet<PathBuf>,
     subparsers: RefCell<Vec<Parser>>,
     subcontexts: RefCell<Vec<Self>>,
-    invocations: RefCell<Vec<ParseNode<'a>>>,
     definitions: Scope<'a>,
 }
 
@@ -103,7 +102,6 @@ impl<'a> Expander<'a> {
             includes: BTreeSet::from([PathBuf::from(".")]),
             subparsers: RefCell::new(Vec::new()),
             subcontexts: RefCell::new(Vec::new()),
-            invocations: RefCell::new(Vec::new()),
             definitions: RefCell::new(HashMap::new()),
         }
     }
@@ -159,14 +157,6 @@ impl<'a> Expander<'a> {
     fn latest_context(&self) -> Option<&mut Self> {
         let contexts = self.subcontexts.as_ptr();
         unsafe { (*contexts).last_mut() }
-    }
-
-    fn register_invocation(&self, node: ParseNode<'a>) -> &ParseNode<'a> {
-        let invocations = self.invocations.as_ptr();
-        unsafe {
-            (*invocations).push(node);
-            (*invocations).last().unwrap()
-        }
     }
 
     /// Update variable (macro) for this scope.
@@ -1810,7 +1800,7 @@ impl<'a> Expander<'a> {
 
                 // Pathway: (%_ _ _) macro invocation.
                 if let Some(symbol) = head.symbol() {
-                    let node = self.register_invocation(node.clone());
+                    let node = &node;
                     let name = symbol.value.clone();
                     if name.starts_with("%") {
                         // Rebuild node...
