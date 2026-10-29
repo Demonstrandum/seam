@@ -152,7 +152,7 @@ fn generate_special_selector<'a>(f: Formatter,
         arguments.next();  // Skip `@`-selector.
         for arg in arguments {
             match arg {
-                ParseNode::Attribute { ref keyword, node, .. } => {
+                ParseNode::Attribute { keyword, node, .. } => {
                     write!(f, "({}: {}) ", keyword, css_value(keyword, &*node)?)?;
                 },
                 _ => write!(f, "{} ", css_value(selector, arg)?)?
@@ -168,11 +168,11 @@ fn generate_special_selector<'a>(f: Formatter,
 
     for arg in arguments {
         match arg {
-            ParseNode::Attribute { ref keyword, node, .. } => {
+            ParseNode::Attribute { keyword, node, .. } => {
                 unexpected_node(&arg, parsing_rules)?;
                 write!(f, "({}: {}) ", keyword, css_value(keyword, &*node)?)?;
             },
-            ParseNode::List { nodes: ref rule, leading_whitespace, .. } => {
+            ParseNode::List { nodes: rule, leading_whitespace, .. } => {
                 // Now we parse nested rules!
                 if !parsing_rules {
                     writeln!(f, "{{")?;
@@ -228,7 +228,7 @@ fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<
     let properties = iter.skip(prop_i - 1);
 
     for property in properties {
-        let ParseNode::Attribute { ref node, ref keyword, .. } = property else {
+        let ParseNode::Attribute { node, keyword, .. } = property else {
             return Err(GenerationError::new("CSS",
                 "CSS property-value pairs must be in the \
                  form of attributes, i.e. `:property value`.",

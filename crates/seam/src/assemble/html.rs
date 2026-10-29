@@ -216,7 +216,7 @@ impl<'a> HTMLFormatter<'a> {
 
                 write!(f, "</{}>", tag)?;
             },
-            ParseNode::Attribute { ref site, .. } =>
+            ParseNode::Attribute { site, .. } =>
                 return Err(GenerationError::new("HTML",
                     "Unexpected attribute encountered.", site))
         }

@@ -1,7 +1,6 @@
 //! Procedural macro for the `arguments! { ... }`
 //! macro-argument parser for seam macros.
 //! TODO: Convert all `panic!(..)` calls to actual compiler errors.
-#![feature(proc_macro_span)]
 #![feature(proc_macro_diagnostic)]
 
 use std::{collections::{HashMap, HashSet}, iter::Peekable};

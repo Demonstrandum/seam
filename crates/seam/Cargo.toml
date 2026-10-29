@@ -7,7 +7,7 @@ readme = "../../README.md"
 homepage = "https://git.knutsen.co/seam"
 version = "0.4.3"
 authors = ["Demonstrandum <samuel@knutsen.co>"]
-edition = "2021"
+edition.workspace = true
 
 [features]
 # default = ["debug"]

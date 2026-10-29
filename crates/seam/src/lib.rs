@@ -1,6 +1,5 @@
 #![allow(incomplete_features)]
 #![feature(pattern)]
-#![feature(associated_type_defaults)]
 
 pub mod parse;
 pub mod assemble;

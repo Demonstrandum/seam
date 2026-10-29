@@ -137,7 +137,7 @@ impl<'a> ParseNode<'a> {
     /// Unwrap a literal node if it is a symbol or number.
     pub fn symbolic(&self) -> Option<&Node<'a>> {
         match self {
-            Self::Symbol(ref node) | Self::Number(ref node) => Some(node),
+            Self::Symbol(node) | Self::Number(node) => Some(node),
             _ => None,
         }
     }
@@ -145,7 +145,7 @@ impl<'a> ParseNode<'a> {
     /// Unwrap string-like nodes.
     pub fn string(&self) -> Option<&Node<'a>> {
         match self {
-            Self::String(ref node) | Self::Raw(ref node) => Some(node),
+            Self::String(node) | Self::Raw(node) => Some(node),
             _ => None,
         }
     }
@@ -153,7 +153,7 @@ impl<'a> ParseNode<'a> {
     /// Unwrap a number node into a [`Node<'a>`].
     pub fn number(&self) -> Option<&Node<'a>> {
         match self {
-            Self::Number(ref node) => Some(node),
+            Self::Number(node) => Some(node),
             _ => None,
         }
     }
@@ -161,7 +161,7 @@ impl<'a> ParseNode<'a> {
     /// Unwrap a symbol node into a [`Node<'a>`].
     pub fn symbol(&self) -> Option<&Node<'a>> {
         match self {
-            Self::Symbol(ref node) => Some(node),
+            Self::Symbol(node) => Some(node),
             _ => None,
         }
     }
@@ -169,10 +169,10 @@ impl<'a> ParseNode<'a> {
     /// Unwrap literal (atomic) nodes into their underlying [`Node`].
     pub fn atomic(&self) -> Option<&Node<'a>> {
         match self {
-            Self::Symbol(ref node)
-            | Self::Number(ref node)
-            | Self::String(ref node)
-            | Self::Raw(ref node) => Some(node),
+            Self::Symbol(node)
+            | Self::Number(node)
+            | Self::String(node)
+            | Self::Raw(node) => Some(node),
             _ => None,
         }
     }
@@ -208,12 +208,12 @@ impl<'a> ParseNode<'a> {
     /// Get a reference to the parse node's underlying [`Site`].
     pub fn site(&self) -> &Site<'a> {
         match self {
-            Self::Symbol(ref node)
-            | Self::Number(ref node)
-            | Self::String(ref node)
-            | Self::Raw(ref node) => &node.site,
-            Self::List { ref site, .. } => site,
-            Self::Attribute { ref site, .. } => site,
+            Self::Symbol(node)
+            | Self::Number(node)
+            | Self::String(node)
+            | Self::Raw(node) => &node.site,
+            Self::List { site, .. } => site,
+            Self::Attribute { site, .. } => site,
         }
     }
 
@@ -233,10 +233,10 @@ impl<'a> ParseNode<'a> {
     /// of this parse node.
     pub fn leading_whitespace(&self) -> &str {
         match self {
-            Self::Symbol(ref node)
-            | Self::Number(ref node)
-            | Self::String(ref node)
-            | Self::Raw(ref node) => node.leading_whitespace.as_str(),
+            Self::Symbol(node)
+            | Self::Number(node)
+            | Self::String(node)
+            | Self::Raw(node) => node.leading_whitespace.as_str(),
             Self::List { leading_whitespace, .. } => leading_whitespace.as_str(),
             Self::Attribute { leading_whitespace, .. } => leading_whitespace.as_str(),
         }
@@ -245,12 +245,12 @@ impl<'a> ParseNode<'a> {
     /// Modify the underlying leading whitespace stored for this parse node.
     pub fn set_leading_whitespace(&mut self, whitespace: String) {
         match self {
-            Self::Symbol(ref mut node)
-            | Self::Number(ref mut node)
-            | Self::String(ref mut node)
-            | Self::Raw(ref mut node) => node.leading_whitespace = whitespace,
-            Self::List { ref mut leading_whitespace, .. } => *leading_whitespace = whitespace,
-            Self::Attribute { ref mut leading_whitespace, .. } => *leading_whitespace = whitespace,
+            Self::Symbol(node)
+            | Self::Number(node)
+            | Self::String(node)
+            | Self::Raw(node) => node.leading_whitespace = whitespace,
+            Self::List { leading_whitespace, .. } => *leading_whitespace = whitespace,
+            Self::Attribute { leading_whitespace, .. } => *leading_whitespace = whitespace,
         };
     }
 
@@ -609,7 +609,7 @@ impl<'a> SearchTree<'a> for ParseNode<'a> {
                     None
                 }
             },
-            ParseNode::Attribute { node, ref keyword, .. } => {
+            ParseNode::Attribute { node, keyword, .. } => {
                 if kind.is_a(SearchType::Attribute) {
                     if is_equal(keyword) {
                         return Some(node);
