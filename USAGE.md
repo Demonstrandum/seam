@@ -55,6 +55,53 @@ will be treated as macros.
 - `%date` standard `strftime` function, works of current system time, e.g.
   `(span :id timestamp Uploaded on (%date "%Y-%m-%d"))`.
 - `%log` will simply log any information to STDERR, e.g. `(%log Hello, World!)`.
+- `%with` overrides top-level definitions for everything within it, e.g.
+  `(%with (:title "Pound Cake") (%layout))` (see [Scoping](#scoping)).
+
+### Scoping
+
+Macros are *lexically* scoped: a macro's body sees the definitions from where
+the macro was *defined*, plus its own parameters, never those of whoever calls it.
+```lisp
+(%define x global)
+(%define (show) %x)
+(%define (f x) (%show))
+(%f local)  ; → global
+```
+This means `%lambda` makes closures, which keep their definitions after
+the macro that made them has returned,
+```lisp
+(%define (adder n) (%lambda (x) %n plus %x))
+(%apply (%adder 1) 2)  ; → 1 plus 2
+```
+and macros defined inside a `%namespace` keep using the namespace's own helpers.
+
+Definitions made inside a macro's body, `%for` or `%match` stay local to it.
+Plain lists don't make a new scope, and `%include` behaves as if the file's
+contents were written in place, so definitions it makes are visible after it.
+
+To pass values implicitly through macro calls, such as from a page into a
+shared layout, use `%with`. Its bindings override *top-level* definitions
+for everything expanded within it, including other macros it calls, but they
+never override a macro's parameters or local definitions.
+```lisp
+(%define title "My Website")  ; Default.
+(%define (layout) (title %title))
+(%layout)                               ; → (title "My Website")
+(%with (:title "Pound Cake") (%layout)) ; → (title "Pound Cake")
+```
+The bindings may come from any expression giving keyword-value pairs,
+e.g. `(%define (page &&meta) (%with %meta (%layout)))`.
+
+## Library
+
+When using seam as a Rust library, expansion needs a `Context`, which owns
+every source file and scope, so the expanded tree may borrow from them:
+```rust
+let context = seam::Context::new();
+let expander = seam::tree_builder_file(&context, path)?;
+let tree = expander.expand()?;
+```
 
 ### Example
 

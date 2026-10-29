@@ -1,0 +1,2 @@
+(%define sep "|")
+(%define (nav a b) %a %sep %b)

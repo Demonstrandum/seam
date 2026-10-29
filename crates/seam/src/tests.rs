@@ -118,4 +118,76 @@ mod tests {
             "\"<p>Hi &lt;b&gt;there&lt;/b&gt;</p>\""
         );
     }
+
+    #[test]
+    fn test_lexical_closures() {
+        // lambdas keep the scope they were created in.
+        assert_output_eq(
+            "(%define (adder n) (%lambda (x) %n %x)) (%apply (%adder 1) a) (%apply (%adder 2) b)",
+            " 1 a 2 b"
+        );
+        // each evaluation of the same `%lambda` makes a distinct closure.
+        assert_output_eq(
+            "(%define fs (%for i in (1 2 3) (%lambda (x) %i %x))) (%for f in (%fs) (%apply %f a))",
+            " 1 a 2 a 3 a"
+        );
+    }
+
+    #[test]
+    fn test_lexical_scope_isolation() {
+        // a macro does not see its caller's parameters.
+        assert_output_eq(
+            "(%define x global) (%define (show) %x) (%define (f x) (%show)) (%f local)",
+            " global"
+        );
+        // definitions within a macro body stay local to it.
+        assert_output_eq(
+            "(%define (outer) (%define (helper) H) (%helper)) (%outer) (%ifdef helper leaked ok)",
+            " H ok"
+        );
+    }
+
+    #[test]
+    fn test_namespace_helpers() {
+        // namespaced macros use their own helpers, not the caller's.
+        assert_output_eq(
+            "(%namespace ui (%include \"tests/fixtures/ui.sex\")) (%define sep CALLER) (%ui/nav a b)",
+            " a \"|\" b"
+        );
+    }
+
+    #[test]
+    fn test_with_macro() {
+        // `%with` overrides top-level definitions for macros called in its body.
+        assert_output_eq(
+            "(%define title Default) (%define (layout) (t %title)) (%with (:title Cake) (%layout)) (%layout)",
+            " (t Cake) (t Default)"
+        );
+        // but never a macro's own parameters.
+        assert_output_eq(
+            "(%define title Default) (%define (layout title) (t %title)) (%with (:title Cake) (%layout Param))",
+            " (t Param)"
+        );
+        // innermost bindings win, and they end with the `%with`.
+        assert_output_eq(
+            "(%define t A) (%with (:t B) (%with (:t C) %t) %t) %t",
+            " C B A"
+        );
+        // bindings may come from collected keyword arguments.
+        assert_output_eq(
+            "(%define (layout) (t %title %author)) (%define (page &&meta) (%with %meta (%layout))) (%page :title Cake :author Sam)",
+            " (t Cake Sam)"
+        );
+    }
+
+    #[test]
+    fn test_include_inside_macro_error() {
+        // sources included within a macro call outlive the call,
+        // so errors can still show where they came from.
+        let output = expand(String::from(
+            "(%define (f) (%include \"tests/fixtures/broken.sex\")) (%f)"
+        )).unwrap_err();
+        assert!(output.contains("tests/fixtures/broken.sex"), "{}", output);
+        assert!(output.contains("(p (%undefined-macro))"), "{}", output);
+    }
 }
