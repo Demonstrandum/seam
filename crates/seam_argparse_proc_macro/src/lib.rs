@@ -202,11 +202,8 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 let code = quote! {{
                     let arg_type = #arg_type;
                     let arg = #arg_pos(arg_type);
-                    fn position_matcher<'b>(pattern: &Box<dyn crate::parse::macros::ArgMatcher + 'b>) -> bool {
-                        match pattern.into() {
-                            Some(#position_pattern) => true,
-                            _ => false,
-                        }
+                    fn position_matcher(pattern: crate::parse::macros::ArgPos<'_>) -> bool {
+                        matches!(pattern.into(), Some(#position_pattern))
                     }
                     rules.register(position_matcher, arg);
                 }};

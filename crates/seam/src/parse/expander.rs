@@ -1,7 +1,7 @@
 use super::lexer::Lexer;
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
-use crate::assemble::{MarkupFormatter, html::HTMLFormatter};
+use crate::assemble::html::HTMLFormatter;
 
 use std::{
     fmt,
@@ -668,11 +668,11 @@ impl<'a> Expander<'a> {
             ));
         };
         // Bindings are evaluated eagerly, in the current scope.
-        let bindings = self.expand_node(bindings)?;
-        let bindings = match &*bindings {
-            [ParseNode::List { nodes, .. }] => nodes.clone(),
-            _ => bindings,
-        };
+        let mut bindings = self.expand_node(bindings)?.into_vec();
+        if let [ParseNode::List { .. }] = bindings.as_slice()
+            && let Some(ParseNode::List { nodes, .. }) = bindings.pop() {
+            bindings = nodes.into_vec();
+        }
         let mut frame = HashMap::with_capacity(bindings.len());
         for binding in &bindings {
             let Some((keyword, value)) = binding.attribute() else {
@@ -951,43 +951,28 @@ impl<'a> Expander<'a> {
         let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
         let path = args.number.1.value.split(&sep);
 
-        let mut view;
-        let mut node = args.number.2;
+        let mut node = &args.number.2;
         for item in path {
             // Verify the current node is a list so it can be indexed.
-            if let Some(list) = node.list() {
-                view = list.to_vec();
-            } else {
+            let Some(list) = node.list() else {
                 return Err(ExpansionError(
                     format!("Cannot `%get' on {} node.",node.node_type()),
                     node.owned_site(),
                 ))
-            }
-            let mut got = Err(ExpansionError(
-                format!("Could not find attribute with keyword `:{item}`."),
-                node.owned_site(),
-            ));
-            if let Ok(index) = item.parse::<usize>()  {
-                // Try to find n-th element of `view`.
-                got = view.get(index).cloned().ok_or(ExpansionError(
-                    format!("Index {} is out of bounds in list of length {}.", index, view.len()),
-                    node.owned_site(),
-                ));
-            }
-            if got.is_err() {
-                // Try to find :item attribute in list.
-                for node in &view {
-                    if let ParseNode::Attribute { keyword, node, .. } = node
-                        && item == keyword {
-                            got = Ok(*node.clone());
-                            break;
-                        }
-                }
-            }
-            node = got?;
+            };
+            // Find the n-th element, or else the `:item` attribute in the list.
+            let index = item.parse::<usize>().ok();
+            let found = index.and_then(|index| list.get(index)).or_else(|| list.iter().find_map(|node| match node {
+                ParseNode::Attribute { keyword, node, .. } if item == keyword => Some(&**node),
+                _ => None,
+            }));
+            node = found.ok_or_else(|| ExpansionError(match index {
+                Some(index) => format!("Index {} is out of bounds in list of length {}.", index, list.len()),
+                None => format!("Could not find attribute with keyword `:{item}`."),
+            }, node.owned_site()))?;
         }
 
-        Ok(Box::new([node]))
+        Ok(Box::new([node.clone()]))
     }
 
     fn expand_date_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -1133,7 +1118,7 @@ impl<'a> Expander<'a> {
                 "`%os/env' argument must be atomic (not a list).",
                 var.site()));
         };
-        let Node { site, leading_whitespace, .. } = var.clone();
+        let (site, leading_whitespace) = (var.site, var.leading_whitespace.clone());
         let Ok(value) = std::env::var(&*var.value) else {
             return Err(ExpansionError(
                 format!("No such environment variable ($`{}') visible.", var.value),
@@ -1493,16 +1478,14 @@ impl<'a> Expander<'a> {
             mandatory(1): list,
         }?;
         let list = args.number.1;
-        let mut reversed = Vec::with_capacity(list.len());
+        // Items are reversed, but whitespace keeps its order.
+        let whitespace: Vec<Cow<'a, str>> = list.iter().map(|item| item.leading_whitespace().clone()).collect();
+        let reversed: Vec<ParseNode<'a>> = list.into_iter().rev().zip(whitespace)
+            .map(|(mut item, whitespace)| { item.set_leading_whitespace(whitespace); item })
+            .collect();
 
-        for i in 0..list.len() {
-            let mut item = list[list.len() - i - 1].clone();
-            item.set_leading_whitespace(list[i].leading_whitespace().clone());
-            reversed.push(item);
-        }
-
-        let ParseNode::List { site, end_token, leading_whitespace, .. }
-            = params[0].clone() else { unreachable!() };
+        let ParseNode::List { site, end_token, leading_whitespace, .. } = &params[0] else { unreachable!() };
+        let (site, end_token, leading_whitespace) = (*site, *end_token, leading_whitespace.clone());
         Ok(Box::new([
             ParseNode::List {
                 nodes: reversed.into_boxed_slice(),
@@ -1691,13 +1674,13 @@ impl<'a> Expander<'a> {
         let mut expanded = vec![];
         for param in params {
             if let ParseNode::List { nodes, leading_whitespace, ..} = param {
-                let mut nodes = nodes.to_vec();
+                let mut nodes = nodes.into_vec();
                 if let [first, ..] = nodes.as_mut_slice() {
                     first.set_leading_whitespace(leading_whitespace);
                 }
                 expanded.extend(nodes);
             } else {
-                expanded.push(param.clone());
+                expanded.push(param);
             }
         }
         Ok(expanded.into_boxed_slice())
@@ -1995,9 +1978,8 @@ fn nodes_to_text<'a>(nodes: &[ParseNode<'a>]) -> Result<String, ExpansionError<'
             text += &atom.leading_whitespace;
             text += &atom.value;
         } else {
-            let html = HTMLFormatter::new(Box::new([node.clone()])).display()
+            HTMLFormatter::generate_nodes(&mut text, std::slice::from_ref(node))
                 .map_err(|error| ExpansionError(error.message, error.site))?;
-            text += &html;
         }
     }
     Ok(text)
@@ -2136,8 +2118,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                         self.prefix.push(defining.clone());
                     }
                     self.defining = None;
-                    self.parent.push(self.nodes.clone());
-                    self.nodes = Vec::new();
+                    self.parent.push(std::mem::take(&mut self.nodes));
                     if let Some(mode) = self.mode {
                         self.modes.push(mode);
                     }
@@ -2149,8 +2130,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                         self.prefix.push(defining.clone());
                     }
                     self.defining = Some(String::from("0"));
-                    self.parent.push(self.nodes.clone());
-                    self.nodes = Vec::new();
+                    self.parent.push(std::mem::take(&mut self.nodes));
                     if let Some(mode) = self.mode {
                         self.modes.push(mode);
                     }
@@ -2159,7 +2139,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                 // Assign the built-up map or sequence.
                 yaml::Event::MappingEnd | yaml::Event::SequenceEnd => {
                     self.mode = self.modes.pop(); // Revert to previous mode.
-                    let nodes = self.nodes.clone(); // Nodes in the list.
+                    let nodes = std::mem::take(&mut self.nodes); // Nodes in the list.
                     self.nodes = self.parent.pop().unwrap_or_default(); // Regain previous collection of nodes.
                     self.defining = match self.mode {
                         Some(Mode::Seq) => Some(format!("{}", self.nodes.len() + 1)),
