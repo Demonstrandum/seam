@@ -39,6 +39,34 @@ would translate to HTML as
 </ul>
 ```
 
+### HTML documents
+
+With `--html`, seam completes the document for you, unless `--nodocument`
+is given. Missing `(!DOCTYPE html)`, `(html ...)`, `(head ...)` and `(body ...)`
+elements are added, the same way browsers treat HTML with those tags omitted:
+loose metadata (`title`, `meta`, `link`, `style`, `script`, `base`, `noscript`,
+`template`) goes into the `<head>` until the first piece of content, and from
+then on everything goes into the `<body>`.
+```lisp
+(title Pound Cake)
+(h1 Pound Cake)
+```
+becomes
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Pound Cake</title>
+</head>
+<body>
+<h1>Pound Cake</h1>
+</body>
+</html>
+```
+Any of these elements written explicitly are kept as they are (along with
+their attributes, e.g. `(html :lang en ...)`). Only the top-level, and the
+inside of `(html ...)`, are looked at.
+
 ## Macros
 
 In addition to the basic syntax, *symbols* prepended with a ‘`%`’ character,
