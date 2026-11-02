@@ -139,11 +139,13 @@ impl<'a> HTMLFormatter<'a> {
                 //   - <script> contains JavaScript, maybe we will parse this in the future!;
                 //   - <style> contains CSS, which we have our own parser for already.
                 match tag.as_str() {
-                    "pre" => { // <pre> should preserve the raw text in the *source* file.
-                        // Find beginning and end byte offset of first and last token inside
-                        // of `(pre ...)` and simply clone the text between those offsets.
-                        let pre = raw_text(rest_with_preserved_whitespace.first(), end_token);
-                        write!(f, "{pre}")?;
+                    "pre" => match raw_text(rest_with_preserved_whitespace.first(), end_token) {
+                        // <pre> should preserve the raw text in the *source* file,
+                        // i.e. the text between its first and last tokens.
+                        Some(pre) if !pre.contains("(%") => write!(f, "{pre}")?,
+                        // Unless it contains macro calls, or content from another file,
+                        // then its (expanded) contents are written as plain-text.
+                        _ => PlainTextFormatter::new(rest.into_boxed_slice()).generate(f)?,
                     },
                     "textarea" | "title" => { // Not eaw source-code, but plain-text.
                         // We have to reconsititute what the source-code would look like if all
@@ -440,21 +442,21 @@ impl<'a> MarkupFormatter<'a> for HTMLFormatter<'a> {
 }
 
 /// Get raw text in source-file between a `start_node` and some `end_token`.
-/// Does not work well if the `start_node` is a result of a macro expansion,
-/// it must be a plain node.
-/// Especially, the first node cannot be the result of an `(%include)` macro,
-/// i.e. from a different file (we explicitly crash in this case).
+/// Returns `None` if the `start_node` comes from a different file,
+/// e.g. if it is the result of an `(%include)` macro.
 /// This is a limitation from the fact that we do not know what kind of markup
 /// format we are targetting until *after* parsing and expanding.
-fn raw_text<'a>(start_node: Option<&ParseNode<'a>>, end_token: &tokens::Token<'a>) -> &'a str {
+fn raw_text<'a>(start_node: Option<&ParseNode<'a>>, end_token: &tokens::Token<'a>) -> Option<&'a str> {
     let Some(start_node) = start_node else {
-        return end_token.leading_whitespace;
+        return Some(end_token.leading_whitespace);
     };
-    assert!(std::ptr::eq(start_node.site().source_code, end_token.site.source_code), "Start of preformatted text tag must belong to the same source location.");
+    if !std::ptr::eq(start_node.site().source_code, end_token.site.source_code) {
+        return None;
+    }
     let source: &'a str = end_token.site.source_code;
     let first_node_offset =
           start_node.site().bytes_from_start
         - start_node.leading_whitespace().len()
         + usize::from(start_node.leading_whitespace().starts_with(' '));
-    &source[first_node_offset..end_token.site.bytes_from_start]
+    source.get(first_node_offset..end_token.site.bytes_from_start)
 }

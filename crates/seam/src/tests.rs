@@ -304,4 +304,21 @@ mod cases {
             "\"<h1>Title</h1>\\n<p>Written by (%author).</p>\\n\""
         );
     }
+
+    #[test]
+    fn test_escaped_newline_line_numbers() {
+        // an escaped new line in a symbol only counts as one line.
+        let error = expand(String::from("(p a\\\nb)\n(%nope)")).unwrap_err();
+        assert!(error.contains("<test>:3:1"), "{}", error);
+    }
+
+    #[test]
+    fn test_pre_with_expanded_contents() {
+        // plain contents are copied from the source as written.
+        assert_html_document_eq("(pre  x  <y>\n   z)",
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<pre> x  <y>\n   z</pre>\n</body>\n</html>");
+        // but expanded contents are written out, rather than the macro call.
+        assert_html_document_eq("(pre (%embed \"tests/fixtures/post.md\"))",
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<pre># Title\n\nWritten by (%author).\n</pre>\n</body>\n</html>");
+    }
 }
