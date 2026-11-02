@@ -51,7 +51,9 @@ impl<'a> HTMLFormatter<'a> {
                     node.site()));
             };
             let leading_whitespace = if leading_whitespace.is_empty() { " " } else { leading_whitespace };
-            write!(f, "{leading_whitespace}{}=\"{}\"", keyword, atom.value)?;
+            write!(f, "{leading_whitespace}{keyword}=\"")?;
+            write_escaped(f, &atom.value)?;
+            write!(f, "\"")?;
             nodes = &nodes[1..];
         }
         Ok(nodes)

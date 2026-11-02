@@ -339,4 +339,11 @@ mod cases {
         // the text of `title` and `textarea` is escaped too.
         assert_eq!(pre("(textarea </textarea>)"), "<textarea>&lt;/textarea&gt;</textarea>");
     }
+
+    #[test]
+    fn test_attribute_values_escaped() {
+        // a value cannot close its quotes and add attributes, e.g. event handlers.
+        assert_html_document_eq("(p :x \"a\\\" onclick=\\\"f()\" y)",
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<p x=\"a&quot; onclick=&quot;f()\">y</p>\n</body>\n</html>");
+    }
 }

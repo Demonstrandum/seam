@@ -1,7 +1,7 @@
 //! Assembles an expanded tree into valid XML.
 
 use super::{child_whitespace, write_escaped, MarkupFormatter, GenerationError, Formatter};
-use crate::parse::parser::{self, ParseNode, ParseTree};
+use crate::parse::parser::{ParseNode, ParseTree};
 
 #[derive(Debug, Clone)]
 pub struct XMLFormatter<'a> {
@@ -69,8 +69,8 @@ impl<'a> XMLFormatter<'a> {
                     while !rest.is_empty() {
                         if let Some(node) = rest[0].symbolic() {
                             write!(f, "{}", node.value)?;
-                        } else if let attr@ParseNode::Attribute { .. } = &rest[0] {
-                            write!(f, " {}", display_attribute(attr)?)?;
+                        } else if let ParseNode::Attribute { keyword, node, .. } = &rest[0] {
+                            generate_attribute(f, keyword, node)?;
                         } else {
                             return Err(GenerationError::new("XML",
                                 "Only identifiers and attributes are allowed in declarations.",
@@ -86,8 +86,8 @@ impl<'a> XMLFormatter<'a> {
                     return Ok(());
                 }
 
-                while let Some(attr@ParseNode::Attribute { .. }) = rest.first() {
-                    write!(f, " {}", display_attribute(attr)?)?;
+                while let Some(ParseNode::Attribute { keyword, node, .. }) = rest.first() {
+                    generate_attribute(f, keyword, node)?;
                     rest = &rest[1..];
                 }
                 write!(f, ">")?;
@@ -151,15 +151,15 @@ impl<'a> MarkupFormatter<'a> for XMLFormatter<'a> {
     }
 }
 
-fn display_attribute<'a>(attr: &parser::ParseNode<'a>) -> Result<String, GenerationError<'a>> {
-    let parser::ParseNode::Attribute { keyword, node, .. } = attr else {
-        panic!("Passed non-attribute to display_attribute.")
-    };
-    if let Some(symbol) = (*node).atomic() {
-        Ok(format!("{}=\"{}\"", keyword, symbol.value))
-    } else {
-        Err(GenerationError::new("XML",
+/// Write an attribute, ` keyword="value"`, with its value escaped.
+fn generate_attribute<'a>(f: Formatter, keyword: &str, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
+    let Some(atom) = node.atomic() else {
+        return Err(GenerationError::new("XML",
             "Attribute can only contain symbols, numbers or strings",
-            (*node).site()))
-    }
+            node.site()));
+    };
+    write!(f, " {keyword}=\"")?;
+    write_escaped(f, &atom.value)?;
+    write!(f, "\"")?;
+    Ok(())
 }
