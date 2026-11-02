@@ -44,6 +44,27 @@ fn character_kind(character: char)
     }
 }
 
+/// Position of the lexer within the source code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Position {
+    line: usize,
+    byte_offset: usize,
+    byte_offset_line: usize,
+}
+
+/// A token which was looked ahead at, stored as byte ranges (rather than
+/// references, so the lexer does not borrow from itself), so it does not
+/// have to be lexed again by the following `peek` or `consume`.
+#[derive(Debug, Clone, Copy)]
+struct Lookahead {
+    from: Position,
+    to: Position,
+    kind: tokens::Kind,
+    value: (usize, usize),
+    whitespace: (usize, usize),
+    site: (u32, u32, u32, u32),
+}
+
 /// Lexer moves source-code string into itself,
 /// and references it when generating tokens.
 #[derive(Debug, Clone)]
@@ -52,6 +73,7 @@ pub struct Lexer {
     line: Cell<usize>,
     byte_offset: Cell<usize>,
     byte_offset_line: Cell<usize>,
+    lookahead: Cell<Option<Lookahead>>,
 }
 
 impl<'a> Lexer {
@@ -62,7 +84,46 @@ impl<'a> Lexer {
             line: Cell::new(1),
             byte_offset: Cell::new(0),
             byte_offset_line: Cell::new(0),
+            lookahead: Cell::new(None),
         }
+    }
+
+    fn position(&self) -> Position {
+        Position {
+            line: self.line.get(),
+            byte_offset: self.byte_offset.get(),
+            byte_offset_line: self.byte_offset_line.get(),
+        }
+    }
+
+    fn set_position(&self, position: Position) {
+        self.line.set(position.line);
+        self.byte_offset.set(position.byte_offset);
+        self.byte_offset_line.set(position.byte_offset_line);
+    }
+
+    /// Byte range of a slice of the source code.
+    fn range_of(&self, slice: &str) -> (usize, usize) {
+        if slice.is_empty() {
+            return (0, 0);
+        }
+        let start = slice.as_ptr().addr() - self.file.code.as_ptr().addr();
+        (start, start + slice.len())
+    }
+
+    /// The token stored by a previous `peek`, if it was made at the current position.
+    fn take_lookahead(&'a self) -> Option<Token<'a>> {
+        let lookahead = self.lookahead.take().filter(|lookahead| lookahead.from == self.position())?;
+        self.set_position(lookahead.to);
+        let code: &'a str = &self.file.code;
+        let (line, bytes_from_start, bytes_from_start_of_line, bytes_span) = lookahead.site;
+        let site = Site { file: &self.file, line, bytes_from_start, bytes_from_start_of_line, bytes_span };
+        Some(Token::new(
+            lookahead.kind,
+            &code[lookahead.value.0..lookahead.value.1],
+            &code[lookahead.whitespace.0..lookahead.whitespace.1],
+            site,
+        ))
     }
 
     pub fn get_source(&self) -> &str {
@@ -294,6 +355,9 @@ impl<'a> Lexer {
     /// # Panics
     /// Panics if called at the end of the file.
     pub fn consume(&'a self) -> Result<Token<'a>, LexError<'a>> {
+        if let Some(token) = self.take_lookahead() {
+            return Ok(token);
+        }
         // Swallow up leading whitespace.
         let whitespace = self.consume_whitespace();
         // If there is any text left, continuie depending on the inital char.
@@ -333,9 +397,19 @@ impl<'a> Lexer {
     /// Look ahead to the next token without advancing the
     /// source-code past it.
     pub fn peek(&'a self) -> Result<Token<'a>, LexError<'a>> {
-        self.restore(|this: &'a Self| {
-            this.consume()
-        })
+        let from = self.position();
+        let token = self.consume()?;
+        let site = token.site;
+        self.lookahead.set(Some(Lookahead {
+            from,
+            to: self.position(),
+            kind: token.kind,
+            value: self.range_of(token.value),
+            whitespace: self.range_of(token.leading_whitespace),
+            site: (site.line, site.bytes_from_start, site.bytes_from_start_of_line, site.bytes_span),
+        }));
+        self.set_position(from);
+        Ok(token)
     }
 
     /// Consume literal text (for literate mode), up to the
