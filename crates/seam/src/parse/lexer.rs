@@ -178,11 +178,8 @@ impl<'a> Lexer {
             let Some(kind) = character_kind(c) else { break };
             // Symbols can contain escaped characters.
             if c == '\\' {
-                let   _ = self.consume_char(); // `\`.
-                let esc = self.consume_char(); // escaped char.
-                if esc == Some('\n') {
-                    self.next_line(); // NOTE: Disallow this?
-                }
+                let _ = self.consume_char(); // `\`.
+                let _ = self.consume_char(); // escaped char (counts any new line itself).
                 continue;
             }
             // Characters that fit in a symbol or number are valid idents.
