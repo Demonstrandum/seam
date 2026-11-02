@@ -530,6 +530,13 @@ impl<'a> Parser {
                 "Expected `)' closing parenthesis.".to_owned(),
                 lparen.site))?;
         };
+        // The first argument of a macro call `(%name ...)` has its leading
+        // whitespace removed, unless it starts on a new line.
+        if let [ParseNode::Symbol(head), first, ..] = elements.as_mut_slice()
+            && head.value.starts_with('%')
+            && !first.leading_whitespace().contains('\n') {
+            first.set_leading_whitespace(String::new());
+        }
         Ok(ParseNode::List {
             nodes: elements.into_boxed_slice(),
             site: lparen.site,
