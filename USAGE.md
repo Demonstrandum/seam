@@ -67,6 +67,24 @@ Any of these elements written explicitly are kept as they are (along with
 their attributes, e.g. `(html :lang en ...)`). Only the top-level, and the
 inside of `(html ...)`, are looked at.
 
+### Literate mode
+
+In *literate* mode, source is plain text, kept exactly as written, and only
+macro calls `(%...)` are parsed and expanded. Inside a macro call, the usual
+syntax applies. Write `\(%` for a literal `(%`.
+```sh
+seam --html --nodocument --literate <<< '(%define name Sam)<p>Hi (%name), see (%do (a :href "/" home)).</p>'
+#stdout:
+#   <p>Hi Sam, see <a href="/">home</a>.</p>
+```
+This is handy for templating any kind of text, such as hand-written HTML or Markdown.
+Literate mode is enabled with:
+- `--literate` on the command line;
+- `:literate true` for `(%include ...)`, and for `(%embed ...)`, which then
+  expands the file's macros rather than giving its contents as a string;
+- `(%markdown ...)`, where it is on by default (disable it with `:literate false`).
+  Elements produced by macros within Markdown are written as HTML.
+
 ## Macros
 
 In addition to the basic syntax, *symbols* prepended with a ‘`%`’ character,

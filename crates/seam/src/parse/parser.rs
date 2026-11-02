@@ -403,11 +403,19 @@ impl Error for ParseError<'_> { }
 #[derive(Debug, Clone)]
 pub struct Parser {
     lexer: Lexer, //< Parser owns a lexer.
+    /// In literate mode, source is plain text, and only macro calls
+    /// `(%...)` within it are parsed as S-expressions.
+    literate: bool,
 }
 
 impl<'a> Parser {
     pub fn new(lexer: Lexer) -> Self {
-        Self { lexer }
+        Self { lexer, literate: false }
+    }
+
+    /// A parser for literate source: plain text with embedded `(%...)` macro calls.
+    pub fn literate(lexer: Lexer) -> Self {
+        Self { lexer, literate: true }
     }
 
     pub fn get_source(&self) -> &str {
@@ -416,10 +424,29 @@ impl<'a> Parser {
 
     /// Parse whole source code, finishing off the lexer.
     pub fn parse(&'a self) -> Result<ParseTree<'a>, Box<dyn Error + 'a>> {
+        if self.literate {
+            return self.parse_literate();
+        }
         let mut root: Vec<ParseNode> = Vec::new();
         while !self.lexer.eof() {
             let expr = self.parse_expr()?;
             root.push(expr);
+        }
+        Ok(root.into_boxed_slice())
+    }
+
+    /// Parse literate source: text is kept exactly as written (as raw nodes),
+    /// while macro calls `(%...)` are parsed as usual.
+    fn parse_literate(&'a self) -> Result<ParseTree<'a>, Box<dyn Error + 'a>> {
+        let mut root: Vec<ParseNode> = Vec::new();
+        loop {
+            if let Some((text, site)) = self.lexer.consume_text() {
+                root.push(ParseNode::Raw(Node { value: text, site, leading_whitespace: String::new() }));
+            }
+            if self.lexer.at_end() {
+                break;
+            }
+            root.push(self.parse_list()?);
         }
         Ok(root.into_boxed_slice())
     }

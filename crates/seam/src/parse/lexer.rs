@@ -344,6 +344,42 @@ impl<'a> Lexer {
         })
     }
 
+    /// Consume literal text (for literate mode), up to the
+    /// next macro call `(%`, or the end of the file.
+    /// A backslash before `(%` escapes it, giving a literal `(%`.
+    /// Returns `None` if there was no text before the macro call.
+    pub fn consume_text(&'a self) -> Option<(String, Site<'a>)> {
+        let start = self.byte_offset.get();
+        let line = self.line.get();
+        let line_offset = self.byte_offset_line.get();
+        let mut text = String::new();
+        while let Some(c) = self.peek_char() {
+            if self.starts_with("\\(%") {
+                self.increment_byte_offsets(3);
+                text.push_str("(%");
+                continue;
+            }
+            if self.starts_with("(%") {
+                break;
+            }
+            text.push(c);
+            let _ = self.consume_char();
+        }
+        if self.byte_offset.get() == start {
+            return None;
+        }
+        let mut site = self.site(start, line_offset);
+        site.line = line;
+        Some((text, site))
+    }
+
+    /// Check if every character has been consumed, without skipping
+    /// whitespace or comments first (unlike [`Self::eof`]).
+    #[must_use]
+    pub fn at_end(&self) -> bool {
+        self.peek_char().is_none()
+    }
+
     /// Check if file is at end-of-file.
     pub fn eof(&self) -> bool {
         self.restore(|this: &Self| {

@@ -1,5 +1,7 @@
+use super::lexer::Lexer;
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
+use crate::assemble::{MarkupFormatter, html::HTMLFormatter};
 
 use std::{
     fmt,
@@ -646,24 +648,24 @@ impl<'a> Expander<'a> {
         expanded
     }
 
+    /// Parse and expand literate source: plain text with embedded `(%...)` macro calls.
+    fn expand_literate(&self, name: String, source: String, site: &Site<'a>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let parser = self.register_parser(Parser::literate(Lexer::new(name, source)));
+        let tree = parser.parse()
+            .map_err(|error| ExpansionError(format!("{error}"), *site))?;
+        self.expand_nodes(tree)
+    }
+
     fn expand_include_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
-        let [path_node] = &*params else {
-            return Err(ExpansionError(
-                format!("Incorrect number of arguments \
-                    to `%include' macro. Got {}, expected {}.",
-                    params.len(), 1),
-                node.site().to_owned()));
-        };
-
-        let Some(Node { value: path, site, .. }) = path_node.atomic()  else {
-            return Err(ExpansionError(
-                "Bad argument to `%include' macro.\n\
-                    Expected a path, but did not get any value
-                    that could be interpreted as a path.".to_string(),
-                path_node.site().to_owned()))
-        };
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): literal,
+            optional("literate"): literal["true", "false"],
+        }?;
+        let Node { value: path, site, .. } = &args.number.1;
+        let literate = args.literate.is_some_and(|option| option.value == "true");
 
         // Open file, and parse contents!
         let include_error = |error: Box<dyn fmt::Display>| ExpansionError(
@@ -673,7 +675,7 @@ impl<'a> Expander<'a> {
         // Try all include directories until one is successful.
         for include_dir in self.context.includes.borrow().iter() {
             let path = include_dir.join(path);
-            parser = super::parser_for_file(&path)
+            parser = super::parser_for_file(&path, literate)
                 .or_else(|err| {
                     let err = Box::new(err);
                     // Try with `.sex` extensions appended.
@@ -686,7 +688,7 @@ impl<'a> Expander<'a> {
                     new_filename.push(filename);
                     new_filename.push(".sex");
                     with_ext.push(new_filename); // Replace with new filename.
-                    match super::parser_for_file(&with_ext) {
+                    match super::parser_for_file(&with_ext, literate) {
                         Ok(parser) => Ok(parser),
                         Err(err)   => Err(include_error(Box::new(err)))
                     }
@@ -718,21 +720,12 @@ impl<'a> Expander<'a> {
     fn expand_embed_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
-        let [path_node] = &*params else {
-            return Err(ExpansionError(
-                format!("Incorrect number of arguments \
-                    to `%embed' macro. Got {}, expected {}.",
-                    params.len(), 1),
-                node.site().to_owned()));
-        };
-
-        let Some(Node { value: path, site, .. }) = path_node.atomic()  else {
-            return Err(ExpansionError(
-                "Bad argument to `%embed' macro.\n\
-                    Expected a path, but did not get any value
-                    that could be interpreted as a path.".to_string(),
-                path_node.site().to_owned()))
-        };
+        let (_parser, args) = arguments! { [&params]
+            mandatory(1): literal,
+            optional("literate"): literal["true", "false"],
+        }?;
+        let Node { value: path, site, .. } = &args.number.1;
+        let literate = args.literate.is_some_and(|option| option.value == "true");
 
         // Open file, and read contents!
         let embed_error = |error: Box<dyn fmt::Display>| ExpansionError(
@@ -747,6 +740,14 @@ impl<'a> Expander<'a> {
             if value.is_ok() { break; }
         }
         let value = value?;
+        // Literate embeds expand the macros found in the file's text.
+        if literate {
+            let mut expanded = self.expand_literate(path.clone(), value, site)?;
+            if let Some(first) = expanded.first_mut() {
+                first.set_leading_whitespace(node.leading_whitespace().to_owned());
+            }
+            return Ok(expanded);
+        }
         Ok(Box::new([
             ParseNode::String(Node {
                 value,
@@ -767,12 +768,22 @@ impl<'a> Expander<'a> {
             optional("only"): literal["frontmatter", "content"],
             optional("separator"): literal,
             optional("allow-html"): literal["true", "false"],
+            optional("literate"): literal["true", "false"],
         }?;
         // Parse the makdown content only, the frontmatter only, or do both.
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Only { Frontmatter, Content, Both }
         // Extract arguments and options.
         let contents = args.number.1.value;
+        // Markdown is literate by default: macro calls `(%...)` in its text are expanded.
+        let literate = args.literate.is_none_or(|option| option.value == "true");
+        let contents = if literate && contents.contains("(%") {
+            let site = args.number.1.site;
+            let expanded = self.expand_literate(format!("{} (markdown)", site.source), contents, &site)?;
+            nodes_to_text(&expanded)?
+        } else {
+            contents
+        };
         let only = args.only.map_or(Only::Both, |option| match option.value.as_ref() {
             "frontmatter" => Only::Frontmatter,
             "content" => Only::Content,
@@ -1881,7 +1892,12 @@ impl<'a> Expander<'a> {
                             && !leading.leading_whitespace().contains('\n') {
                                 leading.set_leading_whitespace(String::new());
                             }
-                        return self.expand_invocation(name, node, params.into_boxed_slice());
+                        let mut expanded = self.expand_invocation(name, node, params.into_boxed_slice())?;
+                        // The expansion takes the place of the call, including its leading whitespace.
+                        if let Some(first) = expanded.first_mut() {
+                            first.set_leading_whitespace(node.leading_whitespace().to_owned());
+                        }
+                        return Ok(expanded);
                     }
                 }
                 // Otherwise, if not a macro, just expand child nodes incase they are macros.
@@ -1927,6 +1943,23 @@ impl<'a> Expander<'a> {
         let expanded = self.expand_nodes(tree)?;
         Ok(expanded)
     }
+}
+
+/// Join expanded nodes back into text, such as for markdown: text and atoms
+/// are written as they are, and any elements are generated as HTML.
+fn nodes_to_text<'a>(nodes: &[ParseNode<'a>]) -> Result<String, ExpansionError<'a>> {
+    let mut text = String::new();
+    for node in nodes {
+        if let Some(atom) = node.atomic() {
+            text += &atom.leading_whitespace;
+            text += &atom.value;
+        } else {
+            let html = HTMLFormatter::new(Box::new([node.clone()])).display()
+                .map_err(|error| ExpansionError(error.message, error.site))?;
+            text += &html;
+        }
+    }
+    Ok(text)
 }
 
 /// For example, the YAML below,

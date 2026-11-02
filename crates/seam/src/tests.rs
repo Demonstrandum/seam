@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 fn expand(source: String) -> Result<String, String>  {
     let context = Context::new();
-    let expander = tree_builder(&context, Some("<test>"), source);
+    let expander = tree_builder(&context, Some("<test>"), source, false);
     let tree = match expander.expand() {
         Ok(tree) => tree,
         Err(err) => return Err(format!("{err}")),
@@ -19,9 +19,22 @@ fn expand(source: String) -> Result<String, String>  {
 fn html_document(source: &str) -> Result<String, String> {
     use assemble::MarkupFormatter;
     let context = Context::new();
-    let expander = tree_builder(&context, Some("<test>"), source.to_owned());
+    let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
     let tree = expander.expand().map_err(|err| format!("{err}"))?;
     assemble::html::HTMLFormatter::new(tree).document().map_err(|err| err.message)
+}
+
+/// Expand literate source and render it as an HTML fragment.
+fn literate_html(source: &str) -> Result<String, String> {
+    use assemble::MarkupFormatter;
+    let context = Context::new();
+    let expander = tree_builder(&context, Some("<test>"), source.to_owned(), true);
+    let tree = expander.expand().map_err(|err| format!("{err}"))?;
+    assemble::html::HTMLFormatter::new(tree).display().map_err(|err| err.message)
+}
+
+fn assert_literate_eq(input: &str, expect: &str) {
+    assert_eq!(literate_html(input).as_deref(), Ok(expect));
 }
 
 fn assert_html_document_eq(input: &str, expect: &str) {
@@ -244,5 +257,51 @@ mod cases {
         assert!(error("(body) (body)").contains("only have one `body'"));
         assert!(error("(p hi) (head)").contains("must come before"));
         assert!(error("(html (p)) (p)").contains("outside of the `html'"));
+    }
+
+    #[test]
+    fn test_literate_mode() {
+        // text is kept as written, only `(%...)` calls are parsed.
+        assert_literate_eq(
+            "hello world (earth) (%do (p letter \"\\x61\")) \"\\x61\"\n",
+            "hello world (earth) <p>letter a</p> \"\\x61\"\n"
+        );
+        // markup and semicolons in text pass straight through.
+        assert_literate_eq(
+            "<p>a <b>bold</b>; claim</p>",
+            "<p>a <b>bold</b>; claim</p>"
+        );
+        // a macro's result takes the place of the call.
+        assert_literate_eq("(%define name Sam)Hi (%name).", "Hi Sam.");
+        // `\(%` gives a literal `(%`.
+        assert_literate_eq("50\\(%) off", "50(%) off");
+        // an unclosed call is an error.
+        assert!(literate_html("oops (%do (p x)").unwrap_err().contains("Expected `)'"));
+    }
+
+    #[test]
+    fn test_literate_include_embed() {
+        assert_output_eq(
+            "(%define (author) Sam) (%include :literate true \"tests/fixtures/note.txt\")",
+            " \"Dear \"Sam\"; (see \"(em this)\")\\n\""
+        );
+        // without `:literate`, `%embed` gives the file's contents as a string.
+        assert_output_eq(
+            "(%embed \"tests/fixtures/note.txt\")",
+            "\"Dear (%author); (see (%do (em this)))\\n\""
+        );
+    }
+
+    #[test]
+    fn test_literate_markdown() {
+        // markdown is literate by default.
+        assert_output_eq(
+            "(%define (author) Sam) (%markdown (%embed \"tests/fixtures/post.md\"))",
+            " \"<h1>Title</h1>\\n<p>Written by Sam.</p>\\n\""
+        );
+        assert_output_eq(
+            "(%markdown :literate false (%embed \"tests/fixtures/post.md\"))",
+            "\"<h1>Title</h1>\\n<p>Written by (%author).</p>\\n\""
+        );
     }
 }
