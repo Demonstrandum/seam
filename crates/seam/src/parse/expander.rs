@@ -15,6 +15,8 @@ use std::{
     },
 };
 
+use std::borrow::Cow;
+
 use chrono::TimeZone;
 use typed_arena::Arena;
 use colored::Colorize;
@@ -312,7 +314,7 @@ impl<'a> Expander<'a> {
             },
             // Symbols are simply assigned as variable names.
             ParseNode::Symbol(symbol) => {
-                self.define_value(symbol.value.clone(), Box::new([ value.clone() ]));
+                self.define_value(symbol.value.to_string(), Box::new([ value.clone() ]));
                 Ok(())
             },
             // Other literals must match exactly and no assignment takes place.
@@ -460,14 +462,14 @@ impl<'a> Expander<'a> {
                 None => default,
             };
             // Bind it to a symbol with the same name as the keyword.
-            self.define_value((*keyword).to_owned(), Box::new([ value.clone() ]));
+            self.define_value(keyword.to_string(), Box::new([ value.clone() ]));
         }
         // Capture remaining named arguments under the &&-macro.
         if let Some(rest_kw_node) = rest_kw_node {
             let rest_kw_symbol = rest_kw_node.symbol().unwrap();
             let rest_kw_name = &rest_kw_symbol.value[2..];
             // Collect the named arguments.
-            let attrs: Vec<String> = rhs_named.keys().cloned().collect();
+            let attrs: Vec<Cow<str>> = rhs_named.keys().cloned().collect();
             let mut nodes = Vec::with_capacity(attrs.len());
             for attr in attrs {
                 let named = rhs_named.remove(&attr).unwrap();
@@ -582,7 +584,7 @@ impl<'a> Expander<'a> {
         let (name, arguments, body): (String, Vec<ParseNode<'a>>, ParseTree)
         = if let Some(variable) = head.symbol() {
             let body = self.expand_nodes(nodes)?;
-            self.define_value(variable.value.clone(), body);
+            self.define_value(variable.value.to_string(), body);
             return Ok(Box::new([]));
         } else {  // Otherwise, we are assigning to a 'function'.
             let ParseNode::List { nodes: defn_nodes, .. } = head else {
@@ -604,7 +606,7 @@ impl<'a> Expander<'a> {
                         a symbol/identifier.".to_owned(),
                     name.site().to_owned()));
             };
-            let name = name_node.value.clone();
+            let name = name_node.value.to_string();
 
             let body = nodes.to_owned().into_boxed_slice();
             (name, arguments, body)
@@ -643,7 +645,7 @@ impl<'a> Expander<'a> {
             Box::new([])
         };
         if let Some(first_node) = expanded.get_mut(0) {
-            first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
+            first_node.set_leading_whitespace(node.leading_whitespace().clone());
         }
         Ok(expanded)
     }
@@ -715,7 +717,7 @@ impl<'a> Expander<'a> {
             include_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
         for include_dir in self.context.includes.borrow().iter() {
-            let path = include_dir.join(path);
+            let path = include_dir.join(&**path);
             parser = super::parser_for_file(&path, literate)
                 .or_else(|err| {
                     let err = Box::new(err);
@@ -767,7 +769,7 @@ impl<'a> Expander<'a> {
             embed_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
         for include_dir in self.context.includes.borrow().iter() {
-            let path = include_dir.join(path);
+            let path = include_dir.join(&**path);
             value = std::fs::read_to_string(path)
                 .map_err(|err| embed_error(Box::new(err)));
             if value.is_ok() { break; }
@@ -775,17 +777,17 @@ impl<'a> Expander<'a> {
         let value = value?;
         // Literate embeds expand the macros found in the file's text.
         if literate {
-            let mut expanded = self.expand_literate(path.clone(), value, site)?;
+            let mut expanded = self.expand_literate(path.to_string(), value, site)?;
             if let Some(first) = expanded.first_mut() {
-                first.set_leading_whitespace(node.leading_whitespace().to_owned());
+                first.set_leading_whitespace(node.leading_whitespace().clone());
             }
             return Ok(expanded);
         }
         Ok(Box::new([
             ParseNode::String(Node {
-                value,
+                value: value.into(),
                 site: node.owned_site(),
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             }),
         ]))
     }
@@ -807,7 +809,7 @@ impl<'a> Expander<'a> {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Only { Frontmatter, Content, Both }
         // Extract arguments and options.
-        let contents = args.number.1.value;
+        let contents = args.number.1.value.into_owned();
         // Markdown is literate by default: macro calls `(%...)` in its text are expanded.
         let literate = args.literate.is_none_or(|option| option.value == "true");
         let contents = if literate && contents.contains("(%") {
@@ -823,7 +825,7 @@ impl<'a> Expander<'a> {
             _ => unreachable!(),
         });
         // Default to using the '/' namespace separator for frontmatter definitions.
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
         // Embedded HTML is passed through by default, `:allow-html false` escapes it.
         let allow_html = args.allow_html.is_none_or(|option| option.value == "true");
         // Live dangerously / trust the author:
@@ -860,9 +862,9 @@ impl<'a> Expander<'a> {
             // Return the raw html.
             Ok(Box::new([
                 ParseNode::Raw(Node {
-                    value: html,
+                    value: html.into(),
                     site: node.owned_site(),
-                    leading_whitespace: node.leading_whitespace().to_owned(),
+                    leading_whitespace: node.leading_whitespace().clone(),
                 }),
             ]))
         };
@@ -920,7 +922,7 @@ impl<'a> Expander<'a> {
             optional("separator"): literal,
         }?;
         let yaml = args.number.1.value;
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
 
         expand_yaml(self, &yaml, &sep, node.site())
     }
@@ -933,7 +935,7 @@ impl<'a> Expander<'a> {
             optional("separator"): literal,
         }?;
         let yaml = args.number.1.value;
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
 
         expand_toml(self, &yaml, &sep, node.site())
     }
@@ -946,7 +948,7 @@ impl<'a> Expander<'a> {
             mandatory(2): any,
             optional("separator"): literal,
         }?;
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
         let path = args.number.1.value.split(&sep);
 
         let mut view;
@@ -1031,9 +1033,9 @@ impl<'a> Expander<'a> {
         let time = time.with_timezone(&timezone);
         let formatted = time.format(&date_format).to_string();
         let date_string_node = ParseNode::String(Node {
-            value: formatted,
+            value: formatted.into(),
             site: *node.site(),
-            leading_whitespace: node.leading_whitespace().to_string(),
+            leading_whitespace: node.leading_whitespace().to_string().into(),
         });
         Ok(Box::new([date_string_node]))
     }
@@ -1091,9 +1093,9 @@ impl<'a> Expander<'a> {
 
         Ok(Box::new([
             ParseNode::Number(Node {
-                value: format!("{timestamp}"),
+                value: format!("{timestamp}").into(),
                 site: node.owned_site(),
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             })
         ]))
     }
@@ -1132,13 +1134,13 @@ impl<'a> Expander<'a> {
                 var.site()));
         };
         let Node { site, leading_whitespace, .. } = var.clone();
-        let Ok(value) = std::env::var(&var.value) else {
+        let Ok(value) = std::env::var(&*var.value) else {
             return Err(ExpansionError(
                 format!("No such environment variable ($`{}') visible.", var.value),
                 site));
         };
         Ok(Box::new([
-            ParseNode::String(Node { value, site, leading_whitespace }),
+            ParseNode::String(Node { value: value.into(), site, leading_whitespace }),
         ]))
     }
 
@@ -1158,7 +1160,7 @@ impl<'a> Expander<'a> {
         // Iterate and collect format arguments.
         let mut arguments = params.iter();
         let _ = arguments.next();  // Skip the format-string.
-        let Ok(mut template) = formatx::Template::new(&format_str.value) else {
+        let Ok(mut template) = formatx::Template::new(&*format_str.value) else {
             return Err(ExpansionError::new(
                 "Invalid format string.",
                 &format_str.site));
@@ -1167,7 +1169,7 @@ impl<'a> Expander<'a> {
             // Check if we're replacing a named or positional placeholder.
             let mut named: Option<&str> = None;
             if let ParseNode::Attribute { keyword, node, .. } = var {
-                named = Some(keyword.as_str());
+                named = Some(keyword.as_ref());
                 var = node;
             }
             // TODO: Somehow let non-atomic values be formattable?
@@ -1188,9 +1190,9 @@ impl<'a> Expander<'a> {
         match template.text() {
             Ok(value) => Ok(Box::new([
                 ParseNode::String(Node {
-                    value,
+                    value: value.into(),
                     site: node.owned_site(),
-                    leading_whitespace: node.leading_whitespace().to_owned(),
+                    leading_whitespace: node.leading_whitespace().clone(),
                 })
             ])),
             Err(err) => Err(ExpansionError(
@@ -1212,7 +1214,7 @@ impl<'a> Expander<'a> {
         let mut separator = "/";  // Default namespace separator is `/`.
         while let Some(ParseNode::Attribute { keyword, node, site, .. }) = args.peek() {
             let _ = args.next();
-            match keyword.as_str() {
+            match keyword.as_ref() {
                 "separator" => match node.atomic() {
                     Some(Node { value, .. }) => separator = value,
                     None => return Err(ExpansionError(
@@ -1397,9 +1399,9 @@ impl<'a> Expander<'a> {
                 _ => {},
             }
             let node = ParseNode::String(Node {
-                value: path.to_string_lossy().to_string(),
+                value: path.to_string_lossy().to_string().into(),
                 site: args.number.1.site,
-                leading_whitespace: String::from(" "),
+                leading_whitespace: String::from(" ").into(),
             });
             collection.insert(GlobPath { node, meta, path, sortby });
         }
@@ -1429,9 +1431,9 @@ impl<'a> Expander<'a> {
         }
         Ok(Box::new([
             ParseNode::Raw(Node {
-                value: builder,
+                value: builder.into(),
                 site: node.owned_site(),
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             })
         ]))
     }
@@ -1451,9 +1453,9 @@ impl<'a> Expander<'a> {
         }
         Ok(Box::new([
             ParseNode::String(Node {
-                value: builder,
+                value: builder.into(),
                 site: node.owned_site(),
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             })
         ]))
     }
@@ -1495,7 +1497,7 @@ impl<'a> Expander<'a> {
 
         for i in 0..list.len() {
             let mut item = list[list.len() - i - 1].clone();
-            item.set_leading_whitespace(list[i].leading_whitespace().to_owned());
+            item.set_leading_whitespace(list[i].leading_whitespace().clone());
             reversed.push(item);
         }
 
@@ -1522,7 +1524,7 @@ impl<'a> Expander<'a> {
 
         let call_node = node;
         let key_fn_site = args.key.clone().map_or(call_node.owned_site(), |key_fn| key_fn.site);
-        let key_fn = args.key.map_or(String::from("do"), |key| key.value);
+        let key_fn = args.key.map_or(String::from("do"), |key| key.value.into_owned());
         let ascending = args.order.is_none_or(|order| order.value == "ascending");
 
         /// Keeps track of nodes and the key by which to sort them by.
@@ -1569,8 +1571,8 @@ impl<'a> Expander<'a> {
                     key_site,
                 ));
             };
-            let key = key.value;
-            whitespace.push(node.leading_whitespace().to_owned());
+            let key = key.value.into_owned();
+            whitespace.push(node.leading_whitespace().clone());
             items.push(SortItem { node, key });
         }
         // Whitespace is reversed so .pop() removes the first item.
@@ -1600,7 +1602,7 @@ impl<'a> Expander<'a> {
                 nodes,
                 site,
                 end_token,
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             }
         ]))
     }
@@ -1616,13 +1618,13 @@ impl<'a> Expander<'a> {
 
         let sep = &args.number.1.value;
         let trailing = args.trailing.is_some_and(|n| n.value == "true");
-        let items: Vec<&str> = args.rest.iter().map(|n| n.value.as_str()).collect();
+        let items: Vec<&str> = args.rest.iter().map(|n| n.value.as_ref()).collect();
         let joined = items.join(sep) + if trailing { sep } else { "" };
         Ok(Box::new([
             ParseNode::String(Node {
-                value: joined,
+                value: joined.into(),
                 site: node.owned_site(),
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             })
         ]))
     }
@@ -1641,9 +1643,9 @@ impl<'a> Expander<'a> {
 
         Ok(Box::new([
             ParseNode::String(Node {
-                value: joined,
+                value: joined.into(),
                 site: node.owned_site(),
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             })
         ]))
     }
@@ -1712,7 +1714,7 @@ impl<'a> Expander<'a> {
                 nodes: params,
                 site: site.to_owned(),
                 end_token: end_token.to_owned(),
-                leading_whitespace: leading_whitespace.to_owned(),
+                leading_whitespace: leading_whitespace.clone(),
             }
         ]))
     }
@@ -1768,9 +1770,9 @@ impl<'a> Expander<'a> {
 
         Ok(Box::new([
             ParseNode::Symbol(Node {
-                value: name,
+                value: name.into(),
                 site: node.owned_site(),
-                leading_whitespace: node.leading_whitespace().to_owned(),
+                leading_whitespace: node.leading_whitespace().clone(),
             })
         ]))
     }
@@ -1956,7 +1958,7 @@ impl<'a> Expander<'a> {
         }
         // The expansion takes the place of the macro, including its leading whitespace.
         if let Some(first) = out.get_mut(start) {
-            first.set_leading_whitespace(node.leading_whitespace().to_owned());
+            first.set_leading_whitespace(node.leading_whitespace().clone());
         }
         Ok(())
     }
@@ -2076,9 +2078,9 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                 // Either defining a new variable or setting a variable to a string.
                 yaml::Event::Scalar(ref value, ..) => {
                     let mut string = ParseNode::String(Node {
-                        value: value.clone(),
+                        value: value.clone().into(),
                         site: self.site,
-                        leading_whitespace: String::from(" "),
+                        leading_whitespace: String::from(" ").into(),
                     });
                     match self.defining {
                         Some(ref name) => {
@@ -2091,10 +2093,10 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                                     let keyword = name.clone();
                                     // Push keyword attribute.
                                     let attr = ParseNode::Attribute {
-                                        keyword,
+                                        keyword: keyword.into(),
                                         node: Box::new(string),
                                         site: self.site,
-                                        leading_whitespace: String::from(if self.nodes.is_empty() {
+                                        leading_whitespace: Cow::Borrowed(if self.nodes.is_empty() {
                                             ""
                                         } else {
                                             " "
@@ -2169,7 +2171,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                         nodes: nodes.into_boxed_slice(),
                         site: self.site,
                         end_token: the_dreaded_rparen,
-                        leading_whitespace: String::from(if self.nodes.is_empty() {
+                        leading_whitespace: Cow::Borrowed(if self.nodes.is_empty() {
                             ""
                         } else {
                             " "
@@ -2183,11 +2185,11 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                     // Handle growing the current nodes with the map/seq.
                     self.nodes.push(match self.mode {
                         Some(Mode::Map) => {
-                            let leading_whitespace = list.leading_whitespace().to_owned();
+                            let leading_whitespace = list.leading_whitespace().clone();
                             let mut list = list;
                             list.set_leading_whitespace(String::from(" "));
                             ParseNode::Attribute {
-                                keyword: name.clone().expect("must always be defining during a map context."),
+                                keyword: name.clone().expect("must always be defining during a map context.").into(),
                                 node: Box::new(list),
                                 site: self.site,
                                 leading_whitespace,
@@ -2241,8 +2243,8 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
         the_dreaded_rparen: crate::parse::tokens::Token<'a>,
     }
 
-    fn whitespace(leading: bool) -> String {
-        if leading { String::new() } else { String::from(" ") }
+    fn whitespace(leading: bool) -> Cow<'static, str> {
+        Cow::Borrowed(if leading { "" } else { " " })
     }
 
     impl<'a> Traverser<'a, '_> {
@@ -2265,27 +2267,27 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                 toml::Value::Array(array) => self.traverse_array(array, leading),
                 toml::Value::Table(table) => self.traverse_table(table, leading),
                 toml::Value::String(string) => ParseNode::String(Node {
-                    value: string,
+                    value: string.into(),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Integer(int) => ParseNode::Number(Node {
-                    value: format!("{int}"),
+                    value: format!("{int}").into(),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Float(float) => ParseNode::Number(Node {
-                    value: format!("{float}"),
+                    value: format!("{float}").into(),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Datetime(date) => ParseNode::Symbol(Node {
-                    value: format!("{date}"),
+                    value: format!("{date}").into(),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Boolean(boolean) => ParseNode::Symbol(Node {
-                    value: format!("{boolean}"),
+                    value: format!("{boolean}").into(),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
@@ -2321,7 +2323,7 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                 self.prefix.pop();
                 self.define(&keyword, node.clone());
                 nodes.push(ParseNode::Attribute {
-                    keyword,
+                    keyword: keyword.into(),
                     node: Box::new(node),
                     site: self.site,
                     leading_whitespace: whitespace(first),

@@ -310,7 +310,7 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
             // Register each argument with the parser.
             let param_node: &'params ParseNode;
             if let ParseNode::Attribute { keyword, node, .. } = param {
-                matcher = keyword.into();
+                matcher = (&**keyword).into();
                 param_node = node;
             } else {
                 position += 1;

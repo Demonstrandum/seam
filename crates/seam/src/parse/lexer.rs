@@ -1,5 +1,6 @@
 use super::tokens::{self, Site, Token};
 
+use std::borrow::Cow;
 use std::str::pattern::Pattern;
 use std::{fmt, error::Error};
 use std::cell::Cell;
@@ -345,26 +346,32 @@ impl<'a> Lexer {
     /// next macro call `(%`, or the end of the file.
     /// A backslash before `(%` escapes it, giving a literal `(%`.
     /// Returns `None` if there was no text before the macro call.
-    pub fn consume_text(&'a self) -> Option<(String, Site<'a>)> {
+    pub fn consume_text(&'a self) -> Option<(Cow<'a, str>, Site<'a>)> {
         let start = self.byte_offset.get();
         let line = self.line.get();
         let line_offset = self.byte_offset_line.get();
-        let mut text = String::new();
-        while let Some(c) = self.peek_char() {
+        // Text is borrowed from the source, unless an escape has to be removed.
+        let mut escaped: Option<String> = None;
+        while self.peek_char().is_some() {
             if self.starts_with("\\(%") {
-                self.increment_byte_offsets(3);
+                let text = escaped.get_or_insert_with(|| self.source[start..self.byte_offset.get()].to_owned());
                 text.push_str("(%");
+                self.increment_byte_offsets(3);
                 continue;
             }
             if self.starts_with("(%") {
                 break;
             }
-            text.push(c);
+            let before = self.byte_offset.get();
             let _ = self.consume_char();
+            if let Some(text) = escaped.as_mut() {
+                text.push_str(&self.source[before..self.byte_offset.get()]);
+            }
         }
         if self.byte_offset.get() == start {
             return None;
         }
+        let text = escaped.map_or_else(|| Cow::Borrowed(&self.source[start..self.byte_offset.get()]), Cow::Owned);
         let mut site = self.site(start, line_offset);
         site.line = line;
         Some((text, site))

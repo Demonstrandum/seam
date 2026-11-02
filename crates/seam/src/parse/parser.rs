@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, str::FromStr};
+use std::{borrow::Cow, error::Error, fmt, str::FromStr};
 use unicode_width::UnicodeWidthStr;
 use descape::UnescapeExt;
 
@@ -9,9 +9,9 @@ use super::{lexer::{LexError, Lexer}, tokens::{Kind, Site, Token}};
 /// These are just a common storage for the literals in [`ParseNode`].
 #[derive(Debug, Clone)]
 pub struct Node<'a> {
-    pub value: String,
+    pub value: Cow<'a, str>,
     pub site: Site<'a>,
-    pub leading_whitespace: String,
+    pub leading_whitespace: Cow<'a, str>,
 }
 
 impl PartialEq for Node<'_> {
@@ -29,11 +29,11 @@ impl std::hash::Hash for Node<'_> {
 
 impl<'a> Node<'a> {
     #[must_use]
-    pub fn new(value: &str, site: &Site<'a>, leading_whitespace: &str) -> Self {
+    pub fn new(value: impl Into<Cow<'a, str>>, site: &Site<'a>, leading_whitespace: impl Into<Cow<'a, str>>) -> Self {
         Self {
-            site: site.to_owned(),
-            value: value.to_owned(),
-            leading_whitespace: leading_whitespace.to_owned(),
+            site: *site,
+            value: value.into(),
+            leading_whitespace: leading_whitespace.into(),
         }
     }
 }
@@ -51,13 +51,13 @@ pub enum ParseNode<'a> {
         nodes: Box<[ParseNode<'a>]>,
         site: Site<'a>,
         end_token: Token<'a>,
-        leading_whitespace: String,
+        leading_whitespace: Cow<'a, str>,
     },
     Attribute {
-        keyword: String,
+        keyword: Cow<'a, str>,
         node: Box<ParseNode<'a>>,
         site: Site<'a>,
-        leading_whitespace: String,
+        leading_whitespace: Cow<'a, str>,
     },
 }
 
@@ -244,19 +244,20 @@ impl<'a> ParseNode<'a> {
     /// Get a reference to the underlying leading whitespace string
     /// of this parse node.
     #[must_use]
-    pub fn leading_whitespace(&self) -> &str {
+    pub fn leading_whitespace(&self) -> &Cow<'a, str> {
         match self {
             Self::Symbol(node)
             | Self::Number(node)
             | Self::String(node)
-            | Self::Raw(node) => node.leading_whitespace.as_str(),
+            | Self::Raw(node) => &node.leading_whitespace,
             Self::List { leading_whitespace, .. }
-            | Self::Attribute { leading_whitespace, .. } => leading_whitespace.as_str(),
+            | Self::Attribute { leading_whitespace, .. } => leading_whitespace,
         }
     }
 
     /// Modify the underlying leading whitespace stored for this parse node.
-    pub fn set_leading_whitespace(&mut self, whitespace: String) {
+    pub fn set_leading_whitespace(&mut self, whitespace: impl Into<Cow<'a, str>>) {
+        let whitespace = whitespace.into();
         match self {
             Self::Symbol(node)
             | Self::Number(node)
@@ -441,7 +442,7 @@ impl<'a> Parser {
         let mut root: Vec<ParseNode> = Vec::new();
         loop {
             if let Some((text, site)) = self.lexer.consume_text() {
-                root.push(ParseNode::Raw(Node { value: text, site, leading_whitespace: String::new() }));
+                root.push(ParseNode::Raw(Node { value: text, site, leading_whitespace: Cow::Borrowed("") }));
             }
             if self.lexer.at_end() {
                 break;
@@ -483,10 +484,10 @@ impl<'a> Parser {
         // Otherwise, parse the value and combine the node.
         let value = self.parse_expr()?;
         Ok(ParseNode::Attribute {
-            keyword: token.value.to_owned(),
+            keyword: Cow::Borrowed(token.value),
             node: Box::new(value),
             site: token.site,
-            leading_whitespace: token.leading_whitespace.to_owned(),
+            leading_whitespace: Cow::Borrowed(token.leading_whitespace),
         })
     }
 
@@ -502,7 +503,7 @@ impl<'a> Parser {
         Ok(Node {
             value,
             site: token.site,
-            leading_whitespace: token.leading_whitespace.to_string(),
+            leading_whitespace: Cow::Borrowed(token.leading_whitespace),
         })
     }
 
@@ -535,33 +536,35 @@ impl<'a> Parser {
         if let [ParseNode::Symbol(head), first, ..] = elements.as_mut_slice()
             && head.value.starts_with('%')
             && !first.leading_whitespace().contains('\n') {
-            first.set_leading_whitespace(String::new());
+            first.set_leading_whitespace("");
         }
         Ok(ParseNode::List {
             nodes: elements.into_boxed_slice(),
             site: lparen.site,
             end_token: rparen,
-            leading_whitespace: lparen.leading_whitespace.to_owned(),
+            leading_whitespace: Cow::Borrowed(lparen.leading_whitespace),
         })
     }
 }
 
 /// Sanitize any escaped characters by removing their leading backslash.
-fn escape_sanitize(string: &str) -> String {
+fn escape_sanitize(string: &str) -> Cow<'_, str> {
+    if !string.contains('\\') {
+        return Cow::Borrowed(string);
+    }
     let mut builder = String::with_capacity(string.len());
     let chars = string.chars();
     for c in chars {
         if c == '\\' { continue; }
         builder.push(c);
     }
-    builder
+    Cow::Owned(builder)
 }
 
 /// Parse a string with its escapes.
 /// **Note:** Uses the `descape` crate for now.
-fn escape_string<'a>(string: &'a str, site: &Site<'a>) -> Result<String, LexError<'a>> {
+fn escape_string<'a>(string: &'a str, site: &Site<'a>) -> Result<Cow<'a, str>, LexError<'a>> {
     string.to_unescaped()
-        .map(|s| s.to_string())
         .map_err(|invalid| {
             LexError(
                 format!("Invalid escape `\\{}' at byte-index {}.",

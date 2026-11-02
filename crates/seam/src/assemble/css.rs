@@ -149,10 +149,10 @@ fn convert_value<'a>(node: &ParseNode<'a>) -> Result<String, GenerationError<'a>
             Ok(if node.value.chars().any(char::is_whitespace) {
                 format!("{:?}", node.value)
             } else {
-                node.value.clone()
+                node.value.to_string()
             }),
         ParseNode::Raw(node) => {
-            Ok(node.value.clone())
+            Ok(node.value.to_string())
         },
         ParseNode::Attribute { .. } => Err(GenerationError::new("CSS-value",
                 "Incompatible structure (attribute) found in CSS \
