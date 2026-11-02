@@ -1,6 +1,6 @@
 //! Assembles an expanded tree into valid XML.
 
-use super::{escape_xml, MarkupFormatter, GenerationError, Formatter};
+use super::{child_whitespace, escape_xml, MarkupFormatter, GenerationError, Formatter};
 use crate::parse::parser::{self, ParseNode, ParseTree};
 
 #[derive(Debug, Clone)]
@@ -16,16 +16,32 @@ impl<'a> XMLFormatter<'a> {
         }
     }
 
-    fn generate_xml_node(f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
+    /// Generate a sequence of nodes.
+    pub fn generate_nodes(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for node in nodes {
+            Self::generate_xml_node(f, node, node.leading_whitespace())?;
+        }
+        Ok(())
+    }
+
+    /// Generate the children of an element (see [`child_whitespace`]).
+    pub fn generate_children(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for (index, node) in nodes.iter().enumerate() {
+            Self::generate_xml_node(f, node, child_whitespace(index, node))?;
+        }
+        Ok(())
+    }
+
+    fn generate_xml_node(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
         match node {
             ParseNode::Symbol(node)
             | ParseNode::Number(node)
             | ParseNode::String(node) => {
-                write!(f, "{}", node.leading_whitespace)?;
+                write!(f, "{leading}")?;
                 write!(f, "{}", escape_xml(&node.value))?;
             },
-            ParseNode::List { nodes: list, leading_whitespace, end_token, .. } => {
-                write!(f, "{leading_whitespace}")?;
+            ParseNode::List { nodes: list, end_token, .. } => {
+                write!(f, "{leading}")?;
                 let head = list.first();
                 let tag: &str;  // xml <tag> name.
                 if let Some(head_node) = head {
@@ -79,22 +95,14 @@ impl<'a> XMLFormatter<'a> {
                 // See similar comment for HTML generation:
                 // We strip leading whitespace from the first child element in a tag.
                 // This is more natural w.r.t. the S-exp syntax.
-                let mut rest = rest.to_vec();
-                let mut is_first_node_on_next_line = false;
-                if let Some(first_node) = rest.get_mut(0) {
-                    is_first_node_on_next_line = first_node.leading_whitespace().contains('\n');
-                    if !is_first_node_on_next_line {
-                        first_node.set_leading_whitespace(String::new());
-                    }
-                }
-
-                let xml_fmt = XMLFormatter::new(rest.clone().into_boxed_slice());
-                xml_fmt.generate(f)?;
+                let is_first_node_on_next_line = rest.first()
+                    .is_some_and(|first| first.leading_whitespace().contains('\n'));
+                Self::generate_children(f, rest)?;
 
                 // Closing tag should be equally as spaced as opening tag (?)
                 if end_token.leading_whitespace.is_empty() {
                     if is_first_node_on_next_line || tag == "style" {
-                        write!(f, "{leading_whitespace}")?;
+                        write!(f, "{leading}")?;
                     }
                 } else {
                     write!(f, "{}", end_token.leading_whitespace)?;
@@ -139,11 +147,7 @@ impl<'a> MarkupFormatter<'a> for XMLFormatter<'a> {
     }
 
     fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
-        let tree_iter = self.tree.iter().peekable();
-        for node in tree_iter {
-            Self::generate_xml_node(f, node)?;
-        }
-        Ok(())
+        Self::generate_nodes(f, &self.tree)
     }
 }
 

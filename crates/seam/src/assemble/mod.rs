@@ -1,4 +1,4 @@
-use crate::parse::tokens::Site;
+use crate::parse::{parser::ParseNode, tokens::Site};
 use std::{convert, error::Error, fmt::{self, Debug}};
 
 use colored::Colorize;
@@ -75,6 +75,15 @@ impl convert::From<fmt::Error> for GenerationError<'_> {
 }
 
 pub type Formatter<'a> = &'a mut dyn fmt::Write;
+
+/// Leading whitespace to write before the `index`th child of an element:
+/// the first child's whitespace is left out, unless it starts on a new line.
+/// e.g. `(p hello world)` -> `<p>hello world</p>`.
+#[must_use]
+pub fn child_whitespace<'n>(index: usize, node: &'n ParseNode) -> &'n str {
+    let leading = node.leading_whitespace();
+    if index == 0 && !leading.contains('\n') { "" } else { leading }
+}
 
 /// Trait for all structs that can generate specific markup
 /// for the s-expression tree.

@@ -3,7 +3,7 @@
 //! but this also converts strings and other constructs
 //! into unescaped plain text as well.
 
-use super::{MarkupFormatter, GenerationError, Formatter};
+use super::{child_whitespace, MarkupFormatter, GenerationError, Formatter};
 use crate::parse::parser::{ParseNode, ParseTree};
 
 #[derive(Debug, Clone)]
@@ -19,29 +19,43 @@ impl<'a> PlainTextFormatter<'a> {
         }
     }
 
-    fn generate_node(f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
+    /// Generate a sequence of nodes.
+    pub fn generate_nodes(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for node in nodes {
+            Self::generate_node(f, node, node.leading_whitespace())?;
+        }
+        Ok(())
+    }
+
+    /// Generate the children of an element (see [`child_whitespace`]).
+    pub fn generate_children(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for (index, node) in nodes.iter().enumerate() {
+            Self::generate_node(f, node, child_whitespace(index, node))?;
+        }
+        Ok(())
+    }
+
+    fn generate_node(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
         match node {
             ParseNode::Symbol(node)
           | ParseNode::Number(node)
           | ParseNode::String(node)
           | ParseNode::Raw(node) => {
-                write!(f, "{}", node.leading_whitespace)?;
+                write!(f, "{leading}")?;
                 write!(f, "{}", node.value)?;
             },
-            ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
-                write!(f, "{leading_whitespace}")?;
+            ParseNode::List { nodes, end_token, .. } => {
+                write!(f, "{leading}")?;
                 write!(f, "(")?;
-                let tree = nodes.to_vec();
-                let text_fmt = PlainTextFormatter::new(tree.into_boxed_slice());
-                text_fmt.generate(f)?;
+                Self::generate_nodes(f, nodes)?;
                 write!(f, "{}", end_token.leading_whitespace)?;
                 write!(f, ")")?;
 
             },
-            ParseNode::Attribute { keyword, node, leading_whitespace, .. } => {
-                write!(f, "{leading_whitespace}")?;
+            ParseNode::Attribute { keyword, node, .. } => {
+                write!(f, "{leading}")?;
                 write!(f, ":{keyword}")?;
-                Self::generate_node(f, node)?;
+                Self::generate_node(f, node, node.leading_whitespace())?;
             },
         }
         Ok(())
@@ -54,10 +68,6 @@ impl<'a> MarkupFormatter<'a> for PlainTextFormatter<'a> {
     }
 
     fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
-        let tree_iter = self.tree.iter().peekable();
-        for node in tree_iter {
-            Self::generate_node(f, node)?;
-        }
-        Ok(())
+        Self::generate_nodes(f, &self.tree)
     }
 }

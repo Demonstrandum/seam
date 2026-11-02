@@ -1,5 +1,5 @@
 //! Assembles an expanded tree into valid CSS.
-use super::{GenerationError, MarkupFormatter, Formatter};
+use super::{child_whitespace, GenerationError, MarkupFormatter, Formatter};
 use crate::parse::{parser::{ParseNode, ParseTree}, tokens::Site};
 
 use std::slice::Iter;
@@ -10,6 +10,50 @@ pub struct CSSFormatter<'a> {
 }
 
 impl<'a> CSSFormatter<'a> {
+    /// Generate a sequence of CSS rules.
+    pub fn generate_nodes(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for node in nodes {
+            Self::generate_node(f, node, node.leading_whitespace())?;
+        }
+        Ok(())
+    }
+
+    /// Generate the rules within an element (see [`child_whitespace`]).
+    pub fn generate_children(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for (index, node) in nodes.iter().enumerate() {
+            Self::generate_node(f, node, child_whitespace(index, node))?;
+        }
+        Ok(())
+    }
+
+    fn generate_node(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
+        match node {
+            ParseNode::List { nodes: list, .. } => {
+                write!(f, "{leading}")?;
+                generate_css_rule(f, list.iter())?;
+            },
+            ParseNode::Attribute { site, .. }  => {
+                return Err(GenerationError::new("CSS",
+                    "Attribute not expected here, CSS documents \
+                     are supposed to be a series of selectors \
+                     and property-value pairs, wrapped in parentheses.",
+                     &site.to_owned()));
+            },
+            ParseNode::Symbol(node)
+            | ParseNode::Number(node)
+            | ParseNode::String(node)
+            | ParseNode::Raw(node) => {
+                let site = node.site;
+                return Err(GenerationError::new("CSS",
+                    "Symbolic node not expected here, CSS documents \
+                     are supposed to be a series of selectors \
+                     and property-value pairs, wrapped in parentheses.",
+                     &site));
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self { tree }
@@ -253,33 +297,6 @@ impl<'a> MarkupFormatter<'a> for CSSFormatter<'a> {
 
     fn generate(&self, f: Formatter)
     -> Result<(), GenerationError<'a>> {
-        let tree_iter = self.tree.iter().peekable();
-        for node in tree_iter {
-            match node {
-                ParseNode::List { nodes: list, leading_whitespace, .. } => {
-                    write!(f, "{leading_whitespace}")?;
-                    generate_css_rule(f, list.into_iter())?;
-                },
-                ParseNode::Attribute { site, .. }  => {
-                    return Err(GenerationError::new("CSS",
-                        "Attribute not expected here, CSS documents \
-                         are supposed to be a series of selectors \
-                         and property-value pairs, wrapped in parentheses.",
-                         &site.to_owned()));
-                },
-                ParseNode::Symbol(node)
-                | ParseNode::Number(node)
-                | ParseNode::String(node)
-                | ParseNode::Raw(node) => {
-                    let site = node.site;
-                    return Err(GenerationError::new("CSS",
-                        "Symbolic node not expected here, CSS documents \
-                         are supposed to be a series of selectors \
-                         and property-value pairs, wrapped in parentheses.",
-                         &site));
-                }
-            }
-        }
-        Ok(())
+        Self::generate_nodes(f, &self.tree)
     }
 }
