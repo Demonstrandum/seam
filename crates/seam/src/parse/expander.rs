@@ -809,13 +809,13 @@ impl<'a> Expander<'a> {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Only { Frontmatter, Content, Both }
         // Extract arguments and options.
-        let contents = args.number.1.value.into_owned();
+        let contents = args.number.1.value.clone();
         // Markdown is literate by default: macro calls `(%...)` in its text are expanded.
         let literate = args.literate.is_none_or(|option| option.value == "true");
         let contents = if literate && contents.contains("(%") {
             let site = args.number.1.site;
-            let expanded = self.expand_literate(format!("{} (markdown)", site.source()), contents, &site)?;
-            nodes_to_text(&expanded)?
+            let expanded = self.expand_literate(format!("{} (markdown)", site.source()), contents.into_owned(), &site)?;
+            Cow::Owned(nodes_to_text(&expanded)?)
         } else {
             contents
         };
@@ -825,7 +825,7 @@ impl<'a> Expander<'a> {
             _ => unreachable!(),
         });
         // Default to using the '/' namespace separator for frontmatter definitions.
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
+        let sep: &str = args.separator.map_or("/", |sep| &sep.value);
         // Embedded HTML is passed through by default, `:allow-html false` escapes it.
         let allow_html = args.allow_html.is_none_or(|option| option.value == "true");
         // Live dangerously / trust the author:
@@ -885,12 +885,12 @@ impl<'a> Expander<'a> {
             match root {
                 [mdast::Node::Yaml(mdast::Yaml { value: yaml, .. }), ..] => {
                     // Parse the YAML and convert it into macro definitions.
-                    let _ = expand_yaml(self, yaml, &sep, node.site())?;
+                    let _ = expand_yaml(self, yaml, sep, node.site())?;
                     Ok(())
                 },
                 [mdast::Node::Toml(mdast::Toml { value: toml, .. }), ..] => {
                     // Parse the TOML and convert it into macro definitions.
-                    let _ = expand_toml(self, toml, &sep, node.site())?;
+                    let _ = expand_toml(self, toml, sep, node.site())?;
                     Ok(())
                 },
                 _ => Err(ExpansionError::new(
@@ -921,10 +921,10 @@ impl<'a> Expander<'a> {
             mandatory(1): string,
             optional("separator"): literal,
         }?;
-        let yaml = args.number.1.value;
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
+        let yaml = &args.number.1.value;
+        let sep: &str = args.separator.map_or("/", |sep| &sep.value);
 
-        expand_yaml(self, &yaml, &sep, node.site())
+        expand_yaml(self, yaml, sep, node.site())
     }
 
     fn expand_toml_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -934,10 +934,10 @@ impl<'a> Expander<'a> {
             mandatory(1): string,
             optional("separator"): literal,
         }?;
-        let yaml = args.number.1.value;
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
+        let yaml = &args.number.1.value;
+        let sep: &str = args.separator.map_or("/", |sep| &sep.value);
 
-        expand_toml(self, &yaml, &sep, node.site())
+        expand_toml(self, yaml, sep, node.site())
     }
 
     fn expand_get_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -948,10 +948,10 @@ impl<'a> Expander<'a> {
             mandatory(2): any,
             optional("separator"): literal,
         }?;
-        let sep = args.separator.map_or(String::from("/"), |sep| sep.value.into_owned());
+        let sep: &str = args.separator.map_or("/", |sep| &sep.value);
         let path = args.number.1.value.split(&sep);
 
-        let mut node = &args.number.2;
+        let mut node: &ParseNode<'a> = args.number.2;
         for item in path {
             // Verify the current node is a list so it can be indexed.
             let Some(list) = node.list() else {
@@ -984,7 +984,7 @@ impl<'a> Expander<'a> {
             optional("timezone"): number,
         }?;
         let timezone_offset: i32 = match args.timezone {
-            Some(ref offset) => match offset.value.parse::<fixed::types::I32F32>() {
+            Some(offset) => match offset.value.parse::<fixed::types::I32F32>() {
                 Ok(offset) => (offset * 60 * 60).round().to_num(),
                 Err(_) => return Err(ExpansionError::new(
                     "Invalid (decimal) timezone offset in hours.",
@@ -993,7 +993,7 @@ impl<'a> Expander<'a> {
             },
             None => chrono::Local::now().offset().local_minus_utc(),
         };
-        let date_format = args.number.1.value;
+        let date_format = &args.number.1.value;
         let time = if let Some(time) = args.number.2 {
             let Ok(secs) = time.value.parse::<i64>() else {
                 return Err(ExpansionError::new(
@@ -1016,7 +1016,7 @@ impl<'a> Expander<'a> {
             ));
         };
         let time = time.with_timezone(&timezone);
-        let formatted = time.format(&date_format).to_string();
+        let formatted = time.format(date_format).to_string();
         let date_string_node = ParseNode::String(Node {
             value: formatted.into(),
             site: *node.site(),
@@ -1033,11 +1033,11 @@ impl<'a> Expander<'a> {
             mandatory(2): literal,
             optional("timezone"): number,
         }?;
-        let format = args.number.1.value;
-        let date_string = args.number.2.value;
+        let format = &args.number.1.value;
+        let date_string = &args.number.2.value;
 
         let timezone_offset: i32 = match args.timezone {
-            Some(ref offset) => match offset.value.parse::<fixed::types::I32F32>() {
+            Some(offset) => match offset.value.parse::<fixed::types::I32F32>() {
                 Ok(offset) => (offset * 60 * 60).round().to_num(),
                 Err(_) => return Err(ExpansionError::new(
                     "Invalid (decimal) timezone offset in hours.",
@@ -1054,12 +1054,12 @@ impl<'a> Expander<'a> {
             ));
         };
 
-        let timestamp = if let Ok(datetime) = chrono::DateTime::parse_from_str(&date_string, &format) {
+        let timestamp = if let Ok(datetime) = chrono::DateTime::parse_from_str(date_string, format) {
             // Timezone information already given. Ignore any `:timezone` attribute.
             datetime.timestamp()
         } else {
             // Parse NaiveDateTime instead and get timzone from attribute, or default to local time.
-            let datetime = match chrono::NaiveDateTime::parse_from_str(&date_string, &format) {
+            let datetime = match chrono::NaiveDateTime::parse_from_str(date_string, format) {
                 Ok(datetime) => datetime,
                 Err(err) => return Err(ExpansionError(
                     format!("Failed to parse date: {err}"),
@@ -1236,13 +1236,13 @@ impl<'a> Expander<'a> {
         }?;
         let it = args.number.1;
         let list = args.number.3;
-        let list = self.expand_nodes(&list)?;
+        let list = self.expand_nodes(list)?;
         let body = args.rest;
 
         let mut expanded = Vec::with_capacity(list.len());
         for item in &list {
             let context = self.child();
-            context.bind(&it, item)?;
+            context.bind(it, item)?;
             for node in &body {
                 context.expand_into(node, &mut expanded)?;
             }
@@ -1453,7 +1453,7 @@ impl<'a> Expander<'a> {
         }?;
         let mut expanded = Vec::with_capacity(args.rest.len());
         for node in args.rest {
-            expanded.push(ParseNode::Number(node));
+            expanded.push(ParseNode::Number(node.clone()));
         }
         Ok(expanded.into_boxed_slice())
     }
@@ -1466,7 +1466,7 @@ impl<'a> Expander<'a> {
         }?;
         let mut expanded = Vec::with_capacity(args.rest.len());
         for node in args.rest {
-            expanded.push(ParseNode::Symbol(node));
+            expanded.push(ParseNode::Symbol(node.clone()));
         }
         Ok(expanded.into_boxed_slice())
     }
@@ -1480,7 +1480,7 @@ impl<'a> Expander<'a> {
         let list = args.number.1;
         // Items are reversed, but whitespace keeps its order.
         let whitespace: Vec<Cow<'a, str>> = list.iter().map(|item| item.leading_whitespace().clone()).collect();
-        let reversed: Vec<ParseNode<'a>> = list.into_iter().rev().zip(whitespace)
+        let reversed: Vec<ParseNode<'a>> = list.iter().rev().cloned().zip(whitespace)
             .map(|(mut item, whitespace)| { item.set_leading_whitespace(whitespace); item })
             .collect();
 
@@ -1506,8 +1506,8 @@ impl<'a> Expander<'a> {
         }?;
 
         let call_node = node;
-        let key_fn_site = args.key.clone().map_or(call_node.owned_site(), |key_fn| key_fn.site);
-        let key_fn = args.key.map_or(String::from("do"), |key| key.value.into_owned());
+        let key_fn_site = args.key.map_or(call_node.owned_site(), |key_fn| key_fn.site);
+        let key_fn: &str = args.key.map_or("do", |key| &key.value);
         let ascending = args.order.is_none_or(|order| order.value == "ascending");
 
         /// Keeps track of nodes and the key by which to sort them by.
@@ -1526,7 +1526,7 @@ impl<'a> Expander<'a> {
         let mut items = Vec::with_capacity(nodes.len());
         let mut whitespace = Vec::with_capacity(nodes.len()); // Preserve whitespace order.
         for node in nodes {
-            let key = match self.expand_invocation(&key_fn, call_node, std::slice::from_ref(&node)) {
+            let key = match self.expand_invocation(key_fn, call_node, std::slice::from_ref(node)) {
                 Ok(key) => key,
                 Err(err) => return Err(ExpansionError(
                     format!("Error evaluating `:key` macro:\n{err}"),
@@ -1545,7 +1545,7 @@ impl<'a> Expander<'a> {
                 ));
             }
 
-            let key = key[0].clone();
+            let key = key.into_vec().swap_remove(0);
             let key_type = key.node_type();
             let key_site = key.owned_site();
             let Some(key) = key.into_atomic() else {
@@ -1556,7 +1556,7 @@ impl<'a> Expander<'a> {
             };
             let key = key.value.into_owned();
             whitespace.push(node.leading_whitespace().clone());
-            items.push(SortItem { node, key });
+            items.push(SortItem { node: node.clone(), key });
         }
         // Whitespace is reversed so .pop() removes the first item.
         whitespace.reverse();
@@ -1583,8 +1583,8 @@ impl<'a> Expander<'a> {
         Ok(Box::new([
             ParseNode::List {
                 nodes,
-                site,
-                end_token,
+                site: *site,
+                end_token: *end_token,
                 leading_whitespace: node.leading_whitespace().clone(),
             }
         ]))
@@ -1643,7 +1643,7 @@ impl<'a> Expander<'a> {
 
         let mut expanded = vec![];
         for arg in args.rest {
-            expanded.extend(self.expand_invocation(args.number.1.value.as_ref(), node, &[arg])?);
+            expanded.extend(self.expand_invocation(args.number.1.value.as_ref(), node, std::slice::from_ref(arg))?);
         }
         Ok(expanded.into_boxed_slice())
     }
@@ -1659,7 +1659,7 @@ impl<'a> Expander<'a> {
 
         let mut expanded = vec![];
         for arg in args.rest {
-            let nodes = self.expand_invocation(args.number.1.value.as_ref(), node, &[arg])?;
+            let nodes = self.expand_invocation(args.number.1.value.as_ref(), node, std::slice::from_ref(arg))?;
             match &*nodes {
                 [node,] if node.null() => {},
                 _ => expanded.extend(nodes),
@@ -1719,7 +1719,9 @@ impl<'a> Expander<'a> {
             rest: any,
         }?;
 
-        self.expand_invocation(args.number.1.value.as_ref(), node, &args.rest)
+        // The rest of the (already expanded) arguments follow the macro name.
+        let rest: Vec<ParseNode<'a>> = args.rest.into_iter().cloned().collect();
+        self.expand_invocation(args.number.1.value.as_ref(), node, &rest)
     }
 
     fn expand_lambda_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -1729,7 +1731,7 @@ impl<'a> Expander<'a> {
             rest: any,
         }?;
 
-        let head: ParseNode<'a> = args.number.1;
+        let head: &ParseNode<'a> = args.number.1;
         let arglist = match head.list() {
             Some(list) => list.to_vec(),
             None => match head.symbol() {
@@ -1748,7 +1750,8 @@ impl<'a> Expander<'a> {
 
         // The lambda closes over the current scope, but its name is defined
         // at the top-level so it can be applied from anywhere it is passed to.
-        let mac = self.create_macro(name.clone(), arglist, args.rest.into_boxed_slice())?;
+        let body = args.rest.into_iter().cloned().collect();
+        let mac = self.create_macro(name.clone(), arglist, body)?;
         self.within(self.root_scope()).insert_variable(name.clone(), Definition::Macro(mac));
 
         Ok(Box::new([

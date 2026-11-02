@@ -343,24 +343,24 @@ impl<'params, 'tree> ArgParser<'params, 'tree> {
         Ok(Self { call_node, rules, positional, named, trailing })
     }
 
-    pub fn get_optional<'k>(&self, key: impl Into<ArgPos<'k>>) -> Option<&&ParseNode<'tree>> {
+    pub fn get_optional<'k>(&self, key: impl Into<ArgPos<'k>>) -> Option<&'params ParseNode<'tree>> {
         match key.into() {
-            ArgPos::Int(i) => self.positional.get(&i),
-            ArgPos::Str(k) => self.named.get(k),
+            ArgPos::Int(i) => self.positional.get(&i).copied(),
+            ArgPos::Str(k) => self.named.get(k).copied(),
         }
     }
 
-    pub fn get<'k>(&self, key: impl Into<ArgPos<'k>>) -> Result<&&ParseNode<'tree>, ExpansionError<'tree>> {
+    pub fn get<'k>(&self, key: impl Into<ArgPos<'k>>) -> Result<&'params ParseNode<'tree>, ExpansionError<'tree>> {
         match key.into() {
             ArgPos::Int(i) => match self.positional.get(&i) {
-                Some(value) => Ok(value),
+                Some(value) => Ok(*value),
                 None => Err(ExpansionError(
                     format!("Argument in position {i} not given."),
                     self.call_node.owned_site(),
                 )),
             },
             ArgPos::Str(k) => match self.named.get(k) {
-                Some(value) => Ok(value),
+                Some(value) => Ok(*value),
                 None => Err(ExpansionError(
                     format!("Named argument :{k} not given."),
                     self.call_node.owned_site(),

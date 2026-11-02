@@ -50,6 +50,12 @@ struct ArgumentStructTypes {
 
 /// Convert an argument keyword (e.g. `allow-html`) into a valid
 /// raw Rust identifier (e.g. `r#allow_html`) for the generated struct field.
+/// The same type, with the lifetime `'p` of borrowed arguments elided,
+/// for use outside of the generated argument struct.
+fn elide_borrow(rust_type: &TokenStream) -> TokenStream {
+    rust_type.to_string().replace("'p", "'_").parse().unwrap()
+}
+
 fn to_ident(name: &str) -> String {
     // Replace any character that cannot appear in an identifier.
     let mut ident: String = name.chars()
@@ -279,22 +285,22 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
         named_arguments.push(variable);
         match props.position_type {
             PositionTypes::Mandatory => named_values.push(quote! {{
-                let retrieved = *parser.get(#name)?;
+                let retrieved = parser.get(#name)?;
                 retrieved
-                    .clone()
                     .try_into()
                     .expect("node type-checked but unwrap failed")
             }}),
             PositionTypes::Optional => named_values.push(quote! {{
                 parser.get_optional(#name).map(|retrieved|
-                    (*retrieved)
-                        .clone()
+                    retrieved
                         .try_into()
                         .expect("node type-checked but unwrap failed"))
             }}),
             PositionTypes::Rest => unreachable!(),
         }
     }
+
+    let named_elided_types: Vec<TokenStream> = named_types.iter().map(elide_borrow).collect();
 
     // Generate code for extracting the values of the positional arguments.
     let mut tuple_variables = vec![quote! { () }];
@@ -304,13 +310,13 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
         tuple_variables.push(arg_num_name.clone());
         let Some(props) = arg_struct.positional.get(&i) else { continue };
+        let elided = elide_borrow(arg_type);
         match props.position_type {
             PositionTypes::Mandatory => {
                 tuple_variable_initializations.push(quote! {
-                    let #arg_num_name: #arg_type = {
-                        let retrieved = *parser.get(#i)?;
+                    let #arg_num_name: #elided = {
+                        let retrieved = parser.get(#i)?;
                         retrieved
-                            .clone()
                             .try_into()
                             .expect("node type-checked but unwrap failed")
                     };
@@ -318,11 +324,10 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
             },
             PositionTypes::Optional => {
                 tuple_variable_initializations.push(quote! {
-                    let #arg_num_name: #arg_type = parser
+                    let #arg_num_name: #elided = parser
                         .get_optional(#i)
                         .map(|retrieved|
-                            (*retrieved)
-                                .clone()
+                            retrieved
                                 .try_into()
                                 .expect("node type-checked but unwrap failed"));
                 });
@@ -334,14 +339,14 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Generate code for extracting the trailing arguments.
     let rest_rust_type = arg_struct.rest.rust_type;
     let has_rest_capture = arg_struct.rest.kind != ArgumentKind::None;
+    let rest_elided = elide_borrow(&rest_rust_type);
     let trailing_arguments = if has_rest_capture {
         quote! {
             {
                 parser.trailing
                     .iter()
                     .map(|arg| {
-                        let arg: crate::parse::parser::ParseNode = (*arg).clone();
-                        let retrieved: #rest_rust_type = arg.try_into().expect("node type-checked but unwrap failed");
+                        let retrieved: #rest_elided = (*arg).try_into().expect("node type-checked but unwrap failed");
                         retrieved
                     })
                     .collect()
@@ -364,21 +369,23 @@ pub fn arguments(stream: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #(#out)*;
             #[allow(non_camel_case_types)]
             #[derive(Clone, Debug)]
-            struct #struct_name<'a> {
+            struct #struct_name<'p, 'a> {
                 number: (#(#tuple_types),*,),
                 #(#named_arguments: #named_types,)*
-                #rest_struct_decl
+                #rest_struct_decl,
+                _lifetimes: std::marker::PhantomData<(&'p (), &'a ())>,
             }
             let parser_result = crate::parse::macros::ArgParser::new(rules, &node, #params);
             match parser_result {
                 Ok(parser) => {
                     #(#tuple_variable_initializations)*
-                    #(let #named_arguments: #named_types = #named_values;)*
+                    #(let #named_arguments: #named_elided_types = #named_values;)*
                     let rest = #trailing_arguments;
                     let args_struct = #struct_name {
                         number: (#(#tuple_variables),*,),
                         #(#named_arguments,)*
                         rest,
+                        _lifetimes: std::marker::PhantomData,
                     };
                     Ok((parser, args_struct))  // Returns the parser and args from the scope.
                 },
@@ -478,13 +485,13 @@ fn parse_argument_type(stream: &mut Peekable<IntoIter>, position_type: PositionT
     use ArgumentKind as AK;
     let (kind, rust_type, arg_type) = match stream.next() {
         Some(TokenTree::Ident(ident)) => match ident.to_string().as_str() {
-            "literal"  => (AK::Literal,  quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Literal  }),
-            "string"   => (AK::String,   quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::String   }),
-            "symbol"   => (AK::Symbol,   quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Symbol   }),
-            "number"   => (AK::Number,   quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Number   }),
-            "symbolic" => (AK::Symbolic, quote! { crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Symbolic }),
-            "list" => (AK::List, quote! { Vec<crate::parse::parser::ParseNode<'a>> }, quote! { crate::parse::macros::ArgType::List }),
-            "any" => (AK::Any, quote! { crate::parse::parser::ParseNode<'a> }, quote! { crate::parse::macros::ArgType::Any }),
+            "literal"  => (AK::Literal,  quote! { &'p crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Literal  }),
+            "string"   => (AK::String,   quote! { &'p crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::String   }),
+            "symbol"   => (AK::Symbol,   quote! { &'p crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Symbol   }),
+            "number"   => (AK::Number,   quote! { &'p crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Number   }),
+            "symbolic" => (AK::Symbolic, quote! { &'p crate::parse::parser::Node<'a> }, quote! { crate::parse::macros::ArgType::Symbolic }),
+            "list" => (AK::List, quote! { &'p [crate::parse::parser::ParseNode<'a>] }, quote! { crate::parse::macros::ArgType::List }),
+            "any" => (AK::Any, quote! { &'p crate::parse::parser::ParseNode<'a> }, quote! { crate::parse::macros::ArgType::Any }),
             _ => panic!("Invalid argument type: `{ident}`"),
         },
         None => panic!("Unexpected EOF"),

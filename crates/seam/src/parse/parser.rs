@@ -300,34 +300,22 @@ impl<'a> ParseNode<'a> {
 // Try to convert a [`ParseNode`] enum value into
 // its underlying type (e.g. [`Node`], `Box<[Node]>`, etc.).
 
-impl<'a> TryFrom<ParseNode<'a>> for Node<'a> {
+impl<'p, 'a> TryFrom<&'p ParseNode<'a>> for &'p Node<'a> {
     type Error = ();
 
-    fn try_from(value: ParseNode<'a>) -> Result<Self, Self::Error> {
-        match value.into_atomic() {
-            Some(node) => Ok(node),
-            None => Err(()),
-        }
+    fn try_from(value: &'p ParseNode<'a>) -> Result<Self, Self::Error> {
+        value.atomic().ok_or(())
     }
 }
 
-impl<'a> TryFrom<ParseNode<'a>> for Box<[ParseNode<'a>]> {
+impl<'p, 'a> TryFrom<&'p ParseNode<'a>> for &'p [ParseNode<'a>] {
     type Error = ();
 
-    fn try_from(value: ParseNode<'a>) -> Result<Self, Self::Error> {
+    fn try_from(value: &'p ParseNode<'a>) -> Result<Self, Self::Error> {
         match value {
             ParseNode::List { nodes, .. } => Ok(nodes),
             _ => Err(()),
         }
-    }
-}
-
-impl<'a> TryFrom<ParseNode<'a>> for Vec<ParseNode<'a>> {
-    type Error = ();
-
-    fn try_from(value: ParseNode<'a>) -> Result<Self, Self::Error> {
-        let into: Result<Box<[ParseNode<'a>]>, Self::Error> = value.try_into();
-        into.map(|b| b.to_vec())
     }
 }
 
