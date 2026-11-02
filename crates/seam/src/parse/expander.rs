@@ -814,7 +814,7 @@ impl<'a> Expander<'a> {
         let literate = args.literate.is_none_or(|option| option.value == "true");
         let contents = if literate && contents.contains("(%") {
             let site = args.number.1.site;
-            let expanded = self.expand_literate(format!("{} (markdown)", site.source), contents, &site)?;
+            let expanded = self.expand_literate(format!("{} (markdown)", site.source()), contents, &site)?;
             nodes_to_text(&expanded)?
         } else {
             contents

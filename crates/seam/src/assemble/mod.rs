@@ -40,7 +40,7 @@ impl fmt::Display for GenerationError<'_> {
             format!("[{}] Error Generating {} ({}:{}:{})",
                 "**".red().bold(),
                 self.markup.bold(),
-                self.site.source,
+                self.site.source(),
                 self.site.line,
                 self.site.line_column(),
             ).black(),

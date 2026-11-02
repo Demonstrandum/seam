@@ -508,13 +508,13 @@ fn raw_text<'a>(start_node: Option<&ParseNode<'a>>, end_token: &tokens::Token<'a
     let Some(start_node) = start_node else {
         return Some(end_token.leading_whitespace);
     };
-    if !std::ptr::eq(start_node.site().source_code, end_token.site.source_code) {
+    if !std::ptr::eq(start_node.site().file, end_token.site.file) {
         return None;
     }
-    let source: &'a str = end_token.site.source_code;
+    let source: &'a str = end_token.site.source_code();
     let first_node_offset =
-          start_node.site().bytes_from_start
+          start_node.site().start()
         - start_node.leading_whitespace().len()
         + usize::from(start_node.leading_whitespace().starts_with(' '));
-    source.get(first_node_offset..end_token.site.bytes_from_start)
+    source.get(first_node_offset..end_token.site.start())
 }

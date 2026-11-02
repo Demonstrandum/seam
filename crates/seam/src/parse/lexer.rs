@@ -1,4 +1,4 @@
-use super::tokens::{self, Site, Token};
+use super::tokens::{self, Site, SourceFile, Token};
 
 use std::borrow::Cow;
 use std::str::pattern::Pattern;
@@ -48,8 +48,7 @@ fn character_kind(character: char)
 /// and references it when generating tokens.
 #[derive(Debug, Clone)]
 pub struct Lexer {
-    pub source_path: String,
-    pub source: String,
+    file: SourceFile,
     line: Cell<usize>,
     byte_offset: Cell<usize>,
     byte_offset_line: Cell<usize>,
@@ -59,8 +58,7 @@ impl<'a> Lexer {
     #[must_use]
     pub fn new(source_path: String, source: String) -> Self {
         Self {
-            source_path,
-            source,
+            file: SourceFile { path: source_path.into(), code: source.into() },
             line: Cell::new(1),
             byte_offset: Cell::new(0),
             byte_offset_line: Cell::new(0),
@@ -68,7 +66,7 @@ impl<'a> Lexer {
     }
 
     pub fn get_source(&self) -> &str {
-        &self.source
+        &self.file.code
     }
 
     fn increment_byte_offsets(&self, offset: usize) {
@@ -87,7 +85,7 @@ impl<'a> Lexer {
     /// Advance the lexer past any whitespace characters,
     /// and ignore any comments.
     fn consume_whitespace(&'a self) -> &'a str {
-        let bytes = self.source.as_bytes();
+        let bytes = self.file.code.as_bytes();
         let mut start = self.byte_offset.get();
         if start >= bytes.len() {
             return "";
@@ -116,18 +114,18 @@ impl<'a> Lexer {
                 }
             }
         }
-        &self.source[start..self.byte_offset.get()]
+        &self.file.code[start..self.byte_offset.get()]
     }
 
     /// Look at immediately following complete character.
     /// Returns `None` if file is at EOF.
     fn peek_char(&self) -> Option<char> {
-        self.source[self.byte_offset.get()..].chars().next()
+        self.file.code[self.byte_offset.get()..].chars().next()
     }
 
     /// Check if source-code at current possition starts with a pattern.
     fn starts_with<P>(&self, pat: P) -> bool where P: Pattern {
-        self.source[self.byte_offset.get()..].starts_with(pat)
+        self.file.code[self.byte_offset.get()..].starts_with(pat)
     }
 
     /// Advance the offset to the next unicode character.
@@ -135,7 +133,7 @@ impl<'a> Lexer {
     fn consume_char(&self) -> Option<char> {
         let c = self.peek_char();
         self.increment_byte_offsets(1);
-        while !self.source.is_char_boundary(self.byte_offset.get()) {
+        while !self.file.code.is_char_boundary(self.byte_offset.get()) {
             self.increment_byte_offsets(1);
         }
         if c == Some('\n') {
@@ -148,7 +146,7 @@ impl<'a> Lexer {
         let start = self.byte_offset.get();
         let line_offset = self.byte_offset_line.get();
         assert_eq!('(', self.consume_char().expect("consumed token at eof"));
-        let value: &str = &self.source[start..self.byte_offset.get()];
+        let value: &str = &self.file.code[start..self.byte_offset.get()];
         let site: Site = self.site(start, line_offset);
         Token::new(tokens::Kind::LParen, value, whitespace, site)
     }
@@ -157,7 +155,7 @@ impl<'a> Lexer {
         let start = self.byte_offset.get();
         let line_offset = self.byte_offset_line.get();
         assert_eq!(')', self.consume_char().expect("consumed token at eof"));
-        let value: &str = &self.source[start..self.byte_offset.get()];
+        let value: &str = &self.file.code[start..self.byte_offset.get()];
         let site: Site = self.site(start, line_offset);
         Token::new(tokens::Kind::RParen, value, whitespace, site)
     }
@@ -192,7 +190,7 @@ impl<'a> Lexer {
             }
             let _ = self.consume_char();
         }
-        &self.source[start..self.byte_offset.get()]
+        &self.file.code[start..self.byte_offset.get()]
     }
 
     /// Consume a symbol/identifier token.
@@ -219,7 +217,7 @@ impl<'a> Lexer {
             let mut reading_escape = false;
             loop {
                 let Some(next_char) = self.peek_char() else {
-                    let site = Site::new(&self.source_path, &self.source, line_no, start, line_offset, 3);
+                    let site = Site::new(&self.file, line_no, start, line_offset, 3);
                     return Err(LexError(
                         String::from("Unclosed triple-quoted string."),
                         site));
@@ -238,9 +236,8 @@ impl<'a> Lexer {
             let end_of_string = self.byte_offset.get();
             self.increment_byte_offsets(3);
             // String 'value' is inside quotes.
-            let value: &str = &self.source[start_of_string..end_of_string];
-            let mut site: Site = self.site(start, line_offset);
-            site.line = line_no;
+            let value: &str = &self.file.code[start_of_string..end_of_string];
+            let site: Site = self.site(start, line_offset).starting_on(line_no);
             Token::new(tokens::Kind::String, value, whitespace, site)
         } else {
             // Single-quoted string.
@@ -250,7 +247,7 @@ impl<'a> Lexer {
             let mut reading_escape = false;
             loop {
                 let Some(next_char) = self.peek_char() else {
-                    let site = Site::new(&self.source_path, &self.source, line_no, start, line_offset, 1);
+                    let site = Site::new(&self.file, line_no, start, line_offset, 1);
                     return Err(LexError(
                         String::from("Unclosed string quote (`\"')."),
                         site));
@@ -269,9 +266,8 @@ impl<'a> Lexer {
             let end_of_string = self.byte_offset.get();
             self.increment_byte_offsets(1);
             // String 'value' is inside quotes.
-            let value: &str = &self.source[start_of_string..end_of_string];
-            let mut site: Site = self.site(start, line_offset);
-            site.line = line_no;
+            let value: &str = &self.file.code[start_of_string..end_of_string];
+            let site: Site = self.site(start, line_offset).starting_on(line_no);
             Token::new(tokens::Kind::String, value, whitespace, site)
         };
 
@@ -290,7 +286,7 @@ impl<'a> Lexer {
     /// Generate site from start byte-index.
     fn site(&self, file_offset: usize, line_offset: usize) -> Site<'_> {
         let span = self.byte_offset.get() - file_offset;
-        Site::new(&self.source_path, &self.source, self.line.get(), file_offset, line_offset, span)
+        Site::new(&self.file, self.line.get(), file_offset, line_offset, span)
     }
 
     /// Consume the next token.
@@ -354,7 +350,7 @@ impl<'a> Lexer {
         let mut escaped: Option<String> = None;
         while self.peek_char().is_some() {
             if self.starts_with("\\(%") {
-                let text = escaped.get_or_insert_with(|| self.source[start..self.byte_offset.get()].to_owned());
+                let text = escaped.get_or_insert_with(|| self.file.code[start..self.byte_offset.get()].to_owned());
                 text.push_str("(%");
                 self.increment_byte_offsets(3);
                 continue;
@@ -365,15 +361,14 @@ impl<'a> Lexer {
             let before = self.byte_offset.get();
             let _ = self.consume_char();
             if let Some(text) = escaped.as_mut() {
-                text.push_str(&self.source[before..self.byte_offset.get()]);
+                text.push_str(&self.file.code[before..self.byte_offset.get()]);
             }
         }
         if self.byte_offset.get() == start {
             return None;
         }
-        let text = escaped.map_or_else(|| Cow::Borrowed(&self.source[start..self.byte_offset.get()]), Cow::Owned);
-        let mut site = self.site(start, line_offset);
-        site.line = line;
+        let text = escaped.map_or_else(|| Cow::Borrowed(&self.file.code[start..self.byte_offset.get()]), Cow::Owned);
+        let site = self.site(start, line_offset).starting_on(line);
         Some((text, site))
     }
 

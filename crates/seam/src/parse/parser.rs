@@ -394,7 +394,7 @@ impl fmt::Display for ParseError<'_> {
             text_offset=site.line_column() - 1,
             length=site.width())?;
         writeln!(f, "[**] Parse Error ({}:{}:{}): {}",
-            site.source, site.line, site.line_column(), msg)
+            site.source(), site.line, site.line_column(), msg)
     }
 }
 
