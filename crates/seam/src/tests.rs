@@ -316,9 +316,27 @@ mod cases {
     fn test_pre_with_expanded_contents() {
         // plain contents are copied from the source as written.
         assert_html_document_eq("(pre  x  <y>\n   z)",
-            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<pre> x  <y>\n   z</pre>\n</body>\n</html>");
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<pre> x  &lt;y&gt;\n   z</pre>\n</body>\n</html>");
         // but expanded contents are written out, rather than the macro call.
         assert_html_document_eq("(pre (%embed \"tests/fixtures/post.md\"))",
             "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<pre># Title\n\nWritten by (%author).\n</pre>\n</body>\n</html>");
+    }
+
+    #[test]
+    fn test_pre_verbatim_and_expanded() {
+        let pre = |source: &str| {
+            use assemble::MarkupFormatter;
+            let context = Context::new();
+            let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
+            assemble::html::HTMLFormatter::new(expander.expand().unwrap()).display().unwrap()
+        };
+        // source text is kept exactly, including comments, but escaped.
+        assert_eq!(pre("(pre (f x) ; note\n  (* x  x))"), "<pre>(f x) ; note\n  (* x  x)</pre>");
+        assert_eq!(pre("(pre a < b)"), "<pre>a &lt; b</pre>");
+        // variables and macros are expanded, rather than shown as written.
+        assert_eq!(pre("(%define name Sam) (pre Hi %name)"), " <pre>Hi Sam</pre>");
+        assert_eq!(pre("(pre (%do x) y)"), "<pre>x y</pre>");
+        // the text of `title` and `textarea` is escaped too.
+        assert_eq!(pre("(textarea </textarea>)"), "<textarea>&lt;/textarea&gt;</textarea>");
     }
 }

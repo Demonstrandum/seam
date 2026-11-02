@@ -1,6 +1,6 @@
 //! Assembles an expanded tree into valid XML.
 
-use super::{child_whitespace, escape_xml, MarkupFormatter, GenerationError, Formatter};
+use super::{child_whitespace, write_escaped, MarkupFormatter, GenerationError, Formatter};
 use crate::parse::parser::{self, ParseNode, ParseTree};
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,7 @@ impl<'a> XMLFormatter<'a> {
             | ParseNode::Number(node)
             | ParseNode::String(node) => {
                 write!(f, "{leading}")?;
-                write!(f, "{}", escape_xml(&node.value))?;
+                write_escaped(f, &node.value)?;
             },
             ParseNode::List { nodes: list, end_token, .. } => {
                 write!(f, "{leading}")?;

@@ -1,6 +1,6 @@
 //! Assembles an expanded tree into valid HTML.
 
-use super::{child_whitespace, escape_xml, GenerationError, MarkupFormatter, Formatter};
+use super::{child_whitespace, write_escaped, Escaping, GenerationError, MarkupFormatter, Formatter};
 use super::{
     text::PlainTextFormatter,
     sexp::SExpFormatter,
@@ -10,6 +10,7 @@ use super::{
 
 use crate::parse::parser::{ParseNode, ParseTree};
 use crate::parse::tokens;
+use std::fmt::Write;
 
 #[derive(Debug, Clone)]
 pub struct HTMLFormatter<'a> {
@@ -63,7 +64,7 @@ impl<'a> HTMLFormatter<'a> {
             | ParseNode::Number(node)
             | ParseNode::String(node) => {
                 write!(f, "{leading}")?;
-                write!(f, "{}", escape_xml(&node.value))?;
+                write_escaped(f, &node.value)?;
             },
             ParseNode::Raw(node) => {
                 // Don't escape any symbols in a raw-content string.
@@ -151,18 +152,20 @@ impl<'a> HTMLFormatter<'a> {
                 //   - <script> contains JavaScript, maybe we will parse this in the future!;
                 //   - <style> contains CSS, which we have our own parser for already.
                 match tag.as_str() {
-                    "pre" => match raw_text(rest.first(), end_token) {
-                        // <pre> should preserve the raw text in the *source* file,
-                        // i.e. the text between its first and last tokens.
-                        Some(pre) if !pre.contains("(%") => write!(f, "{pre}")?,
-                        // Unless it contains macro calls, or content from another file,
-                        // then its (expanded) contents are written as plain-text.
-                        _ => PlainTextFormatter::generate_children(f, rest)?,
+                    "pre" => {
+                        let mut escaped = Escaping(f);
+                        match verbatim_text(list, end_token) {
+                            // <pre> preserves the text as written in the *source* file.
+                            Some(text) => escaped.write_str(text)?,
+                            // Unless macros were expanded inside it, then its (expanded)
+                            // contents are written as plain-text.
+                            None => PlainTextFormatter::generate_children(&mut escaped, rest)?,
+                        }
                     },
-                    "textarea" | "title" => { // Not eaw source-code, but plain-text.
+                    "textarea" | "title" => { // Not raw source-code, but plain-text.
                         // We have to reconsititute what the source-code would look like if all
                         // macros were expanded by hand, and read as raw source code.
-                        PlainTextFormatter::generate_children(f, rest)?;
+                        PlainTextFormatter::generate_children(&mut Escaping(f), rest)?;
                     },
                     "style" => {  // <style> tag needs to generate CSS.
                         // When just a string is passed, don't convert. Assume raw CSS.
@@ -499,22 +502,65 @@ impl<'a> MarkupFormatter<'a> for HTMLFormatter<'a> {
     }
 }
 
-/// Get raw text in source-file between a `start_node` and some `end_token`.
-/// Returns `None` if the `start_node` comes from a different file,
-/// e.g. if it is the result of an `(%include)` macro.
-/// This is a limitation from the fact that we do not know what kind of markup
-/// format we are targetting until *after* parsing and expanding.
-fn raw_text<'a>(start_node: Option<&ParseNode<'a>>, end_token: &tokens::Token<'a>) -> Option<&'a str> {
-    let Some(start_node) = start_node else {
-        return Some(end_token.leading_whitespace);
-    };
-    if !std::ptr::eq(start_node.site().file, end_token.site.file) {
+/// Whether some source text is only whitespace and comments.
+fn is_blank_source(text: &str) -> bool {
+    let mut in_comment = false;
+    text.chars().all(|c| {
+        match c {
+            ';' => in_comment = true,
+            '\n' => in_comment = false,
+            _ => {},
+        }
+        in_comment || c.is_whitespace()
+    })
+}
+
+/// Check that `nodes` are exactly as written in `file`, in order from `cursor`,
+/// with only whitespace and comments between them, advancing `cursor` past them.
+/// Nodes produced by expanding macros or variables do not sit like this.
+fn as_written(nodes: &[ParseNode], file: &tokens::SourceFile, cursor: &mut usize) -> bool {
+    let code: &str = &file.code;
+    nodes.iter().all(|node| {
+        let site = node.site();
+        if !std::ptr::eq(site.file, file) || site.start() < *cursor
+            || !code.get(*cursor..site.start()).is_some_and(is_blank_source) {
+            return false;
+        }
+        *cursor = site.end();
+        match node {
+            ParseNode::List { nodes, end_token, .. } => {
+                let inner = as_written(nodes, file, cursor)
+                    && code.get(*cursor..end_token.site.start()).is_some_and(is_blank_source);
+                *cursor = end_token.site.end();
+                inner
+            },
+            ParseNode::Attribute { node, .. } => as_written(std::slice::from_ref(node), file, cursor),
+            _ => true,
+        }
+    })
+}
+
+/// The text inside an element, `(tag ...)`, exactly as written in the source
+/// (after its tag and any attributes, less a single separating space),
+/// as long as its contents were not changed by expanding any macros.
+fn verbatim_text<'a>(list: &[ParseNode<'a>], end_token: &tokens::Token<'a>) -> Option<&'a str> {
+    let file = end_token.site.file;
+    let attributes = list.iter().skip(1).take_while(|node| node.is_attribute()).count();
+    let (head, contents) = list.split_at(1 + attributes);
+    // The tag and attributes must be as written too, the text starts after them.
+    let mut cursor = head.first()?.site().start();
+    if !as_written(head, file, &mut cursor) {
         return None;
     }
-    let source: &'a str = end_token.site.source_code();
-    let first_node_offset =
-          start_node.site().start()
-        - start_node.leading_whitespace().len()
-        + usize::from(start_node.leading_whitespace().starts_with(' '));
-    source.get(first_node_offset..end_token.site.start())
+    let start = cursor;
+    if !as_written(contents, file, &mut cursor) {
+        return None;
+    }
+    let code = end_token.site.source_code();
+    let end = end_token.site.start();
+    if !code.get(cursor..end).is_some_and(is_blank_source) {
+        return None;
+    }
+    let text = code.get(start..end)?;
+    Some(text.strip_prefix(' ').unwrap_or(text))
 }
