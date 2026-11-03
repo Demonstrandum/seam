@@ -5,12 +5,12 @@ use super::{
     text::PlainTextFormatter,
     sexp::SExpFormatter,
     xml::XMLFormatter,
-    css::CSSFormatter,
+    css::{self, CSSFormatter},
 };
 
 use crate::parse::parser::{ParseNode, ParseTree};
 use crate::parse::tokens;
-use std::fmt::Write;
+use std::{borrow::Cow, fmt::Write};
 
 #[derive(Debug, Clone)]
 pub struct HTMLFormatter<'a> {
@@ -45,14 +45,9 @@ impl<'a> HTMLFormatter<'a> {
     fn generate_attributes<'n>(f: Formatter, mut nodes: &'n [ParseNode<'a>])
     -> Result<&'n [ParseNode<'a>], GenerationError<'a>> {
         while let Some(ParseNode::Attribute { node, keyword, leading_whitespace, .. }) = nodes.first() {
-            let Some(atom) = node.atomic() else {
-                return Err(GenerationError::new("HTML",
-                    "Attribute cannot contain non-atomic data.",
-                    node.site()));
-            };
             let leading_whitespace = if leading_whitespace.is_empty() { " " } else { leading_whitespace };
             write!(f, "{leading_whitespace}{keyword}=\"")?;
-            write_escaped(f, &atom.value)?;
+            write_escaped(f, &attribute_value(node)?)?;
             write!(f, "\"")?;
             nodes = &nodes[1..];
         }
@@ -171,7 +166,7 @@ impl<'a> HTMLFormatter<'a> {
                     },
                     "style" => {  // <style> tag needs to generate CSS.
                         // When just a string is passed, don't convert. Assume raw CSS.
-                        if let Some(ParseNode::String(string_node)) = rest.first() {
+                        if let Some(ParseNode::String(string_node) | ParseNode::Raw(string_node)) = rest.first() {
                             if rest.len() != 1 {
                                 return Err(GenerationError {
                                     markup: "HTML+CSS",
@@ -565,4 +560,32 @@ fn verbatim_text<'a>(list: &[ParseNode<'a>], end_token: &tokens::Token<'a>) -> O
     }
     let text = code.get(start..end)?;
     Some(text.strip_prefix(' ').unwrap_or(text))
+}
+
+/// The text of an attribute's value: an atom as it is, a list of
+/// properties as CSS declarations (e.g. `:style (:color red :margin 0)`),
+/// or a list of atoms separated by spaces (e.g. `:class (post wide)`).
+fn attribute_value<'a, 'n>(node: &'n ParseNode<'a>) -> Result<Cow<'n, str>, GenerationError<'a>> {
+    if let Some(atom) = node.atomic() {
+        return Ok(Cow::Borrowed(&atom.value));
+    }
+    let non_atomic = |site| GenerationError::new("HTML",
+        "Attribute values are atoms, lists of atoms, or lists of `:property value` pairs.", site);
+    let Some(items) = node.list() else { return Err(non_atomic(node.site())) };
+    let mut text = String::new();
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            text.push(' ');
+        }
+        match item {
+            ParseNode::Attribute { keyword, node: value, .. } => {
+                text += keyword;
+                text += ": ";
+                text += &css::css_value(keyword, value)?;
+                text.push(';');
+            },
+            _ => text += &item.atomic().ok_or_else(|| non_atomic(item.site()))?.value,
+        }
+    }
+    Ok(Cow::Owned(text))
 }
