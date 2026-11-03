@@ -3,7 +3,7 @@ use super::tokens::Site;
 
 use std::{
     fmt,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     ffi::OsString,
     error::Error,
@@ -15,7 +15,8 @@ use std::{
 };
 
 use chrono::TimeZone;
-use colored::*;
+use typed_arena::Arena;
+use colored::Colorize;
 use fixed;
 use formatx;
 use glob::glob;
@@ -36,14 +37,14 @@ impl<'a> ExpansionError<'a> {
     }
 }
 
-/// Implement fmt::Display for user-facing error output.
-impl<'a> fmt::Display for ExpansionError<'a> {
+/// Implement `fmt::Display` for user-facing error output.
+impl fmt::Display for ExpansionError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ExpansionError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();
-        writeln!(f, "")?;
-        writeln!(f, "{} {}", line_prefix, line_view)?;
+        writeln!(f)?;
+        writeln!(f, "{line_prefix} {line_view}")?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=site.line_column() - 1,
@@ -53,8 +54,8 @@ impl<'a> fmt::Display for ExpansionError<'a> {
     }
 }
 
-/// Implements std::error::Error for macro expansion error.
-impl<'a> Error for ExpansionError<'a> { }
+/// Implements `std::error::Error` for macro expansion error.
+impl Error for ExpansionError<'_> { }
 
 /// A macro consists of:
 /// - its name;
@@ -65,124 +66,177 @@ pub struct Macro<'a> {
     #[allow(dead_code)]
     name: String,
     params: Box<[ParseNode<'a>]>,
-    body: Box<[ParseNode<'a>]>
+    body: Box<[ParseNode<'a>]>,
+    /// The scope the macro was defined in, which its body is expanded in.
+    env: &'a Scope<'a>,
 }
-// TODO: Macro to also store its own scope (at place of definition)
-// in order to implement lexical scoping.
 
-impl<'a> Macro<'a> {
-    pub fn new(name: &str) -> Macro {
-        Macro {
-            name: name.to_string(),
-            params: Box::new([]),
-            body:   Box::new([]),
+/// Owns everything that outlives a single macro expansion:
+/// every parsed source file and every variable scope.
+/// Parse trees borrow source code from the parsers, and scopes point to
+/// their parents, so both live in arenas which never move or free their
+/// contents until the whole `Context` is dropped.
+pub struct Context<'a> {
+    parsers: Arena<Parser>,
+    scopes: Arena<Scope<'a>>,
+    /// Include directories, in order of search.
+    includes: RefCell<BTreeSet<PathBuf>>,
+    /// Number of lambdas created so far, used to give each a unique name.
+    lambdas: Cell<usize>,
+    /// Stack of `%with` bindings, which override top-level definitions
+    /// for as long as the body of the `%with` is being expanded.
+    dynamic: RefCell<Vec<HashMap<String, Rc<Macro<'a>>>>>,
+}
+
+impl Context<'_> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            parsers: Arena::new(),
+            scopes: Arena::new(),
+            includes: RefCell::new(BTreeSet::from([PathBuf::from(".")])),
+            lambdas: Cell::new(0),
+            dynamic: RefCell::new(Vec::new()),
         }
     }
 }
 
-/// Type of variable scope owned by an `Expander` instance.
-pub type Scope<'a> = RefCell<HashMap<String, Rc<Macro<'a>>>>; // Can you believe this type?
+impl Default for Context<'_> {
+    fn default() -> Self { Self::new() }
+}
+
+impl fmt::Debug for Context<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Context")
+            .field("includes", &self.includes)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A variable (lexical) scope: the macros defined directly within it,
+/// and the scope it is nested in (if any).
+#[derive(Debug)]
+pub struct Scope<'a> {
+    definitions: RefCell<HashMap<String, Rc<Macro<'a>>>>,
+    parent: Option<&'a Scope<'a>>,
+}
+
+impl<'a> Scope<'a> {
+    fn new(parent: Option<&'a Scope<'a>>) -> Self {
+        Self { definitions: RefCell::new(HashMap::new()), parent }
+    }
+}
 
 /// Macro expansion context, takes a parser and expands
 /// any macro calls found in the generated parse-tree.
-#[derive(Debug, Clone)]
+/// This is only a view into a [`Context`] at a given scope,
+/// so it is cheap to copy.
+#[derive(Debug, Clone, Copy)]
 pub struct Expander<'a> {
-    parser: Parser,
-    /// Include directories, in order of search.
-    includes: BTreeSet<PathBuf>,
-    subparsers: RefCell<Vec<Parser>>,
-    subcontexts: RefCell<Vec<Self>>,
-    invocations: RefCell<Vec<ParseNode<'a>>>,
-    definitions: Scope<'a>,
+    context: &'a Context<'a>,
+    parser: &'a Parser,
+    scope: &'a Scope<'a>,
 }
 
 impl<'a> Expander<'a> {
-    pub fn new(parser: Parser) -> Self {
+    pub fn new(context: &'a Context<'a>, parser: Parser) -> Self {
         Self {
-            parser,
-            includes: BTreeSet::from([PathBuf::from(".")]),
-            subparsers: RefCell::new(Vec::new()),
-            subcontexts: RefCell::new(Vec::new()),
-            invocations: RefCell::new(Vec::new()),
-            definitions: RefCell::new(HashMap::new()),
+            context,
+            parser: context.parsers.alloc(parser),
+            scope: context.scopes.alloc(Scope::new(None)),
         }
     }
 
     /// Get underlying source-code of the active parser for current unit.
-    pub fn get_source(&self) -> &str {
+    #[must_use]
+    pub fn get_source(&self) -> &'a str {
         self.parser.get_source()
     }
 
     /// Supply additional include-directories for the macros
     /// to use when searching for files to include/emebed.
     /// Files are searched for in the order that of the directories.
-    pub fn add_includes<T: Iterator>(&mut self, dirs: T)
+    pub fn add_includes<T: Iterator>(&self, dirs: T)
         where T::Item: Into<PathBuf>
     {
+        let mut includes = self.context.includes.borrow_mut();
         for dir in dirs {
-            self.includes.insert(dir.into());
+            includes.insert(dir.into());
         }
     }
 
-    /// Add a subparser owned by the expander context.
+    /// Hand a parser over to the context, which keeps it alive for `'a`.
     fn register_parser(&self, parser: Parser) -> &'a Parser {
-        {
-            let mut parsers = self.subparsers.borrow_mut();
-            parsers.push(parser);
+        self.context.parsers.alloc(parser)
+    }
+
+    /// An expander for a new scope nested in the current one.
+    fn child(&self) -> Self {
+        self.child_of(self.scope)
+    }
+
+    /// An expander for a new scope nested in the given one.
+    fn child_of(&self, parent: &'a Scope<'a>) -> Self {
+        Self {
+            scope: self.context.scopes.alloc(Scope::new(Some(parent))),
+            ..*self
         }
-        self.latest_parser().unwrap()
     }
 
-    /// Get the latest subparser added.
-    fn latest_parser(&self) -> Option<&'a Parser> {
-        let p = self.subparsers.as_ptr();
-        unsafe { (*p).last() }
+    /// An expander for an existing scope.
+    fn within(&self, scope: &'a Scope<'a>) -> Self {
+        Self { scope, ..*self }
     }
 
-    /// Create and register a subcontext built from the current context.
-    fn create_subcontext(&self) -> &mut Self {
-        {
-            let copy = self.clone();
-            let mut contexts = self.subcontexts.borrow_mut();
-            contexts.push(copy);
+    /// The outermost (top-level) scope.
+    fn root_scope(&self) -> &'a Scope<'a> {
+        let mut scope = self.scope;
+        while let Some(parent) = scope.parent {
+            scope = parent;
         }
-        self.latest_context().unwrap()
+        scope
     }
 
-    /// Delete a subcontext from the current context.
-    fn remove_subcontext(&self) -> () {
-        let mut contexts = self.subcontexts.borrow_mut();
-        contexts.pop();
-    }
-
-    /// Get the latest subparser added.
-    fn latest_context(&self) -> Option<&mut Self> {
-        let contexts = self.subcontexts.as_ptr();
-        unsafe { (*contexts).last_mut() }
-    }
-
-    fn register_invocation(&self, node: ParseNode<'a>) -> &ParseNode<'a> {
-        let invocations = self.invocations.as_ptr();
-        unsafe {
-            (*invocations).push(node);
-            (*invocations).last().unwrap()
-        }
+    /// Define a variable (a macro without parameters) in this scope.
+    fn define_value(&self, name: String, body: ParseTree<'a>) {
+        self.insert_variable(name.clone(), Rc::new(Macro {
+            name,
+            params: Box::new([]),
+            body,
+            env: self.scope,
+        }));
     }
 
     /// Update variable (macro) for this scope.
     fn insert_variable(&self, name: String, var: Rc<Macro<'a>>) {
-        let mut defs = self.definitions.borrow_mut();
+        let mut defs = self.scope.definitions.borrow_mut();
         defs.insert(name, var);
     }
 
     /// Check if macro exists in this scope.
     fn has_variable(&self, name: &str) -> bool {
-        let defs = self.definitions.borrow();
-        defs.contains_key(name)
+        self.get_variable(name).is_some()
     }
 
+    /// Find a macro in this scope, or any scope enclosing it.
+    /// Before reaching the top-level scope, any `%with` bindings are
+    /// checked (innermost first), so they override top-level definitions,
+    /// but never local ones (such as macro parameters).
     fn get_variable(&self, name: &str) -> Option<Rc<Macro<'a>>> {
-        self.definitions.borrow().get(name).map(|m| m.clone())
+        let mut scope = Some(self.scope);
+        while let Some(current) = scope {
+            if current.parent.is_none() {
+                let dynamic = self.context.dynamic.borrow();
+                if let Some(mac) = dynamic.iter().rev().find_map(|frame| frame.get(name)) {
+                    return Some(mac.clone());
+                }
+            }
+            if let Some(mac) = current.definitions.borrow().get(name) {
+                return Some(mac.clone());
+            }
+            scope = current.parent;
+        }
+        None
     }
 
     /// Pattern-matching variable bind for two nodes (the pattern and the value).
@@ -195,7 +249,7 @@ impl<'a> Expander<'a> {
                     self.bind(node0, node1)
                 } else {
                     Err(ExpansionError(
-                        format!("Mismatch named argument, looking for :{}, found :{}.", k0, k1),
+                        format!("Mismatch named argument, looking for :{k0}, found :{k1}."),
                         value.owned_site(),
                     ))
                 },
@@ -214,11 +268,7 @@ impl<'a> Expander<'a> {
             },
             // Symbols are simply assigned as variable names.
             ParseNode::Symbol(symbol) => {
-                self.insert_variable(symbol.value.clone(), Rc::new(Macro {
-                    name: symbol.value.clone(),
-                    params: Box::new([]),
-                    body: Box::new([ value.clone() ]),
-                }));
+                self.define_value(symbol.value.clone(), Box::new([ value.clone() ]));
                 Ok(())
             },
             // Other literals must match exactly and no assignment takes place.
@@ -227,7 +277,7 @@ impl<'a> Expander<'a> {
                     Err(ExpansionError(
                         format!("Expected the number {} here, got the number {} instead.",
                             number0.value, number1.value),
-                        number1.site.to_owned(),
+                        number1.site,
                     ))
                 },
                 _ => Err(ExpansionError(
@@ -240,7 +290,7 @@ impl<'a> Expander<'a> {
                     Err(ExpansionError(
                         format!("Expected the string {:?} here, got the string {:?} instead.",
                             string0.value, string1.value),
-                        string1.site.to_owned(),
+                        string1.site,
                     ))
                 },
                 _ => Err(ExpansionError(
@@ -251,7 +301,7 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn bind_list(&self, assigned: &ParseNode<'a>, nodes0: &ParseTree<'a>, nodes1: &ParseTree<'a>)
+    fn bind_list(&self, assigned: &ParseNode<'a>, nodes0: &[ParseNode<'a>], nodes1: &[ParseNode<'a>])
     -> Result<(), ExpansionError<'a>> {
         let mut rest_node = None;
         let mut rest_kw_node = None;
@@ -275,7 +325,7 @@ impl<'a> Expander<'a> {
                 continue;
             }
             // Check for &&-rest keyword matching syntax.
-            let found_kw_rest = node0.symbol().map(|name| name.value.starts_with("&&")).unwrap_or(false);
+            let found_kw_rest = node0.symbol().is_some_and(|name| name.value.starts_with("&&"));
             if found_kw_rest {
                 // If another &&-rest node has been found, report an error.
                 if rest_kw_node.is_some() {
@@ -292,7 +342,7 @@ impl<'a> Expander<'a> {
                 continue;
             }
             // Check for &-rest regular argument matching syntax.
-            let found_rest = node0.symbol().map(|name| name.value.starts_with('&')).unwrap_or(false);
+            let found_rest = node0.symbol().is_some_and(|name| name.value.starts_with('&'));
             if found_rest {
                 // If another &-rest node has been found, report an error.
                 if rest_node.is_some() {
@@ -315,17 +365,17 @@ impl<'a> Expander<'a> {
                     assigned.owned_site(),
                 ));
             }
-            let node1 = &nodes1[rhs_index];
-            if let ParseNode::Attribute { keyword, .. } = node1 {
+            let rhs_node = &nodes1[rhs_index];
+            if let ParseNode::Attribute { keyword, .. } = rhs_node {
                 // This is a named argument given in the RSH, so it does not correspond to
                 // the specific non-named argument in the LHS, so we keep looking until we
                 // get to it, and remember all the named arguments we find along the way.
-                rhs_named.insert(keyword.clone(), node1);
+                rhs_named.insert(keyword.clone(), rhs_node);
                 rhs_index += 1;
                 // Continue without advancing to the next LHS `node0`.
                 continue;
             }
-            self.bind(node0, node1)?;
+            self.bind(node0, rhs_node)?;
             maybe_node0 = nodes0_iter.next();
             expected += 1;
             rhs_index += 1;
@@ -333,12 +383,12 @@ impl<'a> Expander<'a> {
         // Assign any remaining arguments in the RHS to &rest.
         let mut rest = vec![];
         while rhs_index < nodes1.len() {
-            let node1 = &nodes1[rhs_index];
-            if let ParseNode::Attribute { keyword, .. } = node1 {
+            let rhs_node = &nodes1[rhs_index];
+            if let ParseNode::Attribute { keyword, .. } = rhs_node {
                 // There might be remaining named argument further down the RHS list.
-                rhs_named.insert(keyword.clone(), node1);
+                rhs_named.insert(keyword.clone(), rhs_node);
             } else {
-                rest.push(node1.clone());
+                rest.push(rhs_node.clone());
             }
             rhs_index += 1;
         }
@@ -347,24 +397,17 @@ impl<'a> Expander<'a> {
             // Assign the &rest variable to a list containing the extra nodes.
             let rest_symbol = rest_node.symbol().unwrap();
             let rest_name = rest_symbol.value[1..].to_owned();
-            self.insert_variable(
-                rest_name.to_owned(),
-                Rc::new(Macro {
-                    name: rest_name,
-                    params: Box::new([]),
-                    body: rest.into_boxed_slice(),
-                }),
-            );
+            self.define_value(rest_name.clone(), rest.into_boxed_slice());
         } else if let Some(last_excess_node) = rest.last() {
             // No &rest node mentioned, but excess arguments collected? That's an error.
             let got = expected + rest.len();
             return Err(ExpansionError(
-                format!("Excess number of arguments, expected {}, got {}.", expected, got),
+                format!("Excess number of arguments, expected {expected}, got {got}."),
                 last_excess_node.owned_site(),
             ));
         }
         // Assign all the named arguments.
-        for (keyword, default) in lhs_named.iter() {
+        for (keyword, default) in &lhs_named {
             // Remove memory of assigned node from RHS.
             let value = match rhs_named.remove(*keyword) {
                 // Found the named argument in the RHS, so don't use the default.
@@ -373,14 +416,7 @@ impl<'a> Expander<'a> {
                 None => default,
             };
             // Bind it to a symbol with the same name as the keyword.
-            self.insert_variable(
-                (*keyword).to_owned(),
-                Rc::new(Macro {
-                    name: (*keyword).to_owned(),
-                    params: Box::new([]),
-                    body: Box::new([ *value.clone() ]),
-                }),
-            );
+            self.define_value((*keyword).to_owned(), Box::new([ value.clone() ]));
         }
         // Capture remaining named arguments under the &&-macro.
         if let Some(rest_kw_node) = rest_kw_node {
@@ -394,11 +430,7 @@ impl<'a> Expander<'a> {
                 nodes.push(named.clone());
             }
             // Insert the &&-variable.
-            self.insert_variable(rest_kw_name.to_string(), Rc::new(Macro {
-                name: rest_kw_name.to_string(),
-                params: Box::new([]),
-                body: nodes.into_boxed_slice(),
-            }));
+            self.define_value(rest_kw_name.to_string(), nodes.into_boxed_slice());
         }
         // Any remaining RHS named nodes not covered by the LHS, are excess/errors.
         if !rhs_named.is_empty() {
@@ -412,18 +444,15 @@ impl<'a> Expander<'a> {
             }
             let excess_keywords: Vec<String> = excess_keywords
                 .iter()
-                .map(|kw| format!("`:{}`", kw))
+                .map(|kw| format!("`:{kw}`"))
                 .collect();
-            let known_keywords: Vec<String> = lhs_named
-                .iter()
-                .map(|(kw, _)| format!("`:{}`", kw))
+            let known_keywords: Vec<String> = lhs_named.keys().map(|kw| format!("`:{kw}`"))
                 .collect();
             let excess_keywords = excess_keywords.join(", ");
             if known_keywords.is_empty() {
                 return Err(ExpansionError(
                     format!(
-                        "This macro does not expect any keyword arguments, however the following were provided: {}",
-                        excess_keywords,
+                        "This macro does not expect any keyword arguments, however the following were provided: {excess_keywords}",
                     ),
                     some_node.owned_site(),
                 ));
@@ -444,14 +473,13 @@ impl<'a> Expander<'a> {
     }
 
     /// `%(match expr (pattrern1 body1) (pattern2 body2) ...)`
-    fn expand_match_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    fn expand_match_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let (expr, patterns)  = match &*params {
-            [expr, patterns@..] => (expr, patterns),
-            _ => return Err(ExpansionError::new(
+        let [expr, patterns@..] = params else {
+            return Err(ExpansionError::new(
                 "Match syntax is: `(%match expr [...(pattern value)])`.",
                 node.site(),
-            )),
+            ));
         };
         let [expr,] = &*self.expand_node(expr.clone())? else {
             return Err(ExpansionError::new(
@@ -480,7 +508,7 @@ impl<'a> Expander<'a> {
             };
             // Now attempt to `bind` against pattern, successful binds means
             // we evaluate the RHS of the list and return that.
-            let subcontext = self.clone(); // Subscope.
+            let subcontext = self.child(); // Subscope.
             if let Ok(()) = subcontext.bind(pattern, expr) {
                 return subcontext.expand_nodes(value.into());
             }
@@ -493,9 +521,9 @@ impl<'a> Expander<'a> {
     /// Define a macro with `(%define a b)` --- `a` is a symbol or a list `(c ...)` where `c` is a symbol.
     /// macro definitions will eliminate any preceding whitespace, so make sure trailing whitespace provides
     /// the whitespace you need.
-    fn expand_define_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_define_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let [head, nodes@..] = &*params else {
+        let [head, nodes@..] = params else {
             return Err(ExpansionError(
                 format!("`%define` macro takes at least \
                     two (2) arguments, while {} were given.", params.len()),
@@ -542,7 +570,7 @@ impl<'a> Expander<'a> {
     /// `(%ifdef symbol a b)` --- `b` is optional, however, if not provided *and*
     /// the symbol is not defined, it will erase the whole expression, and whitespace will not
     /// be preserved before it. If that's a concern, provide `b` as the empty string `""`.
-    fn expand_ifdef_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
+    fn expand_ifdef_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         if params.len() < 2 || params.len() > 3 {
             return Err(ExpansionError(format!("`ifdef` takes one (1) \
@@ -552,7 +580,7 @@ impl<'a> Expander<'a> {
                 node.site().to_owned()));
         }
         let symbol = if let Some(node) = params[0].atomic() {
-            node.value.to_owned()
+            node.value.clone()
         } else {
             return Err(ExpansionError(
                 "The first argument to `ifdef` must be a symbol/name.".to_string(),
@@ -561,12 +589,10 @@ impl<'a> Expander<'a> {
 
         let mut expanded = if self.has_variable(&symbol) {
             self.expand_node(params[1].clone())?
+        } else if let Some(alt) = params.get(2) {
+            self.expand_node(alt.clone())?
         } else {
-            if let Some(alt) = params.get(2) {
-                self.expand_node(alt.clone())?
-            } else {
-                Box::new([])
-            }
+            Box::new([])
         };
         if let Some(first_node) = expanded.get_mut(0) {
             first_node.set_leading_whitespace(node.leading_whitespace().to_owned());
@@ -577,6 +603,47 @@ impl<'a> Expander<'a> {
     fn expand_do_macro(&self, _node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         self.expand_nodes(params)
+    }
+
+    /// `(%with (:name value ...) body...)` expands the body with each `%name`
+    /// overriding any top-level definition of `name`, including for any macros
+    /// called from within the body (dynamic scoping).
+    /// The bindings may be given by any expression evaluating to keyword-value pairs.
+    fn expand_with_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let [bindings, body@..] = params else {
+            return Err(ExpansionError::new(
+                "`%with` requires a list of bindings, e.g. `(%with (:name value) ...)`.",
+                node.site(),
+            ));
+        };
+        // Bindings are evaluated eagerly, in the current scope.
+        let bindings = self.expand_node(bindings.clone())?;
+        let bindings = match &*bindings {
+            [ParseNode::List { nodes, .. }] => nodes.clone(),
+            _ => bindings,
+        };
+        let mut frame = HashMap::with_capacity(bindings.len());
+        for binding in &bindings {
+            let Some((keyword, value)) = binding.attribute() else {
+                return Err(ExpansionError(
+                    format!("`%with` bindings must be keyword-value pairs \
+                        (e.g. `:name value`), got {} instead.", binding.node_type()),
+                    binding.owned_site(),
+                ));
+            };
+            frame.insert(keyword.to_owned(), Rc::new(Macro {
+                name: keyword.to_owned(),
+                params: Box::new([]),
+                body: Box::new([value.clone()]),
+                env: self.scope,
+            }));
+        }
+        // Body is evaluated lazily, with the bindings in effect.
+        self.context.dynamic.borrow_mut().push(frame);
+        let expanded = self.expand_nodes(body.into());
+        self.context.dynamic.borrow_mut().pop();
+        expanded
     }
 
     fn expand_include_macro(&self, node: &ParseNode<'a>, params: Box<[ParseNode<'a>]>)
@@ -600,11 +667,11 @@ impl<'a> Expander<'a> {
 
         // Open file, and parse contents!
         let include_error = |error: Box<dyn fmt::Display>| ExpansionError(
-            format!("{}", error), site.to_owned());
+            format!("{error}"), site.to_owned());
         let mut parser: Result<Parser, ExpansionError> = Err(
             include_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in &self.includes {
+        for include_dir in self.context.includes.borrow().iter() {
             let path = include_dir.join(path);
             parser = super::parser_for_file(&path)
                 .or_else(|err| {
@@ -631,7 +698,7 @@ impl<'a> Expander<'a> {
         let tree = match parser.parse() {
             Ok(tree) => tree,
             Err(error) => return Err(ExpansionError(
-                format!("{}", error), node.site().to_owned()))
+                format!("{error}"), node.site().to_owned()))
         };
 
         // Build new (expanded) tree, with result of previous
@@ -642,7 +709,7 @@ impl<'a> Expander<'a> {
             expanded_tree.extend(self.expand_node(branch)?);
         }
         // First node should inherit leading whitespace from (%include ...) list.
-        if expanded_tree.len() != 0 {
+        if !expanded_tree.is_empty() {
             expanded_tree[0].set_leading_whitespace(node.leading_whitespace().to_owned());
         }
         Ok(expanded_tree.into_boxed_slice())
@@ -669,11 +736,11 @@ impl<'a> Expander<'a> {
 
         // Open file, and read contents!
         let embed_error = |error: Box<dyn fmt::Display>| ExpansionError(
-            format!("{}", error), site.to_owned());
+            format!("{error}"), site.to_owned());
         let mut value: Result<String, ExpansionError> = Err(
             embed_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in &self.includes {
+        for include_dir in self.context.includes.borrow().iter() {
             let path = include_dir.join(path);
             value = std::fs::read_to_string(path)
                 .map_err(|err| embed_error(Box::new(err)));
@@ -714,7 +781,7 @@ impl<'a> Expander<'a> {
         // Default to using the '/' namespace separator for frontmatter definitions.
         let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
         // Embedded HTML is passed through by default, `:allow-html false` escapes it.
-        let allow_html = args.allow_html.map_or(true, |option| option.value == "true");
+        let allow_html = args.allow_html.is_none_or(|option| option.value == "true");
         // Live dangerously / trust the author:
         let danger = markdown::CompileOptions {
           allow_dangerous_html: allow_html,
@@ -742,8 +809,8 @@ impl<'a> Expander<'a> {
             let html = match markdown::to_html_with_options(contents.as_ref(), &options) {
                 Ok(html) => html,
                 Err(err) => return Err(ExpansionError(
-                    format!("Failed to render markdown: {}", err),
-                    args.number.1.site.to_owned(),
+                    format!("Failed to render markdown: {err}"),
+                    args.number.1.site,
                 ))
             };
             // Return the raw html.
@@ -762,8 +829,8 @@ impl<'a> Expander<'a> {
             let ast = match markdown::to_mdast(contents.as_ref(), &options.parse) {
                 Ok(ast) => ast,
                 Err(err) => return Err(ExpansionError(
-                    format!("Failed to render markdown: {}", err),
-                    args.number.1.site.to_owned(),
+                    format!("Failed to render markdown: {err}"),
+                    args.number.1.site,
                 ))
             };
             let mdast::Node::Root(root) = ast else { unreachable!() };
@@ -780,7 +847,7 @@ impl<'a> Expander<'a> {
                     let _ = expand_toml(self, toml, &sep, node.site())?;
                     Ok(())
                 },
-                _ => return Err(ExpansionError::new(
+                _ => Err(ExpansionError::new(
                     "This markdown does not contain any frontmatter.",
                     &args.number.1.site,
                 ))
@@ -851,25 +918,24 @@ impl<'a> Expander<'a> {
                 ))
             }
             let mut got = Err(ExpansionError(
-                format!("Could not find attribute with keyword `:{}`.", item),
+                format!("Could not find attribute with keyword `:{item}`."),
                 node.owned_site(),
             ));
             if let Ok(index) = item.parse::<usize>()  {
                 // Try to find n-th element of `view`.
-                got = view.get(index).map(|node| node.clone()).ok_or(ExpansionError(
+                got = view.get(index).cloned().ok_or(ExpansionError(
                     format!("Index {} is out of bounds in list of length {}.", index, view.len()),
                     node.owned_site(),
                 ));
             }
             if got.is_err() {
                 // Try to find :item attribute in list.
-                for node in view.iter() {
-                    if let ParseNode::Attribute { keyword, node, .. } = node {
-                        if item == keyword {
+                for node in &view {
+                    if let ParseNode::Attribute { keyword, node, .. } = node
+                        && item == keyword {
                             got = Ok(*node.clone());
                             break;
                         }
-                    }
                 }
             }
             node = got?;
@@ -914,7 +980,7 @@ impl<'a> Expander<'a> {
 
         let Some(timezone) = chrono::FixedOffset::east_opt(timezone_offset) else {
             return Err(ExpansionError(
-                format!("Failed to compute UTC+(east) offset of {} seconds", timezone_offset),
+                format!("Failed to compute UTC+(east) offset of {timezone_offset} seconds"),
                 args.timezone.map_or(node.owned_site(), |node| node.site),
             ));
         };
@@ -922,7 +988,7 @@ impl<'a> Expander<'a> {
         let formatted = time.format(&date_format).to_string();
         let date_string_node = ParseNode::String(Node {
             value: formatted,
-            site: node.site().clone(),
+            site: *node.site(),
             leading_whitespace: node.leading_whitespace().to_string(),
         });
         Ok(Box::new([date_string_node]))
@@ -952,7 +1018,7 @@ impl<'a> Expander<'a> {
 
         let Some(timezone) = chrono::FixedOffset::east_opt(timezone_offset) else {
             return Err(ExpansionError(
-                format!("Failed to compute UTC+(east) offset of {} seconds", timezone_offset),
+                format!("Failed to compute UTC+(east) offset of {timezone_offset} seconds"),
                 args.timezone.map_or(node.owned_site(), |node| node.site),
             ));
         };
@@ -965,24 +1031,23 @@ impl<'a> Expander<'a> {
             let datetime = match chrono::NaiveDateTime::parse_from_str(&date_string, &format) {
                 Ok(datetime) => datetime,
                 Err(err) => return Err(ExpansionError(
-                    format!("Failed to parse date: {}", err),
+                    format!("Failed to parse date: {err}"),
                     node.owned_site(),
                 )),
             };
             let datetime = timezone.from_local_datetime(&datetime);
-            let datetime = match datetime.earliest() {
-                Some(local) => local,
-                None => return Err(ExpansionError::new(
+            let Some(datetime) = datetime.earliest() else {
+                return Err(ExpansionError::new(
                     "Timezone: local time falls in a gap in local time.",
                     node.site(),
-                ))
+                ));
             };
             datetime.timestamp()
         };
 
         Ok(Box::new([
             ParseNode::Number(Node {
-                value: format!("{}", timestamp),
+                value: format!("{timestamp}"),
                 site: node.owned_site(),
                 leading_whitespace: node.leading_whitespace().to_owned(),
             })
@@ -1025,7 +1090,7 @@ impl<'a> Expander<'a> {
         let Node { site, leading_whitespace, .. } = var.clone();
         let Ok(value) = std::env::var(&var.value) else {
             return Err(ExpansionError(
-                format!("No such environment variable ($`{}') visible.", &var.value),
+                format!("No such environment variable ($`{}') visible.", var.value),
                 site));
         };
         Ok(Box::new([
@@ -1066,7 +1131,7 @@ impl<'a> Expander<'a> {
                 return Err(ExpansionError(
                     format!("In `%format', the compound {} type is not formattable.",
                         var.node_type()),
-                    var.site().clone()));
+                    *var.site()));
             };
             // Replace the placeholder.
             match named {
@@ -1086,14 +1151,14 @@ impl<'a> Expander<'a> {
             ])),
             Err(err) => Err(ExpansionError(
                 format!("Failed to format string: {}", err.message()),
-                format_str.site.clone()))
+                format_str.site))
         }
     }
 
     fn expand_namespace_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // Start evaluating all the arguments to the macro in a separate context.
-        let context = self.clone();
+        let context = self.child();
         let params =  context.expand_nodes(params)?;
         let mut args = params.iter().peekable();
         let Some(namespace) = args.next().and_then(ParseNode::atomic) else {
@@ -1105,22 +1170,22 @@ impl<'a> Expander<'a> {
             let _ = args.next();
             match keyword.as_str() {
                 "separator" => match node.atomic() {
-                    Some(Node { value, .. }) => separator = &value,
+                    Some(Node { value, .. }) => separator = value,
                     None => return Err(ExpansionError(
                         format!("`%namespace' separator must be a symbol, got a {}.", node.node_type()),
                         node.owned_site())),
                 },
                 opt => return Err(ExpansionError(
-                    format!("Unknown option `:{}' to `%namespace' macro.", opt),
-                    site.clone())),
+                    format!("Unknown option `:{opt}' to `%namespace' macro."),
+                    *site)),
             }
         }
         // Find all the definitions made within the context of the
         // `%namespace` macro and include the definition prefixed by
         // the namespace in the *current* scope.
         {
-            let mut self_defs = self.definitions.borrow_mut();
-            let defs = context.definitions.borrow();
+            let mut self_defs = self.scope.definitions.borrow_mut();
+            let defs = context.scope.definitions.borrow();
             for (key, value) in defs.iter() {
                 let new_key = format!("{}{}{}", namespace.value, separator, key);
                 self_defs.insert(new_key, value.clone());
@@ -1130,7 +1195,7 @@ impl<'a> Expander<'a> {
         Ok(args.cloned().collect())
     }
 
-    fn expand_for_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    fn expand_for_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let (_parser, args) = arguments! { [&params]
             mandatory(1): any,
@@ -1143,9 +1208,9 @@ impl<'a> Expander<'a> {
         let list = self.expand_nodes(list.into_boxed_slice())?;
         let body = args.rest.into_boxed_slice();
 
-        let context = self.clone();
         let mut expanded = Vec::with_capacity(list.len());
         for item in list {
+            let context = self.child();
             context.bind(&it, &item)?;
             let evaluated = context.expand_nodes(body.clone())?;
             expanded.extend(evaluated);
@@ -1170,30 +1235,30 @@ impl<'a> Expander<'a> {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum SortBy { Modified, Created, Name, Type, None }
         // Default to both files and dirs.
-        let path_types = args.r#type.map(|typ| match typ.value.as_ref() {
+        let path_types = args.r#type.map_or(PathTypes::Any, |typ| match typ.value.as_ref() {
             "file" => PathTypes::File,
             "directory" => PathTypes::Dir,
             "any" => PathTypes::Any,
             _ => unreachable!(),
-        }).unwrap_or(PathTypes::Any);
+        });
         // Default to no ordering.
-        let sortby = args.sort.map(|typ| match typ.value.as_ref() {
+        let sortby = args.sort.map_or(SortBy::None, |typ| match typ.value.as_ref() {
             "modified" => SortBy::Modified,
             "created" => SortBy::Created,
             "name" => SortBy::Name,
             "type" => SortBy::Type,
             "none" => SortBy::None,
             _ => unreachable!(),
-        }).unwrap_or(SortBy::None);
+        });
         // Default to ascending order.
-        let is_ascending_order = args.order.map_or(true, |node| node.value == "ascending");
+        let is_ascending_order = args.order.is_none_or(|node| node.value == "ascending");
 
         let pattern: &str = args.number.1.value.as_ref();
         let paths = match glob(pattern) {
             Ok(paths) => paths,
             Err(err) => return Err(ExpansionError(
-                format!("Failed to read glob pattern: {}", err),
-                args.number.1.site.to_owned(),
+                format!("Failed to read glob pattern: {err}"),
+                args.number.1.site,
             )),
         };
 
@@ -1203,81 +1268,80 @@ impl<'a> Expander<'a> {
             path: PathBuf,
             sortby: SortBy,
         }
-        impl<'a> PartialEq for GlobPath<'a> {
+        impl PartialEq for GlobPath<'_> {
             fn eq(&self, other: &Self) -> bool {
                 self.path == other.path
             }
         }
-        impl<'a> Eq for GlobPath<'a> { }
-        impl<'a> PartialOrd for GlobPath<'a> {
+        impl Eq for GlobPath<'_> { }
+        impl PartialOrd for GlobPath<'_> {
             fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                if self.sortby != other.sortby { return None };
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for GlobPath<'_> {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                assert_eq!(self.sortby, other.sortby);
                 let sortby = self.sortby;
                 match sortby {
                     SortBy::Created => {
-                        let Ok(d0) = self.meta.created() else { return Some(std::cmp::Ordering::Less) };
-                        let Ok(d1) = other.meta.created() else { return Some(std::cmp::Ordering::Less) };
+                        let Ok(d0) = self.meta.created() else { return std::cmp::Ordering::Less };
+                        let Ok(d1) = other.meta.created() else { return std::cmp::Ordering::Less };
                         if d0 == d1 { // If created at the same time, default to alphabetical.
-                            self.path.partial_cmp(&other.path)
+                            self.path.cmp(&other.path)
                         } else {
                             // "ascending" order should be in terms of age.
-                            d0.partial_cmp(&d1).map(|ord| ord.reverse()) // New < Old
+                            d0.cmp(&d1).reverse() // New < Old
                         }
                     },
                     SortBy::Modified => {
-                        let Ok(d0) = self.meta.modified() else { return Some(std::cmp::Ordering::Less) };
-                        let Ok(d1) = other.meta.modified() else { return Some(std::cmp::Ordering::Less) };
+                        let Ok(d0) = self.meta.modified() else { return std::cmp::Ordering::Less };
+                        let Ok(d1) = other.meta.modified() else { return std::cmp::Ordering::Less };
                         if d0 == d1 { // If modified at the same time, default to alphabetical.
-                            self.path.partial_cmp(&other.path)
+                            self.path.cmp(&other.path)
                         } else {
                             // "ascending" order should be in terms of recentness.
-                            d0.partial_cmp(&d1).map(|ord| ord.reverse()) // New < Old
+                            d0.cmp(&d1).reverse() // New < Old
                         }
                     },
-                    SortBy::Name => self.path.partial_cmp(&other.path),
+                    SortBy::Name => self.path.cmp(&other.path),
                     SortBy::Type => {
                         // First sort by file vs. dir.
                         if self.meta.is_dir() && other.meta.is_file() {
-                            Some(std::cmp::Ordering::Less) // Folder < File
+                            std::cmp::Ordering::Less // Folder < File
                         } else if self.meta.is_file() && other.meta.is_dir() {
-                            Some(std::cmp::Ordering::Greater) // File > Folder
+                            std::cmp::Ordering::Greater // File > Folder
                         } else if let Some(ext) = self.path.extension() {
                             if let Some(other_ext) = other.path.extension() {
                                 if ext == other_ext {
-                                    self.path.partial_cmp(&other.path) // Sort by name when extension are the same.
+                                    self.path.cmp(&other.path) // Sort by name when extension are the same.
                                 } else {
-                                    ext.partial_cmp(other_ext) // Sort by different file extensions before name.
+                                    ext.cmp(other_ext) // Sort by different file extensions before name.
                                 }
                             } else {
-                                Some(std::cmp::Ordering::Greater) // With ext. > No ext.
+                                std::cmp::Ordering::Greater // With ext. > No ext.
                             }
                         } else {
-                            if let Some(_) = other.path.extension() {
-                                Some(std::cmp::Ordering::Less) // No ext. < With ext.
+                            if other.path.extension().is_some() {
+                                std::cmp::Ordering::Less // No ext. < With ext.
                             } else {
-                                self.path.partial_cmp(&other.path) // Sort by name when neither have extensions.
+                                self.path.cmp(&other.path) // Sort by name when neither have extensions.
                             }
                         }
                     }
-                    SortBy::None => Some(std::cmp::Ordering::Less),
+                    SortBy::None => std::cmp::Ordering::Less,
                 }
-            }
-        }
-        impl<'a> Ord for GlobPath<'a> {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                assert_eq!(self.sortby, other.sortby);
-                self.partial_cmp(other).unwrap()
             }
         }
 
         // Collect paths.
-        let mut collection: std::collections::BTreeSet<GlobPath> = Default::default();
+        let mut collection: BTreeSet<GlobPath> = BTreeSet::default();
         for path in paths {
             let path = match path {
                 Ok(path) => path,
                 Err(err) => return Err(ExpansionError(
-                    format!("glob failed: {}", err),
-                    args.number.1.site.to_owned(),
+                    format!("glob failed: {err}"),
+                    args.number.1.site,
                 )),
             };
             let meta = std::fs::metadata(&path).unwrap();
@@ -1288,7 +1352,7 @@ impl<'a> Expander<'a> {
             }
             let node = ParseNode::String(Node {
                 value: path.to_string_lossy().to_string(),
-                site: args.number.1.site.to_owned(),
+                site: args.number.1.site,
                 leading_whitespace: String::from(" "),
             });
             collection.insert(GlobPath { node, meta, path, sortby });
@@ -1413,7 +1477,7 @@ impl<'a> Expander<'a> {
         let call_node = node;
         let key_fn_site = args.key.clone().map_or(call_node.owned_site(), |key_fn| key_fn.site);
         let key_fn = args.key.map_or(String::from("do"), |key| key.value);
-        let ascending = args.order.map_or(true, |order| order.value == "ascending");
+        let ascending = args.order.is_none_or(|order| order.value == "ascending");
 
         /// Keeps track of nodes and the key by which to sort them by.
         struct SortItem<'b> {
@@ -1434,7 +1498,7 @@ impl<'a> Expander<'a> {
             let key = match self.expand_invocation(&key_fn, call_node, Box::new([node.clone()])) {
                 Ok(key) => key,
                 Err(err) => return Err(ExpansionError(
-                    format!("Error evaluating `:key` macro:\n{}", err),
+                    format!("Error evaluating `:key` macro:\n{err}"),
                     key_fn_site,
                 ))
             };
@@ -1455,7 +1519,7 @@ impl<'a> Expander<'a> {
             let key_site = key.owned_site();
             let Some(key) = key.into_atomic() else {
                 return Err(ExpansionError(
-                    format!("List items in `%sort` must resolve to literals under `:key`; got {} instead.", key_type),
+                    format!("List items in `%sort` must resolve to literals under `:key`; got {key_type} instead."),
                     key_site,
                 ));
             };
@@ -1472,11 +1536,10 @@ impl<'a> Expander<'a> {
             if let (Ok(n0), Ok(n1)) = (item0.key.parse::<i64>(), item1.key.parse::<i64>()) {
                 return n0.cmp(&n1)
             }
-            if let (Ok(f0), Ok(f1)) = (item0.key.parse::<f64>(), item1.key.parse::<f64>()) {
-                if let Some(ord) = f0.partial_cmp(&f1) {
+            if let (Ok(f0), Ok(f1)) = (item0.key.parse::<f64>(), item1.key.parse::<f64>())
+                && let Some(ord) = f0.partial_cmp(&f1) {
                     return ord;
                 }
-            }
             item0.key.cmp(&item1.key)
         });
         // Extract nodes and amend whitespace.
@@ -1506,7 +1569,7 @@ impl<'a> Expander<'a> {
         }?;
 
         let sep = &args.number.1.value;
-        let trailing = args.trailing.map(|n| n.value == "true").unwrap_or(false);
+        let trailing = args.trailing.is_some_and(|n| n.value == "true");
         let items: Vec<&str> = args.rest.iter().map(|n| n.value.as_str()).collect();
         let joined = items.join(sep) + if trailing { sep } else { "" };
         Ok(Box::new([
@@ -1569,7 +1632,7 @@ impl<'a> Expander<'a> {
             match &*nodes {
                 [node,] if node.null() => {},
                 _ => expanded.extend(nodes),
-            };
+            }
         }
         Ok(expanded.into_boxed_slice())
     }
@@ -1628,7 +1691,7 @@ impl<'a> Expander<'a> {
         self.expand_invocation(args.number.1.value.as_ref(), node, args.rest.into_boxed_slice())
     }
 
-    fn expand_lambda_macro(&self, node: &ParseNode<'a>, params: ParseTree<'a>)
+    fn expand_lambda_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let (_parser, args) = arguments! { [&params]
             mandatory(1): any,
@@ -1647,9 +1710,16 @@ impl<'a> Expander<'a> {
             }
         };
 
-        let name = format!("__lambda{}", node.site().uuid());
+        // Every evaluation of a `%lambda` makes a distinct closure.
+        let id = self.context.lambdas.get();
+        self.context.lambdas.set(id + 1);
+        let name = format!("__lambda{id}");
 
-        self.create_macro(name.clone(), arglist, args.rest.into_boxed_slice())?;
+        // The lambda closes over the current scope, but its name is defined
+        // at the top-level so it can be applied from anywhere it is passed to.
+        let mac = self.create_macro(name.clone(), arglist, args.rest.into_boxed_slice())?;
+        self.scope.definitions.borrow_mut().remove(&name);
+        self.within(self.root_scope()).insert_variable(name.clone(), mac);
 
         Ok(Box::new([
             ParseNode::Symbol(Node {
@@ -1664,50 +1734,41 @@ impl<'a> Expander<'a> {
     -> Result<Rc<Macro<'a>>, ExpansionError<'a>> {
         // Check excess &-macros and &&-macros are not present.
         let rest_params: Vec<&ParseNode> = arglist.iter()
-            .filter(|node| node.symbol().map(
-                |name| name.value.starts_with('&') && !name.value.starts_with("&&"))
-            .unwrap_or(false))
+            .filter(|node| node.symbol().is_some_and(
+                |name| name.value.starts_with('&') && !name.value.starts_with("&&")))
             .collect();
-        match rest_params.as_slice() {
-            [_, excess, ..] => return Err(ExpansionError::new(
-                "Excess `&`-variadic argument capture variables.",
-                excess.site()
-            )),
-            _ => {}
-        };
+        if let [_, excess, ..] = rest_params.as_slice() { return Err(ExpansionError::new(
+            "Excess `&`-variadic argument capture variables.",
+            excess.site()
+        )) }
         let kw_rest_params: Vec<&ParseNode> = arglist.iter()
-            .filter(|node| node.symbol().map(|name| name.value.starts_with("&&")).unwrap_or(false))
+            .filter(|node| node.symbol().is_some_and(|name| name.value.starts_with("&&")))
             .collect();
-        match kw_rest_params.as_slice() {
-            [_, excess, ..] => return Err(ExpansionError::new(
-                "Excess `&&`-variadic named argument capture variables.",
-                excess.site()
-            )),
-            _ => {}
-        };
+        if let [_, excess, ..] = kw_rest_params.as_slice() { return Err(ExpansionError::new(
+            "Excess `&&`-variadic named argument capture variables.",
+            excess.site()
+        )) }
 
-        // Create and insert macro.
+        // Create and insert macro, it remembers the scope it was defined in.
         let mac = Rc::new(Macro {
             name: name.clone(),
             params: arglist.into_boxed_slice(),
             body,
+            env: self.scope,
         });
         self.insert_variable(name, mac.clone());
         Ok(mac)
     }
 
-    fn apply_macro(&self, mac: Rc<Macro<'a>>, node: &ParseNode<'a>, params: ParseTree<'a>)
+    fn apply_macro(&self, mac: &Macro<'a>, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        // Instance of expansion subcontext.
-        let subcontext = self.create_subcontext();
+        // The body is expanded in a new scope within the scope the macro
+        // was defined in (lexical scoping), not the scope of the caller.
+        let subcontext = self.child_of(mac.env);
         // Construct fake list of arguments and parameters and pattern match on them.
-        subcontext.bind_list(node, &mac.params, &params)?;
+        subcontext.bind_list(node, &mac.params, params)?;
         // Expand body.
-        let expanded = subcontext.expand_nodes(mac.body.clone())?.to_vec();
-        // Finished expanding macro, delete the subcontext.
-        self.remove_subcontext();
-        // Return the body of the evaluated macro.
-        Ok(expanded.into_boxed_slice())
+        subcontext.expand_nodes(mac.body.clone())
     }
 
     fn expand_macro(&self, name: &str, node: &ParseNode<'a>, params: ParseTree<'a>)
@@ -1717,10 +1778,10 @@ impl<'a> Expander<'a> {
 
         let Some(mac) = self.get_variable(name) else {
             return Err(ExpansionError::new(
-                &format!("Macro not found (`{}').", name), &node.owned_site()))
+                format!("Macro not found (`{name}')."), &node.owned_site()))
         };
 
-        self.apply_macro(mac, node, params)
+        self.apply_macro(&mac, node, &params)
     }
 
     fn expand_invocation(&self,
@@ -1731,10 +1792,11 @@ impl<'a> Expander<'a> {
         // Some macros are lazy (e.g. `ifdef`), so each macro has to
         //   expand the macros in its arguments individually.
         match name {
-            "define"    => self.expand_define_macro(node, params),
-            "match"     => self.expand_match_macro(node, params),
-            "ifdef"     => self.expand_ifdef_macro(node, params),
+            "define"    => self.expand_define_macro(node, &params),
+            "match"     => self.expand_match_macro(node, &params),
+            "ifdef"     => self.expand_ifdef_macro(node, &params),
             "do"        => self.expand_do_macro(node, params),
+            "with"      => self.expand_with_macro(node, &params),
             "get"       => self.expand_get_macro(node, params),
             "raw"       => self.expand_raw_macro(node, params),
             "string"    => self.expand_string_macro(node, params),
@@ -1744,11 +1806,10 @@ impl<'a> Expander<'a> {
             "embed"     => self.expand_embed_macro(node, params),
             "namespace" => self.expand_namespace_macro(node, params),
             "markdown"  => self.expand_markdown_macro(node, params),
-            "yaml"      => self.expand_yaml_macro(node, params),
-            "json"      => self.expand_yaml_macro(node, params),
+            "yaml" | "json" => self.expand_yaml_macro(node, params),
             "toml"      => self.expand_toml_macro(node, params),
             "glob"      => self.expand_glob_macro(node, params),
-            "for"       => self.expand_for_macro(node, params),
+            "for"       => self.expand_for_macro(node, &params),
             "sort"      => self.expand_sort_macro(node, params),
             "reverse"   => self.expand_reverse_macro(node, params),
             "date"      => self.expand_date_macro(node, params),
@@ -1761,7 +1822,7 @@ impl<'a> Expander<'a> {
             "list"      => self.expand_list_macro(node, params),
             "strip"     => self.expand_strip_macro(node, params),
             "apply"     => self.expand_apply_macro(node, params),
-            "lambda"    => self.expand_lambda_macro(node, params),
+            "lambda"    => self.expand_lambda_macro(node, &params),
             "log"       => self.expand_log_macro(node, params),
             "format"    => self.expand_format_macro(node, params),
             "os/env"    => self.expand_os_env_macro(node, params),
@@ -1775,25 +1836,25 @@ impl<'a> Expander<'a> {
             ParseNode::Symbol(ref sym) => {
                 // Check if symbol starts with %... and replace it
                 // with it's defined value.
-                if sym.value.starts_with("%") {
+                if sym.value.starts_with('%') {
                     let name = &sym.value[1..];
                     if let Some(def) = self.get_variable(name) {
                         if !def.params.is_empty() {  // Should not be a function.
                             return Err(ExpansionError::new(
-                                &format!("`{}` is a macro that takes arguments, \
-                                    and cannot be used as a variable.", name),
+                                format!("`{name}` is a macro that takes arguments, \
+                                    and cannot be used as a variable."),
                                 &sym.site))
                         }
-                        let mut expanded = self.expand_nodes(def.body.clone())?;
+                        let mut expanded = self.within(def.env).expand_nodes(def.body.clone())?;
                         // Inherit the whitespace of the call-site.
                         if let Some(first) = expanded.first_mut() {
-                            first.set_leading_whitespace(sym.leading_whitespace.to_owned());
+                            first.set_leading_whitespace(sym.leading_whitespace.clone());
                         }
                         Ok(expanded)
                     } else {  // Not found.
                         Err(ExpansionError(
-                            format!("No such macro, `{}`.", name),
-                            sym.site.to_owned()))
+                            format!("No such macro, `{name}`."),
+                            sym.site))
                     }
                 } else {
                     Ok(Box::new([node]))
@@ -1803,25 +1864,23 @@ impl<'a> Expander<'a> {
                 // Check for macro invocation (%_ _ _ _).
                 // Recurse over every element.
                 let len = nodes.len();
-                let mut call = nodes.to_vec().into_iter();
+                let mut call = nodes.iter().cloned();
                 let Some(head) = call.next() else {
                     return Ok(Box::new([node]));
                 };
 
                 // Pathway: (%_ _ _) macro invocation.
                 if let Some(symbol) = head.symbol() {
-                    let node = self.register_invocation(node.clone());
+                    let node = &node;
                     let name = symbol.value.clone();
-                    if name.starts_with("%") {
+                    if let Some(name) = name.strip_prefix('%') {
                         // Rebuild node...
-                        let name = &name[1..];
                         let mut params: Vec<ParseNode> = call.collect();
                         // Delete leading whitespace of leading argument.
-                        if let Some(leading) = params.first_mut() {
-                            if !leading.leading_whitespace().contains('\n') {
-                                leading.set_leading_whitespace(String::from(""));
+                        if let Some(leading) = params.first_mut()
+                            && !leading.leading_whitespace().contains('\n') {
+                                leading.set_leading_whitespace(String::new());
                             }
-                        }
                         return self.expand_invocation(name, node, params.into_boxed_slice());
                     }
                 }
@@ -1834,8 +1893,8 @@ impl<'a> Expander<'a> {
 
                 Ok(Box::new([ParseNode::List {
                     nodes: expanded_list.into_boxed_slice(),
-                    site: site.clone(),
-                    end_token: end_token.clone(),
+                    site: *site,
+                    end_token: *end_token,
                     leading_whitespace: leading_whitespace.clone(),
                 }]))
             },
@@ -1845,7 +1904,7 @@ impl<'a> Expander<'a> {
                 expanded_nodes[0] = ParseNode::Attribute {
                     keyword: keyword.clone(),
                     node: new_node,
-                    site: site.clone(),
+                    site,
                     leading_whitespace: leading_whitespace.clone(),
                 };
                 Ok(expanded_nodes)
@@ -1863,7 +1922,7 @@ impl<'a> Expander<'a> {
         Ok(expanded.into_boxed_slice())
     }
 
-    pub fn expand(&'a self) -> Result<ParseTree<'a>, Box<dyn 'a + std::error::Error>> {
+    pub fn expand(&self) -> Result<ParseTree<'a>, Box<dyn 'a + std::error::Error>> {
         let tree = self.parser.parse()?;
         let expanded = self.expand_nodes(tree)?;
         Ok(expanded)
@@ -1924,7 +1983,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
         site: Site<'a>,
     }
 
-    impl<'a, 'b> EventSink<'a, 'b> {
+    impl EventSink<'_, '_> {
         fn qualified(&self, name: &str) -> String {
             if self.prefix.is_empty() {
                 name.to_owned()
@@ -1935,29 +1994,25 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
         }
     }
 
-    impl<'a, 'b> yaml::parser::EventReceiver for EventSink<'a, 'b> {
+    impl yaml::parser::EventReceiver for EventSink<'_, '_> {
         fn on_event(&mut self, event: yaml::Event) {
             let the_dreaded_rparen = crate::parse::tokens::Token::new(
                 crate::parse::tokens::Kind::RParen,
-                ")", "", self.site.clone()
+                ")", "", self.site
             );
             match event {
                 // Either defining a new variable or setting a variable to a string.
                 yaml::Event::Scalar(ref value, ..) => {
                     let mut string = ParseNode::String(Node {
                         value: value.clone(),
-                        site: self.site.clone(),
+                        site: self.site,
                         leading_whitespace: String::from(" "),
                     });
                     match self.defining {
                         Some(ref name) => {
                             // Define a variable under `name` with `value`.
                             let qualified_name = self.qualified(name);
-                            self.context.insert_variable(qualified_name.clone(), Rc::new(Macro {
-                                name: qualified_name,
-                                params: Box::new([]),
-                                body: Box::new([string.clone()]),
-                            }));
+                            self.context.define_value(qualified_name.clone(), Box::new([string.clone()]));
                             match self.mode {
                                 Some(Mode::Map) => {
                                     // Wait for next name.
@@ -1966,7 +2021,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                                     let attr = ParseNode::Attribute {
                                         keyword,
                                         node: Box::new(string),
-                                        site: self.site.clone(),
+                                        site: self.site,
                                         leading_whitespace: String::from(if self.nodes.is_empty() {
                                             ""
                                         } else {
@@ -2031,7 +2086,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                 yaml::Event::MappingEnd | yaml::Event::SequenceEnd => {
                     self.mode = self.modes.pop(); // Revert to previous mode.
                     let nodes = self.nodes.clone(); // Nodes in the list.
-                    self.nodes = self.parent.pop().unwrap_or(Vec::new()); // Regain previous collection of nodes.
+                    self.nodes = self.parent.pop().unwrap_or_default(); // Regain previous collection of nodes.
                     self.defining = match self.mode {
                         Some(Mode::Seq) => Some(format!("{}", self.nodes.len() + 1)),
                         Some(Mode::Map) | None => None
@@ -2040,7 +2095,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                     // Construct a `ParseNode::List` containing the collected nodes.
                     let list = ParseNode::List {
                         nodes: nodes.into_boxed_slice(),
-                        site: self.site.clone(),
+                        site: self.site,
                         end_token: the_dreaded_rparen,
                         leading_whitespace: String::from(if self.nodes.is_empty() {
                             ""
@@ -2049,17 +2104,10 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                         }),
                     };
                     // Handle inserting map/seq list under a qualified variable into the context.
-                    match name {
-                        Some(ref name) => {
-                            let name = self.qualified(name);
-                            self.context.insert_variable(name.clone(), Rc::new(Macro {
-                                name,
-                                params: Box::new([]),
-                                body: Box::new([list.clone()]),
-                            }));
-                        },
-                        None => {},
-                    };
+                    if let Some(ref name) = name {
+                        let name = self.qualified(name);
+                        self.context.define_value(name, Box::new([list.clone()]));
+                    }
                     // Handle growing the current nodes with the map/seq.
                     self.nodes.push(match self.mode {
                         Some(Mode::Map) => {
@@ -2069,7 +2117,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                             ParseNode::Attribute {
                                 keyword: name.clone().expect("must always be defining during a map context."),
                                 node: Box::new(list),
-                                site: self.site.clone(),
+                                site: self.site,
                                 leading_whitespace,
                             }
                         },
@@ -2090,13 +2138,13 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
         modes: Vec::new(),
         nodes: Vec::new(),
         parent: Vec::new(),
-        site: site.clone(),
+        site: *site,
     };
 
     yaml::parser::Parser::new_from_str(text)
         .load(&mut sink, false)
         .map_err(|err| ExpansionError(
-            format!("Failed to parse YAML: {}", err),
+            format!("Failed to parse YAML: {err}"),
             site.to_owned()
         ))?;
 
@@ -2109,7 +2157,7 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
 
     let table: toml::Table = text.parse()
         .map_err(|err| ExpansionError(
-            format!("Failed to parse TOML: {}", err),
+            format!("Failed to parse TOML: {err}"),
             site.to_owned()
         ))?;
 
@@ -2125,7 +2173,7 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
         if leading { String::new() } else { String::from(" ") }
     }
 
-    impl<'a, 'b> Traverser<'a, 'b> {
+    impl<'a> Traverser<'a, '_> {
         fn qualified(&self, name: &str) -> String {
             if self.prefix.is_empty() {
                 name.to_owned()
@@ -2135,13 +2183,9 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
             }
         }
 
-        fn define(&self, name: String, node: ParseNode<'a>) {
-            let qualified = self.qualified(&name);
-            self.context.insert_variable(qualified, Rc::new(Macro {
-                name,
-                params: Box::new([]),
-                body: Box::new([node]),
-            }));
+        fn define(&self, name: &str, node: ParseNode<'a>) {
+            let qualified = self.qualified(name);
+            self.context.define_value(qualified, Box::new([node]));
         }
 
         fn traverse_value(&mut self, value: toml::Value, leading: bool) -> ParseNode<'a> {
@@ -2154,22 +2198,22 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Integer(int) => ParseNode::Number(Node {
-                    value: format!("{}", int),
+                    value: format!("{int}"),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Float(float) => ParseNode::Number(Node {
-                    value: format!("{}", float),
+                    value: format!("{float}"),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Datetime(date) => ParseNode::Symbol(Node {
-                    value: format!("{}", date),
+                    value: format!("{date}"),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
                 toml::Value::Boolean(boolean) => ParseNode::Symbol(Node {
-                    value: format!("{}", boolean),
+                    value: format!("{boolean}"),
                     site: self.site,
                     leading_whitespace: whitespace(leading),
                 }),
@@ -2179,16 +2223,14 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
         fn traverse_array(&mut self, array: Vec<toml::Value>, leading: bool) -> ParseNode<'a> {
             let mut first = true;
             let mut expanded = vec![];
-            let mut i = 0;
-            for value in array {
-                let name = format!("{}", i);
+            for (i, value) in array.into_iter().enumerate() {
+                let name = format!("{i}");
                 self.prefix.push(name.clone());
                 let node = self.traverse_value(value, first);
                 self.prefix.pop();
-                self.define(name, node.clone());
+                self.define(&name, node.clone());
                 expanded.push(node);
                 first = false;
-                i += 1;
             }
             ParseNode::List {
                 nodes: expanded.into_boxed_slice(),
@@ -2205,7 +2247,7 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                 self.prefix.push(keyword.clone());
                 let node = self.traverse_value(value, false);
                 self.prefix.pop();
-                self.define(keyword.clone(), node.clone());
+                self.define(&keyword, node.clone());
                 nodes.push(ParseNode::Attribute {
                     keyword,
                     node: Box::new(node),

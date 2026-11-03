@@ -145,7 +145,9 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.
  - [ ] `(%formatter/text ...)` can take any seam (sexp) source code, for which it just embeds the expanded code (plain-text formatter).
  - [ ] `(%formatter/html ...)` etc. which call the respective available formatters.
- - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
+ - [x] Implement lexical scope by letting macros store a reference to the scope they were defined in.
+ - [x] `(%with (:name value ...) ...)` dynamically overrides top-level definitions within its body,
+       e.g. for passing page metadata through to a shared layout macro.
  - [x] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
  - [x] Variadic arguments via `&rest` syntax.
  - [ ] Type-checking facilities for user macros.

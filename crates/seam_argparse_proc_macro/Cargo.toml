@@ -3,7 +3,7 @@ name = "seam_argparse_proc_macro"
 description = "proc-macro crate for seam `arguments!` macro."
 license-file = "../../LICENSE"
 authors = ["Demonstrandum <samuel@knutsen.co>"]
-edition = "2021"
+edition.workspace = true
 version = "0.1.1"
 
 [lib]
@@ -15,3 +15,6 @@ path = "src/lib.rs"
 proc-macro2 = "1.0.86"
 quote = "1.0.37"
 syn = { version = "2.0.89", features = ["full"] }
+
+[lints]
+workspace = true
