@@ -15,6 +15,19 @@ fn expand(source: String) -> Result<String, String>  {
     Ok(out)
 }
 
+/// Expand the source and render it as a complete HTML document.
+fn html_document(source: &str) -> Result<String, String> {
+    use assemble::MarkupFormatter;
+    let context = Context::new();
+    let expander = tree_builder(&context, Some("<test>"), source.to_owned());
+    let tree = expander.expand().map_err(|err| format!("{err}"))?;
+    assemble::html::HTMLFormatter::new(tree).document().map_err(|err| err.message)
+}
+
+fn assert_html_document_eq(input: &str, expect: &str) {
+    assert_eq!(html_document(input).as_deref(), Ok(expect));
+}
+
 fn assert_output_eq(input: &str, expect: &str) {
     let source = String::from(input);
     let output = match expand(source) {
@@ -189,5 +202,47 @@ mod cases {
         )).unwrap_err();
         assert!(output.contains("tests/fixtures/broken.sex"), "{}", output);
         assert!(output.contains("(p (%undefined-macro))"), "{}", output);
+    }
+
+    #[test]
+    fn test_html_document_wrapping() {
+        // a fragment gets every missing element.
+        assert_html_document_eq("(p Hello World)",
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<p>Hello World</p>\n</body>\n</html>");
+        // loose metadata goes in the head, until the first content.
+        assert_html_document_eq("(title T) (p hi) (script \"x()\")",
+            "<!DOCTYPE html>\n<html>\n<head>\n<title>T</title>\n</head>\n<body>\n<p>hi</p> <script>\"x()\"</script>\n</body>\n</html>");
+        // an explicit head stays a head, rather than ending up in the body.
+        assert_html_document_eq("(head (title T)) (p hi)",
+            "<!DOCTYPE html>\n<html>\n<head><title>T</title></head>\n<body>\n<p>hi</p>\n</body>\n</html>");
+        // an explicit body gets a head before it.
+        assert_html_document_eq("(body (p hi))",
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body><p>hi</p></body>\n</html>");
+        // `html` keeps its attributes, and gets a head and body.
+        assert_html_document_eq("(html :lang en (p hi))",
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head></head>\n<body>\n<p>hi</p>\n</body>\n</html>");
+        // a doctype alone no longer stops the rest of the document being added.
+        assert_html_document_eq("(!doctype html) (p hi)",
+            "<!doctype html>\n<html>\n<head></head>\n<body>\n<p>hi</p>\n</body>\n</html>");
+        // only the top-level is examined, nested elements are left as written.
+        assert_html_document_eq("(div (body x))",
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<div><body>x</body></div>\n</body>\n</html>");
+    }
+
+    #[test]
+    fn test_html_complete_document_unchanged() {
+        assert_html_document_eq(
+            "(!DOCTYPE html)\n(html :lang en\n  (head (title T))\n  (body (p hi)))",
+            "<!DOCTYPE html>\n<html lang=\"en\">\n  <head><title>T</title></head>\n  <body><p>hi</p></body>\n</html>"
+        );
+    }
+
+    #[test]
+    fn test_html_document_errors() {
+        let error = |source| html_document(source).unwrap_err();
+        assert!(error("(head) (head)").contains("only have one `head'"));
+        assert!(error("(body) (body)").contains("only have one `body'"));
+        assert!(error("(p hi) (head)").contains("must come before"));
+        assert!(error("(html (p)) (p)").contains("outside of the `html'"));
     }
 }
