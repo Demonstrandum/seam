@@ -192,7 +192,7 @@ impl ArgKind {
     /// The type an argument of this kind is given as.
     fn rust_type(&self) -> TokenStream {
         match self.ident.to_string().as_str() {
-            "list" => quote! { &'p [crate::parse::parser::ParseNode<'a>] },
+            "list" => quote! { &'p crate::parse::list::List<'a> },
             "any" => quote! { &'p crate::parse::parser::ParseNode<'a> },
             _ => quote! { &'p crate::parse::parser::Node<'a> },
         }

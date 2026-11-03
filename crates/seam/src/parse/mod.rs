@@ -1,6 +1,7 @@
 pub mod tokens;
 pub mod lexer;
 pub mod parser;
+pub mod list;
 #[macro_use]
 pub mod macros;
 pub mod expander;

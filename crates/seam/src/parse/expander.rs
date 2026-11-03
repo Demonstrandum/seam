@@ -1,5 +1,6 @@
 use super::lexer::Lexer;
 use super::parser::{Node, ParseNode, ParseTree, Parser};
+use super::list::{List, Step};
 use super::macros::ArgType;
 use super::tokens::Site;
 use crate::assemble::{html::HTMLFormatter, sexp::SExpFormatter};
@@ -1014,7 +1015,7 @@ impl<'a> Expander<'a> {
             };
             let start = list_index(first, list.len())?;
             let end = list_index(last, list.len())?;
-            let items = if start <= end { without_leading(list[start..=end].to_vec()) } else { vec![] };
+            let items = if start <= end { list.slice(start, end - start + 1) } else { List::default() };
             return Ok(Box::new([list_node(args.number.2, items)]));
         }
         let Some(path) = args.number.1.atomic() else {
@@ -1025,7 +1026,7 @@ impl<'a> Expander<'a> {
         let sep: &str = args.separator.map_or("/", |sep| &sep.value);
         let path = path.value.split(&sep);
 
-        let mut node: &ParseNode<'a> = args.number.2;
+        let mut node: Cow<'_, ParseNode<'a>> = Cow::Borrowed(args.number.2);
         for item in path {
             // Verify the current node is a list so it can be indexed.
             let Some(list) = node.list() else {
@@ -1038,17 +1039,17 @@ impl<'a> Expander<'a> {
             // or else the `:item` attribute in the list.
             let index = item.parse::<isize>().ok().map(|index|
                 if index < 0 { index.unsigned_abs().wrapping_neg().wrapping_add(list.len()) } else { index.unsigned_abs() });
-            let found = index.and_then(|index| list.get(index)).or_else(|| list.iter().find_map(|node| match node {
-                ParseNode::Attribute { keyword, node, .. } if item == keyword => Some(&**node),
+            let found = index.and_then(|index| list.item(index)).or_else(|| list.iter().find_map(|node| match node {
+                ParseNode::Attribute { keyword, node, .. } if item == keyword => Some((**node).clone()),
                 _ => None,
             }));
-            node = found.ok_or_else(|| ExpansionError(match index {
+            node = Cow::Owned(found.ok_or_else(|| ExpansionError(match index {
                 Some(index) => format!("Index {} is out of bounds in list of length {}.", index, list.len()),
                 None => format!("Could not find attribute with keyword `:{item}`."),
-            }, node.owned_site()))?;
+            }, node.owned_site()))?);
         }
 
-        Ok(Box::new([node.clone()]))
+        Ok(Box::new([node.into_owned()]))
     }
 
     fn expand_date_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -1322,17 +1323,19 @@ impl<'a> Expander<'a> {
             rest: any,
         }?;
         let it = args.number.1;
-        // Iterate over the items of a list, or else over all the nodes it expands to.
+        // Iterate over the items of a list (made one at a time, if it is lazy),
+        // or else over all the nodes it expands to.
         let mut list = self.expand_node(args.number.3)?;
-        if let [ParseNode::List { nodes, .. }] = &mut *list {
-            list = std::mem::take(nodes);
-        }
+        let list: List<'a> = match &mut *list {
+            [ParseNode::List { nodes, .. }] => std::mem::take(nodes),
+            _ => list.into(),
+        };
         let body = args.rest;
 
         let mut expanded = Vec::with_capacity(list.len());
-        for item in &list {
+        for item in list.items() {
             let context = self.child();
-            context.bind(it, item)?;
+            context.bind(it, &item)?;
             for node in &body {
                 context.expand_into(node, &mut expanded)?;
             }
@@ -1458,6 +1461,8 @@ impl<'a> Expander<'a> {
         }
 
         // Collect paths.
+        // Paths are ordered by their text, not by any (lazily realised) list within.
+        #[allow(clippy::mutable_key_type)]
         let mut collection: BTreeSet<GlobPath> = BTreeSet::default();
         for path in paths {
             let path = match path {
@@ -1564,26 +1569,11 @@ impl<'a> Expander<'a> {
     fn expand_reverse_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let args = arguments! { node, &params;
-            mandatory(1): list,
-        }?;
-        let list = args.number.1;
-        // Items are reversed, but whitespace keeps its order.
-        let whitespace: Vec<Cow<'a, str>> = list.iter().map(|item| item.leading_whitespace().clone()).collect();
-        let reversed: Vec<ParseNode<'a>> = list.iter().rev().cloned().zip(whitespace)
-            .map(|(mut item, whitespace)| { item.set_leading_whitespace(whitespace); item })
-            .collect();
-
-        let ParseNode::List { site, end_token, leading_whitespace, .. } = &params[0] else { unreachable!() };
-        let (site, end_token, leading_whitespace) = (*site, *end_token, leading_whitespace.clone());
-        Ok(Box::new([
-            ParseNode::List {
-                nodes: reversed.into_boxed_slice(),
-                site,
-                end_token,
-                leading_whitespace
-            }
-        ]))
+        // Items are reversed (lazily), but whitespace keeps its order.
+        let [list @ ParseNode::List { nodes, .. }] = &*params else {
+            return Err(ExpansionError::new("`%reverse` expects one list.", node.site()));
+        };
+        Ok(Box::new([list_node(list, nodes.reverse())]))
     }
 
     fn expand_sort_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -1705,6 +1695,17 @@ impl<'a> Expander<'a> {
     fn expand_concat_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
+        // Lists are chained together (lazily), as text is.
+        if params.first().is_some_and(ParseNode::is_list) {
+            let mut lists = Vec::with_capacity(params.len());
+            for param in params {
+                let ParseNode::List { nodes, .. } = param else {
+                    return Err(ExpansionError::new("`%concat` joins either lists or text, not both.", param.site()));
+                };
+                lists.push(nodes);
+            }
+            return Ok(Box::new([list_node(node, List::chain(lists))]));
+        }
         let args = arguments! { node, &params;
             rest: literal,
         }?;
@@ -1784,7 +1785,7 @@ impl<'a> Expander<'a> {
         };
         Ok(Box::new([
             ParseNode::List {
-                nodes: params,
+                nodes: params.into(),
                 site: site.to_owned(),
                 end_token: end_token.to_owned(),
                 leading_whitespace: leading_whitespace.clone(),
@@ -2046,18 +2047,19 @@ impl<'a> Expander<'a> {
         if step.float() == 0.0 || step.float().is_nan() {
             return Err(ExpansionError::new("`%range` step must not be zero.", node.site()));
         }
-        let mut items = vec![];
-        let mut current = first;
-        while (step.float() > 0.0 && current.float() <= last.float())
-           || (step.float() < 0.0 && current.float() >= last.float()) {
-            let whitespace = if items.is_empty() { "" } else { " " };
-            items.push(ParseNode::Number(Node::new(current.to_string(), node.site(), whitespace)));
-            if items.len() > 1_000_000 {
-                return Err(ExpansionError::new("`%range` is too long.", node.site()));
-            }
-            current = current.add(step);
-        }
-        Ok(Box::new([list_node(node, items)]))
+        // The numbers are made only when needed, so a range may be long.
+        let (step, len) = if let (Number::Int(first), Number::Int(last), Number::Int(step)) = (first, last, step) {
+            let distance = i128::from(last) - i128::from(first);
+            let len = if distance.signum() * i128::from(step.signum()) >= 0 { distance / i128::from(step) + 1 } else { 0 };
+            (Step::Int(first, step), usize::try_from(len).unwrap_or(usize::MAX))
+        } else {
+            let steps = (last.float() - first.float()) / step.float();
+            let len = if steps >= 0.0 { steps.floor() + 1.0 } else { 0.0 };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+            let len = if len >= usize::MAX as f64 { usize::MAX } else { len as usize };
+            (Step::Float(first.float(), step.float()), len)
+        };
+        Ok(Box::new([list_node(node, List::range(step, len, *node.site()))]))
     }
 
     /// `(%error message...)` stops with an error.
@@ -2118,10 +2120,18 @@ impl<'a> Expander<'a> {
         let Some(Number::Int(count)) = Number::of(count) else {
             return Err(ExpansionError::new("Expected a whole number of items.", count.site()));
         };
-        let items = list_argument(list);
-        let count = usize::try_from(count).unwrap_or(0).min(items.len());
-        let items = if take { &items[..count] } else { &items[count..] };
-        Ok(Box::new([list_node(node, without_leading(items.to_vec()))]))
+        let count = usize::try_from(count).unwrap_or(0);
+        // A list is sliced lazily, while loose items are copied.
+        let items = match list {
+            [ParseNode::List { nodes, .. }] if take => nodes.slice(0, count),
+            [ParseNode::List { nodes, .. }] => nodes.slice(count, usize::MAX),
+            items => {
+                let count = count.min(items.len());
+                let items = if take { &items[..count] } else { &items[count..] };
+                without_leading(items.to_vec()).into()
+            },
+        };
+        Ok(Box::new([list_node(node, items)]))
     }
 
     /// `(%while predicate list)`, the items up to the first for
@@ -2136,11 +2146,11 @@ impl<'a> Expander<'a> {
             return Err(ExpansionError::new("Expected the name of a predicate macro.", predicate.site()));
         };
         let mut items = vec![];
-        for item in list_argument(list) {
-            if !truthy(&self.expand_invocation(&predicate.value, node, std::slice::from_ref(item))?) {
+        for item in list_items(list) {
+            if !truthy(&self.expand_invocation(&predicate.value, node, std::slice::from_ref(&item))?) {
                 break;
             }
-            items.push(item.clone());
+            items.push(item);
         }
         Ok(Box::new([list_node(node, without_leading(items))]))
     }
@@ -2220,8 +2230,11 @@ impl<'a> Expander<'a> {
         };
         let item = node_text(item)?;
         let mut found = false;
-        for other in list_argument(list) {
-            found |= node_text(other)? == item;
+        for other in list_items(list) {
+            if node_text(&other)? == item {
+                found = true;
+                break;
+            }
         }
         Ok(Box::new([bool_node(node, found)]))
     }
@@ -2867,7 +2880,7 @@ impl<'a> Expander<'a> {
                         self.expand_into(child, &mut expanded)?;
                     }
                     out.push(ParseNode::List {
-                        nodes: expanded.into_boxed_slice(),
+                        nodes: expanded.into_boxed_slice().into(),
                         site: *site,
                         end_token: *end_token,
                         leading_whitespace: leading_whitespace.clone(),
@@ -2953,6 +2966,14 @@ fn check_type<'a>(mac: &Macro<'a>, index: usize, nodes: &[ParseNode<'a>]) -> Res
     }
 }
 
+/// Each item of a list argument (made one at a time, if it is lazy), or each argument.
+fn list_items<'p, 'a>(arguments: &'p [ParseNode<'a>]) -> Box<dyn Iterator<Item = ParseNode<'a>> + 'p> {
+    match arguments {
+        [ParseNode::List { nodes, .. }] => Box::new(nodes.items()),
+        nodes => Box::new(nodes.iter().cloned()),
+    }
+}
+
 /// Whether expanded nodes count as true: nothing, `()`, `false` and `""` are false.
 /// (`"false"` is false too, being how YAML and TOML booleans arrive.)
 fn truthy(nodes: &[ParseNode]) -> bool {
@@ -2974,12 +2995,12 @@ fn number_node<'a>(call: &ParseNode<'a>, value: String) -> ParseNode<'a> {
 }
 
 /// A new list, in the place of (and like) the list `like`.
-fn list_node<'a>(like: &ParseNode<'a>, nodes: Vec<ParseNode<'a>>) -> ParseNode<'a> {
+fn list_node<'a>(like: &ParseNode<'a>, nodes: impl Into<List<'a>>) -> ParseNode<'a> {
     let ParseNode::List { site, end_token, leading_whitespace, .. } = like else {
         unreachable!("a list is made like another list.");
     };
     ParseNode::List {
-        nodes: nodes.into_boxed_slice(),
+        nodes: nodes.into(),
         site: *site,
         end_token: *end_token,
         leading_whitespace: leading_whitespace.clone(),
@@ -3526,7 +3547,7 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                     let name = self.prefix.pop(); // The name of this map or sequence.
                     // Construct a `ParseNode::List` containing the collected nodes.
                     let list = ParseNode::List {
-                        nodes: nodes.into_boxed_slice(),
+                        nodes: nodes.into_boxed_slice().into(),
                         site: self.site,
                         end_token: the_dreaded_rparen,
                         leading_whitespace: Cow::Borrowed(if self.nodes.is_empty() {
@@ -3665,7 +3686,7 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
                 first = false;
             }
             ParseNode::List {
-                nodes: expanded.into_boxed_slice(),
+                nodes: expanded.into_boxed_slice().into(),
                 site: self.site,
                 end_token: self.the_dreaded_rparen,
                 leading_whitespace: whitespace(leading)
@@ -3690,7 +3711,7 @@ fn expand_toml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
             }
             let nodes = nodes.into_boxed_slice();
             ParseNode::List {
-                nodes,
+                nodes: nodes.into(),
                 site: self.site,
                 end_token: self.the_dreaded_rparen,
                 leading_whitespace: whitespace(leading)

@@ -161,8 +161,14 @@ will be treated as macros.
 - `(%unique list)` drops repeated items; `(%contains item list)` tests membership.
 - `(%items dict)`, `(%keys dict)` and `(%values dict)` for keyword lists:
   `(%for (key value) in (%items (:a 1 :b 2)) ...)`.
+- `(%concat (a b) (c))` gives `(a b c)`, as it joins text.
 - `%for` iterates over the items of the list its expression gives
   (or over all the nodes it gives), e.g. `(%for post in %posts ...)`.
+
+Lists made by `%range`, `%take`, `%drop`, `%get` (slices), `%reverse` and
+`%concat` are made only as far as they are needed, so
+`(%for i in (%take 3 (%range 1 1000000000)) ...)` or
+`(%get 5000 (%range 0 1000000000 2))` are as quick as short ones.
 
 #### Paths, files and programs
 - `(%basename :suffix md posts/hi.md)` → `hi`, `(%dirname posts/hi.md)` →
