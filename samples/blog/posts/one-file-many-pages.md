@@ -11,7 +11,7 @@ and `%write` to save it:
 
 ```lisp
 (%for post in %posts
-  (%write-html (%concat "posts/" (%get slug %post) ".html")
+  (%write/html (%concat "posts/" (%get slug %post) ".html")
     (%with %post
       (%with (:root "../")
         (%include "post.sex")))))
@@ -21,5 +21,5 @@ The feed is the same, with `%formatter/xml`, and so is the stylesheet, with
 `%formatter/css`. Building the site is then just:
 
 ```sh
-seam --text build.sex
+seam run build.sex
 ```

@@ -117,6 +117,9 @@ pub struct Context<'a> {
     /// Stack of `%with` bindings, which override top-level definitions
     /// for as long as the body of the `%with` is being expanded.
     dynamic: RefCell<Vec<HashMap<String, Definition<'a>>>>,
+    /// Whether macros with side effects (`%write`, `%exec`, `%log`)
+    /// report what they do on `STDOUT`, as when running a build script.
+    echo: Cell<bool>,
 }
 
 impl Context<'_> {
@@ -130,6 +133,7 @@ impl Context<'_> {
             includes: RefCell::new(BTreeSet::from([PathBuf::from(".")])),
             lambdas: Cell::new(0),
             dynamic: RefCell::new(Vec::new()),
+            echo: Cell::new(false),
         }
     }
 }
@@ -211,6 +215,20 @@ impl<'a> Expander<'a> {
         let mut includes = self.context.includes.borrow_mut();
         for dir in dirs {
             includes.insert(dir.into());
+        }
+    }
+
+    /// Have macros with side effects report what they do on `STDOUT`,
+    /// like `make` echoing commands, for when the expanded document itself
+    /// is not wanted (`seam run`). `%log` then prints there too.
+    pub fn set_echo(&self, echo: bool) {
+        self.context.echo.set(echo);
+    }
+
+    /// Report an action on `STDOUT`, if echoing.
+    fn echo(&self, action: &str, detail: impl fmt::Display) {
+        if self.context.echo.get() {
+            println!("{} {detail}", format!("{action:>5}").bold().green());
         }
     }
 
@@ -1152,8 +1170,12 @@ impl<'a> Expander<'a> {
             }
         }
 
-        eprintln!("{} {} {}: {}", "[#]".bold(), "log".bold().yellow(),
-            node.site(), words.join(" "));
+        if self.context.echo.get() {
+            self.echo("log", words.join(" "));
+        } else {
+            eprintln!("{} {} {}: {}", "[#]".bold(), "log".bold().yellow(),
+                node.site(), words.join(" "));
+        }
         Ok(Box::new([]))
     }
 
@@ -2224,16 +2246,99 @@ impl<'a> Expander<'a> {
         Ok(Box::new([list_node(node, spaced(items))]))
     }
 
-    /// `(%basename path :suffix ext)`, `(%dirname path)` and `(%extension path)`.
-    fn expand_path_macro(&self, part: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    /// The `%path/...` macros (also `%basename`, `%dirname` and `%extension`):
+    /// taking paths apart, joining and resolving them, and asking about files.
+    fn expand_path_macro(&self, operation: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        use std::path::Path;
         let params = self.expand_nodes(params)?;
+        let failed = |error: String| ExpansionError(format!("`%path/{operation}': {error}"), node.owned_site());
+        let cwd = || std::env::current_dir().map_err(|error| failed(error.to_string()));
+        let path_node = |path: &Path| ParseNode::String(Node::new(
+            path.to_string_lossy().into_owned(), node.site(), node.leading_whitespace().clone()));
+
+        // Paths of where seam is, and of the file this call is written in.
+        let this_file = || {
+            let source = Path::new(node.site().source());
+            if source.is_file() {
+                Ok(normalise(&cwd()?.join(source)))
+            } else {
+                Err(failed(String::from("this call is not written in a file.")))
+            }
+        };
+        match operation {
+            "cwd" | "this-file" | "this-directory" => {
+                arguments! { node, &params; }?;
+                let path = match operation {
+                    "cwd" => cwd()?,
+                    "this-file" => this_file()?,
+                    _ => match this_file() {
+                        Ok(file) => file.parent().map_or_else(|| file.clone(), Path::to_path_buf),
+                        Err(_) => cwd()?,
+                    },
+                };
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "join" => {
+                let args = arguments! { node, &params; rest: literal, }?;
+                let path: PathBuf = args.rest.iter().map(|part| part.value.as_ref()).collect();
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "absolute" | "relative" => {
+                let args = arguments! { node, &params;
+                    mandatory(1): literal,
+                    optional("from"): literal,
+                }?;
+                let base = match args.from {
+                    Some(from) => normalise(&cwd()?.join(from.value.as_ref())),
+                    None => cwd()?,
+                };
+                // `%path/absolute` resolves the path from `:from`, while
+                // `%path/relative` gives the way to it (from where we are) from `:from`.
+                let path = args.number.1.value.as_ref();
+                let path = if operation == "absolute" {
+                    normalise(&base.join(path))
+                } else {
+                    relative_path(&normalise(&cwd()?.join(path)), &base)
+                };
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "with-extension" => {
+                let args = arguments! { node, &params;
+                    mandatory(1): literal,
+                    mandatory(2): literal,
+                }?;
+                let path = Path::new(args.number.1.value.as_ref()).with_extension(args.number.2.value.as_ref());
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "split" => {
+                let args = arguments! { node, &params; mandatory(1): literal, }?;
+                let parts = Path::new(args.number.1.value.as_ref()).components()
+                    .map(|part| ParseNode::String(Node::new(
+                        part.as_os_str().to_string_lossy().into_owned(), node.site(), " ")))
+                    .collect();
+                return Ok(Box::new([list_node(node, without_leading(parts))]));
+            },
+            "exists" | "is-file" | "is-directory" => {
+                let args = arguments! { node, &params; mandatory(1): literal, }?;
+                let path = Path::new(args.number.1.value.as_ref());
+                let answer = match operation {
+                    "exists" => path.exists(),
+                    "is-file" => path.is_file(),
+                    _ => path.is_dir(),
+                };
+                return Ok(Box::new([bool_node(node, answer)]));
+            },
+            _ => {},
+        }
+
+        // The rest each give a part of the path they are given.
         let args = arguments! { node, &params;
             mandatory(1): literal,
             optional("suffix"): literal,
         }?;
-        let path = std::path::Path::new(args.number.1.value.as_ref());
-        let result: String = match part {
+        let path = Path::new(args.number.1.value.as_ref());
+        let result: String = match operation {
             "basename" => {
                 let name = path.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
                 match args.suffix {
@@ -2244,12 +2349,18 @@ impl<'a> Expander<'a> {
                     _ => name,
                 }
             },
+            "stem" => path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned()),
             "dirname" => match path.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => parent.to_string_lossy().into_owned(),
                 _ => String::from(if path.has_root() { "/" } else { "." }),
             },
             "extension" => path.extension().map_or(String::new(), |ext| ext.to_string_lossy().into_owned()),
-            _ => unreachable!(),
+            "normalise" | "normalize" => normalise(path).to_string_lossy().into_owned(),
+            "canonical" => std::fs::canonicalize(path)
+                .map_err(|error| failed(format!("`{}': {error}", path.display())))?
+                .to_string_lossy().into_owned(),
+            _ => return Err(ExpansionError::new(
+                format!("Macro not found (`path/{operation}')."), &node.owned_site())),
         };
         let path = params.iter().find(|param| !param.is_attribute()).unwrap_or(node);
         let value = result_string(&args.number.1.value, result);
@@ -2380,6 +2491,7 @@ impl<'a> Expander<'a> {
             }
             std::fs::write(path, text)
         };
+        self.echo("write", path.display());
         write().map_err(|error| ExpansionError(
             format!("Could not write `{}': {error}", path.display()), node.owned_site()))?;
         Ok(Box::new([]))
@@ -2398,6 +2510,13 @@ impl<'a> Expander<'a> {
         }?;
         let program: &str = &args.number.1.value;
         let failed = |error: String| ExpansionError(format!("`%exec {program}' failed: {error}"), node.owned_site());
+        if self.context.echo.get() {
+            let command: Vec<String> = std::iter::once(program)
+                .chain(args.rest.iter().map(|arg| arg.value.as_ref()))
+                .map(shell_quote)
+                .collect();
+            self.echo("exec", command.join(" "));
+        }
         let mut child = std::process::Command::new(program)
             .args(args.rest.iter().map(|arg| arg.value.as_ref()))
             .stdin(std::process::Stdio::piped())
@@ -2667,6 +2786,8 @@ impl<'a> Expander<'a> {
             "contains"  => self.expand_contains_macro(node, params),
             "items" | "keys" | "values" => self.expand_dictionary_macro(name, node, params),
             "basename" | "dirname" | "extension" => self.expand_path_macro(name, node, params),
+            _ if name.starts_with("path/")
+                => self.expand_path_macro(&name["path/".len()..], node, params),
             "write"     => self.expand_write_macro(node, params),
             "exec"      => self.expand_exec_macro(node, params),
             _ if name.starts_with("formatter/")
@@ -3129,6 +3250,52 @@ fn split_frontmatter<'s>(contents: &'s str, options: &markdown::ParseOptions)
 }
 
 /// Escape macro calls within the given ranges of text, so literate expansion leaves them be.
+/// Tidy a path without looking at the file system:
+/// drop `.` parts, and remove a `..` along with the part before it.
+fn normalise(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut result = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {},
+            Component::ParentDir => match result.components().next_back() {
+                Some(Component::Normal(_)) => { result.pop(); },
+                Some(Component::RootDir | Component::Prefix(_)) => {},
+                _ => result.push(".."),
+            },
+            _ => result.push(part),
+        }
+    }
+    if result.as_os_str().is_empty() {
+        result.push(".");
+    }
+    result
+}
+
+/// The path to `path` from the directory `base`, both absolute and normalised.
+fn relative_path(path: &std::path::Path, base: &std::path::Path) -> PathBuf {
+    let path: Vec<_> = path.components().collect();
+    let base: Vec<_> = base.components().collect();
+    let common = path.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    let mut result: PathBuf = std::iter::repeat_n(std::path::Component::ParentDir, base.len() - common).collect();
+    result.extend(&path[common..]);
+    if result.as_os_str().is_empty() {
+        result.push(".");
+    }
+    result
+}
+
+/// Quote a word for display as part of a shell command, only if needed.
+fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty() && word.chars().all(|c|
+        c.is_alphanumeric() || "-_./:=+,@%".contains(c));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
 fn escape_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> String {
     let mut escaped = String::with_capacity(text.len());
     let mut last = 0;

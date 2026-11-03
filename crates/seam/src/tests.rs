@@ -439,6 +439,21 @@ mod cases {
     fn test_path_macros() {
         assert_sexp_eq("(%basename :suffix txt /a/f.txt) (%basename /a/f.txt) (%dirname /a/f.txt) (%dirname f) (%extension /a/f.txt)",
             "f f.txt /a . txt");
+        assert_sexp_eq("(%path/basename a/b.md) (%path/stem a/b.tar.gz) (%path/with-extension a/b.md html) (%path/join a b/c d.txt)",
+            "b.md b.tar \"a/b.html\" \"a/b/c/d.txt\"");
+        assert_sexp_eq("(%path/split /a/b.md) (%path/normalise a/./b/../../../c) (%path/normalise /../a)",
+            "(\"/\" \"a\" \"b.md\") ../c /a");
+        assert_sexp_eq("(%path/absolute :from /a/b ../c) (%path/relative /a/b/c :from /a/d) (%path/relative /a :from /a)",
+            "\"/a/c\" \"../b/c\" \".\"");
+        assert_sexp_eq("(%path/exists Cargo.toml) (%path/is-file src) (%path/is-directory src) (%path/exists nowhere)",
+            "true false true false");
+        let cwd = std::env::current_dir().unwrap();
+        assert_sexp_eq("(%path/cwd) (%path/relative (%path/cwd))", &format!("\"{}\" \".\"", cwd.display()));
+        // Paths of the file a call is written in, which a string of source is not.
+        assert_sexp_eq("(%include \"tests/fixtures/here.sex\")",
+            &format!("\"{0}/tests/fixtures/here.sex\" \"{0}/tests/fixtures\"", cwd.display()));
+        assert!(sexp("(%path/this-file)").is_err());
+        assert_sexp_eq("(%path/this-directory)", &format!("\"{}\"", cwd.display()));
     }
 
     #[test]

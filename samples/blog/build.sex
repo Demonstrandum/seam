@@ -1,21 +1,24 @@
-;; Builds the whole site into `public/`. Run it from this directory:
-;;   seam --text build.sex
+;; Builds the whole site into `public/`, next to this file:
+;;   seam run build.sex
 ;; Each page is generated with a formatter macro, and written with `%write`.
 (%include "site.sex")
 
-(%define (write-html path &content)
-  (%write (%concat "public/" %path) (%formatter/html :document true %content)))
+;; Where to write the site, from wherever seam is run.
+(%define public (%path/relative (%path/join (%path/this-directory) public)))
 
-(%write-html "index.html" (%include "index.sex"))
-(%write-html "tags.html" (%include "tags.sex"))
+(%define (write/html path &content)
+  (%write (%path/join %public %path) (%formatter/html :document true %content)))
+
+(%write/html "index.html" (%include "index.sex"))
+(%write/html "tags.html" (%include "tags.sex"))
 
 (%for post in %posts
-  (%write-html (%concat "posts/" (%get slug %post) ".html")
+  (%write/html (%concat "posts/" (%get slug %post) ".html")
     (%with %post
       (%with (:root "../")
         (%include "post.sex")))))
 
-(%write "public/feed.xml" (%formatter/xml :document true (%include "feed.sex")))
-(%write "public/style.css" (%formatter/css (%include "style.sex")))
+(%write (%path/join %public feed.xml) (%formatter/xml :document true (%include "feed.sex")))
+(%write (%path/join %public style.css) (%formatter/css (%include "style.sex")))
 
-(%log Built (%length %posts) posts into public/)
+(%log Built (%length %posts) posts into %public)
