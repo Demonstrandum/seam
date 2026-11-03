@@ -33,6 +33,15 @@ fn literate_html(source: &str) -> Result<String, String> {
     assemble::html::HTMLFormatter::new(tree).display().map_err(|err| err.message)
 }
 
+/// Expand source and render it as CSS.
+fn css(source: &str) -> Result<String, String> {
+    use assemble::MarkupFormatter;
+    let context = Context::new();
+    let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
+    let tree = expander.expand().map_err(|err| format!("{err}"))?;
+    assemble::css::CSSFormatter::new(tree).document().map_err(|err| err.message)
+}
+
 fn assert_literate_eq(input: &str, expect: &str) {
     assert_eq!(literate_html(input).as_deref(), Ok(expect));
 }
@@ -319,6 +328,24 @@ mod cases {
             "(%define name Sam) (%markdown (%embed \"tests/fixtures/front.md\"))",
             " \"<h1>Hello Sam</h1>\\n\""
         );
+    }
+
+    #[test]
+    fn test_format_lists() {
+        // lists are formatted as s-expressions.
+        assert_output_eq(
+            "(%format \"{} and {x}\" (a \"b\" (c)) :x (d))",
+            "\"(a \\\"b\\\" (c)) and (d)\""
+        );
+    }
+
+    #[test]
+    fn test_css_selector_functions() {
+        assert_eq!(css("(ul li(:nth-child (+ 2n 1)) a :color red)").as_deref(),
+            Ok("ul li:nth-child(2n + 1) a {\n  color: red;\n}"));
+        // apart from the preceding selector, it selects descendants.
+        assert_eq!(css("(p (:not .x) :margin 0)").as_deref(),
+            Ok("p :not(.x) {\n  margin: 0;\n}"));
     }
 
     #[test]

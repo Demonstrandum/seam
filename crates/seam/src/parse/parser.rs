@@ -406,7 +406,6 @@ impl<'a> Parser {
                 token.site))?,
             Kind::Keyword => self.parse_keyword(),
             Kind::Symbol => Ok(ParseNode::Symbol(self.parse_atomic()?)),
-            // TODO: Parse (escpae) string-literals.
             Kind::String => Ok(ParseNode::String(self.parse_atomic()?)),
             Kind::Number => Ok(ParseNode::Number(self.parse_atomic()?)),
         }

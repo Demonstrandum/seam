@@ -1,7 +1,7 @@
 use super::lexer::Lexer;
 use super::parser::{Node, ParseNode, ParseTree, Parser};
 use super::tokens::Site;
-use crate::assemble::html::HTMLFormatter;
+use crate::assemble::{html::HTMLFormatter, sexp::SExpFormatter};
 
 use std::{
     fmt,
@@ -1154,12 +1154,14 @@ impl<'a> Expander<'a> {
                 named = Some(keyword.as_ref());
                 var = node;
             }
-            // TODO: Somehow let non-atomic values be formattable?
-            let Some(Node { value, .. }) = var.atomic() else {
-                return Err(ExpansionError(
-                    format!("In `%format', the compound {} type is not formattable.",
-                        var.node_type()),
-                    *var.site()));
+            // Atoms are formatted as their value, lists as the s-expression they are.
+            let value: Cow<str> = if let Some(Node { value, .. }) = var.atomic() {
+                Cow::Borrowed(value)
+            } else {
+                let mut text = String::new();
+                SExpFormatter::generate_children(&mut text, std::slice::from_ref(var))
+                    .map_err(|error| ExpansionError(error.message, error.site))?;
+                Cow::Owned(text)
             };
             // Replace the placeholder.
             match named {
