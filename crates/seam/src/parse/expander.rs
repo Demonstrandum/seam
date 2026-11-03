@@ -1036,13 +1036,17 @@ impl<'a> Expander<'a> {
                 ))
             };
             // Find the n-th element (counting from the end if negative),
-            // or else the `:item` attribute in the list.
+            // or else the `:item` attribute in the list.  An index that is out
+            // of bounds fails straight away, without searching a long list.
             let index = item.parse::<isize>().ok().map(|index|
                 if index < 0 { index.unsigned_abs().wrapping_neg().wrapping_add(list.len()) } else { index.unsigned_abs() });
-            let found = index.and_then(|index| list.item(index)).or_else(|| list.iter().find_map(|node| match node {
-                ParseNode::Attribute { keyword, node, .. } if item == keyword => Some((**node).clone()),
-                _ => None,
-            }));
+            let found = match index {
+                Some(index) => list.item(index),
+                None => list.items().find_map(|node| match node {
+                    ParseNode::Attribute { keyword, node, .. } if item == keyword => Some(*node),
+                    _ => None,
+                }),
+            };
             node = Cow::Owned(found.ok_or_else(|| ExpansionError(match index {
                 Some(index) => format!("Index {} is out of bounds in list of length {}.", index, list.len()),
                 None => format!("Could not find attribute with keyword `:{item}`."),

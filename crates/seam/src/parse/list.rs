@@ -135,16 +135,17 @@ impl<'a> List<'a> {
                 item
             },
             Source::Chain(lists) => {
-                let mut index = index;
-                for (position, list) in lists.iter().enumerate() {
-                    if index < list.len() {
-                        let mut item = list.item(index)?;
-                        if position > 0 && index == 0 && item.leading_whitespace().is_empty() {
+                // Items after the first are spaced apart, even where lists meet.
+                let mut offset = index;
+                for list in lists {
+                    if offset < list.len() {
+                        let mut item = list.item(offset)?;
+                        if index > 0 && offset == 0 && item.leading_whitespace().is_empty() {
                             item.set_leading_whitespace(" ");
                         }
                         return Some(item);
                     }
-                    index -= list.len();
+                    offset -= list.len();
                 }
                 return None;
             },

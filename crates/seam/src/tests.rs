@@ -459,6 +459,9 @@ mod cases {
         assert_sexp_eq("(%contains 5 (%range 1 1000000000000))", "true");
         // Otherwise, they are lists like any other.
         assert_sexp_eq("(%concat (a b) (%range 1 3) () (c))", "(a b 1 2 3 c)");
+        assert_sexp_eq("(%concat () (a b))", "(a b)");
+        assert_sexp_eq("(%get b (%concat (:a 1) (:b 2)))", "2");
+        assert!(sexp("(%get -2000000000000 (%range 1 1000000000000))").is_err());
         assert_sexp_eq("(%reverse (%concat (%take 2 (x y z)) (%range 3 1 -1)))", "(1 2 3 y x)");
         assert_sexp_eq("(%define xs (%range 1 5)) (%let (((a b &rest) %xs)) %a %b %rest) (%length %xs)", " 1 2 3 4 5 5");
         assert_sexp_eq("(%range 0 1 0.25) (%range 3 1) (%sort (%reverse (%range 1 3)))", "(0 0.25 0.5 0.75 1) () (1 2 3)");
