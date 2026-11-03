@@ -519,6 +519,25 @@ mod cases {
     }
 
     #[test]
+    fn test_relative_include() {
+        // a file's includes are found relative to it first.
+        assert_sexp_eq("(%include \"tests/fixtures/nested/outer.sex\")", "(found inner)");
+    }
+
+    #[test]
+    fn test_markdown_code_is_not_expanded() {
+        assert_output_eq("(%markdown :only content (%embed \"tests/fixtures/code.md\"))",
+            "\"<p>Text 2, <code>(%+ 1 1)</code> and:</p>\\n<pre><code>(%+ 1 1)\\n</code></pre>\\n\"");
+    }
+
+    #[test]
+    fn test_unique_contains_and_dates() {
+        assert_sexp_eq("(%unique (a b a c b)) (%contains b (a b)) (%contains z (a b)) (%if \"false\" y n)",
+            "(a b c) true false n");
+        assert_sexp_eq("(%timestamp \"%Y-%m-%d\" 2024-03-10 :timezone 0)", "1710028800");
+    }
+
+    #[test]
     fn test_escaped_newline_line_numbers() {
         // an escaped new line in a symbol only counts as one line.
         let error = expand(String::from("(p a\\\nb)\n(%nope)")).unwrap_err();

@@ -707,6 +707,19 @@ impl<'a> Expander<'a> {
         expanded
     }
 
+    /// Directories to look for a file named at `site` in: first the directory
+    /// of the file it is written in (if it is a file), then the include directories.
+    fn search_directories(&self, site: &Site<'a>) -> Vec<PathBuf> {
+        let includes = self.context.includes.borrow();
+        let mut directories = Vec::with_capacity(includes.len() + 1);
+        let source = std::path::Path::new(site.source());
+        if source.is_file() && let Some(parent) = source.parent() {
+            directories.push(parent.to_path_buf());
+        }
+        directories.extend(includes.iter().cloned());
+        directories
+    }
+
     /// Parse and expand literate source: plain text with embedded `(%...)` macro calls.
     fn expand_literate(&self, name: String, source: String, site: &Site<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
@@ -732,7 +745,7 @@ impl<'a> Expander<'a> {
         let mut parser: Result<Parser, ExpansionError> = Err(
             include_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in self.context.includes.borrow().iter() {
+        for include_dir in self.search_directories(site) {
             let path = include_dir.join(&**path);
             parser = super::parser_for_file(&path, literate)
                 .or_else(|err| {
@@ -784,7 +797,7 @@ impl<'a> Expander<'a> {
         let mut value: Result<String, ExpansionError> = Err(
             embed_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in self.context.includes.borrow().iter() {
+        for include_dir in self.search_directories(site) {
             let path = include_dir.join(&**path);
             value = std::fs::read_to_string(path)
                 .map_err(|err| embed_error(Box::new(err)));
@@ -863,7 +876,7 @@ impl<'a> Expander<'a> {
 
         // Split off the frontmatter first, so that literate expansion
         // only runs over the part (or parts) actually being used.
-        let (frontmatter, body) = split_frontmatter(contents, &options.parse)
+        let MarkdownParts { frontmatter, body, code } = split_frontmatter(contents, &options.parse)
             .map_err(markdown_error)?;
         // Expand any `(%...)` calls in a part, keeping line numbers
         // relative to the whole string by padding with new lines.
@@ -892,7 +905,9 @@ impl<'a> Expander<'a> {
         };
         // Render the markdown content as raw HTML.
         let to_html = |(body, line): (&str, usize)| -> Result<ParseTree<'a>, ExpansionError<'a>> {
-            let body = expand(body, line)?;
+            // Macro calls within code are shown, not expanded.
+            let body = if literate && !code.is_empty() { Cow::Owned(escape_ranges(body, &code)) } else { Cow::Borrowed(body) };
+            let body = expand(&body, line)?;
             let html = markdown::to_html_with_options(&body, &options)
                 .map_err(markdown_error)?;
             Ok(Box::new([
@@ -1091,7 +1106,12 @@ impl<'a> Expander<'a> {
             datetime.timestamp()
         } else {
             // Parse NaiveDateTime instead and get timzone from attribute, or default to local time.
-            let datetime = match chrono::NaiveDateTime::parse_from_str(date_string, format) {
+            // A date without a time is taken to be at midnight.
+            let datetime = chrono::NaiveDateTime::parse_from_str(date_string, format)
+                .or_else(|err| chrono::NaiveDate::parse_from_str(date_string, format)
+                    .map(|date| date.and_time(chrono::NaiveTime::MIN))
+                    .map_err(|_| err));
+            let datetime = match datetime {
                 Ok(datetime) => datetime,
                 Err(err) => return Err(ExpansionError(
                     format!("Failed to parse date: {err}"),
@@ -2128,14 +2148,49 @@ impl<'a> Expander<'a> {
         let Some((separator, list)) = params.split_first() else {
             return Err(ExpansionError::new("Expected a separator, and a list.", node.site()));
         };
+        // The separator's whitespace is kept, but not the items' own.
         let mut expanded = vec![];
         for (index, item) in list_argument(list).iter().enumerate() {
+            let mut item = item.clone();
             if index > 0 {
                 expanded.push(separator.clone());
+                item.set_leading_whitespace("");
             }
-            expanded.push(item.clone());
+            expanded.push(item);
+        }
+        if let Some(first) = expanded.first_mut() {
+            first.set_leading_whitespace(node.leading_whitespace().clone());
         }
         Ok(expanded.into_boxed_slice())
+    }
+
+    /// `(%unique list)`, the list without repeated items (keeping the first of each).
+    fn expand_unique_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut items = vec![];
+        for item in list_argument(&params) {
+            if seen.insert(node_text(item)?) {
+                items.push(item.clone());
+            }
+        }
+        Ok(Box::new([list_node(node, without_leading(items))]))
+    }
+
+    /// `(%contains item list)`, whether the list has an item equal to the given one.
+    fn expand_contains_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let Some((item, list)) = params.split_first() else {
+            return Err(ExpansionError::new("Expected an item, and a list.", node.site()));
+        };
+        let item = node_text(item)?;
+        let mut found = false;
+        for other in list_argument(list) {
+            found |= node_text(other)? == item;
+        }
+        Ok(Box::new([bool_node(node, found)]))
     }
 
     /// `(%length list)` counts a list's items, `(%length text)` its characters.
@@ -2608,6 +2663,8 @@ impl<'a> Expander<'a> {
             "split"     => self.expand_split_macro(node, params),
             "intercalate" => self.expand_intercalate_macro(node, params),
             "length"    => self.expand_length_macro(node, params),
+            "unique"    => self.expand_unique_macro(node, params),
+            "contains"  => self.expand_contains_macro(node, params),
             "items" | "keys" | "values" => self.expand_dictionary_macro(name, node, params),
             "basename" | "dirname" | "extension" => self.expand_path_macro(name, node, params),
             "write"     => self.expand_write_macro(node, params),
@@ -2737,11 +2794,12 @@ fn list_argument<'p, 'a>(arguments: &'p [ParseNode<'a>]) -> &'p [ParseNode<'a>] 
 }
 
 /// Whether expanded nodes count as true: nothing, `()`, `false` and `""` are false.
+/// (`"false"` is false too, being how YAML and TOML booleans arrive.)
 fn truthy(nodes: &[ParseNode]) -> bool {
     match nodes {
         [] => false,
         [node] => !(node.null()
-            || node.symbol().is_some_and(|symbol| symbol.value == "false")
+            || node.atomic().is_some_and(|atom| atom.value == "false")
             || node.string().is_some_and(|string| string.value.is_empty())),
         _ => true,
     }
@@ -3033,22 +3091,54 @@ enum Frontmatter {
     Toml(String),
 }
 
-/// Split markdown into its frontmatter (if any) and the rest of the
-/// document, along with the line the rest starts on (counting from 0).
+/// Markdown split into its frontmatter (if any) and the rest of the document,
+/// along with the line the rest starts on (counting from 0), and the byte
+/// ranges of code (blocks and spans) within the rest.
+struct MarkdownParts<'s> {
+    frontmatter: Option<Frontmatter>,
+    body: (&'s str, usize),
+    code: Vec<std::ops::Range<usize>>,
+}
+
 fn split_frontmatter<'s>(contents: &'s str, options: &markdown::ParseOptions)
--> Result<(Option<Frontmatter>, (&'s str, usize)), markdown::message::Message> {
+-> Result<MarkdownParts<'s>, markdown::message::Message> {
     use markdown::mdast;
-    let mdast::Node::Root(root) = markdown::to_mdast(contents, options)? else {
-        unreachable!()
-    };
+    fn find_code(node: &mdast::Node, code: &mut Vec<std::ops::Range<usize>>) {
+        match node {
+            mdast::Node::Code(mdast::Code { position: Some(position), .. })
+          | mdast::Node::InlineCode(mdast::InlineCode { position: Some(position), .. }) =>
+                code.push(position.start.offset..position.end.offset),
+            _ => for child in node.children().into_iter().flatten() {
+                find_code(child, code);
+            },
+        }
+    }
+    let ast = markdown::to_mdast(contents, options)?;
+    let mut code = vec![];
+    find_code(&ast, &mut code);
+    let mdast::Node::Root(root) = ast else { unreachable!() };
     let (frontmatter, position) = match root.children.into_iter().next() {
         Some(mdast::Node::Yaml(mdast::Yaml { value, position })) => (Frontmatter::Yaml(value), position),
         Some(mdast::Node::Toml(mdast::Toml { value, position })) => (Frontmatter::Toml(value), position),
-        _ => return Ok((None, (contents, 0))),
+        _ => return Ok(MarkdownParts { frontmatter: None, body: (contents, 0), code }),
     };
     let end = position.map_or(0, |position| position.end.offset);
     let (head, body) = contents.split_at(end);
-    Ok((Some(frontmatter), (body, head.matches('\n').count())))
+    let code = code.into_iter().map(|range| range.start - end..range.end - end).collect();
+    Ok(MarkdownParts { frontmatter: Some(frontmatter), body: (body, head.matches('\n').count()), code })
+}
+
+/// Escape macro calls within the given ranges of text, so literate expansion leaves them be.
+fn escape_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    let mut last = 0;
+    for range in ranges {
+        escaped += &text[last..range.start];
+        escaped += &text[range.clone()].replace("(%", "\\(%");
+        last = range.end;
+    }
+    escaped += &text[last..];
+    escaped
 }
 
 /// Join expanded nodes back into text, such as for markdown: text and atoms
