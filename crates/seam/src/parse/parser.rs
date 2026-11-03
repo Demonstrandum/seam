@@ -367,6 +367,12 @@ impl<'a> Parser {
         self.lexer.get_source()
     }
 
+    /// The source file being parsed.
+    #[must_use]
+    pub fn file(&self) -> &super::tokens::SourceFile {
+        self.lexer.file()
+    }
+
     /// Parse whole source code, finishing off the lexer.
     pub fn parse(&'a self) -> Result<ParseTree<'a>, Box<dyn Error + 'a>> {
         if self.literate {

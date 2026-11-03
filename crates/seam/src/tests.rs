@@ -33,6 +33,19 @@ fn literate_html(source: &str) -> Result<String, String> {
     assemble::html::HTMLFormatter::new(tree).display().map_err(|err| err.message)
 }
 
+/// Expand literate source and render it with the given formatter.
+fn literate_as(source: &str, format: &str) -> Result<String, String> {
+    use assemble::MarkupFormatter;
+    let context = Context::new();
+    let expander = tree_builder(&context, Some("<test>"), source.to_owned(), true);
+    let tree = expander.expand().map_err(|err| format!("{err}"))?;
+    let formatter: Box<dyn MarkupFormatter> = match format {
+        "xml" => Box::new(assemble::xml::XMLFormatter::new(tree)),
+        _ => Box::new(assemble::css::CSSFormatter::new(tree)),
+    };
+    formatter.display().map_err(|err| err.message)
+}
+
 /// Expand source and render it as CSS.
 fn css(source: &str) -> Result<String, String> {
     use assemble::MarkupFormatter;
@@ -489,6 +502,11 @@ mod cases {
             .contains("Argument `n' of `%r' must be a number, got a symbol instead."));
         assert!(sexp("(%define (r &xs:number) ok) (%r 1 a)").unwrap_err().contains("`xs'"));
         assert!(sexp("(%define (g :n:number x) %n)").unwrap_err().contains("Default value of `:n'"));
+        // Lazy arguments are checked once expanded, each time they are used.
+        assert_sexp_eq("(%define (twice ~n:number) %n %n) (%twice (%+ 1 2))", " 3 3");
+        assert!(sexp("(%define (twice ~n:number) %n %n) (%twice (%concat a b))").unwrap_err()
+            .contains("Argument `n' of `%twice' must be a number, got a string instead."));
+        assert_sexp_eq("(%define (unless c ~body:number) (%if %c () %body)) (%unless true (%error x))", " ()");
     }
 
     #[test]
@@ -531,6 +549,26 @@ mod cases {
     fn test_exec_macro() {
         assert_sexp_eq("(%exec echo hi there) (%exec tr a-z A-Z :stdin shout)", "\"hi there\" \"SHOUT\"");
         assert!(sexp("(%exec false)").unwrap_err().contains("`%exec false' failed"));
+        // Input and output larger than a pipe's buffer do not deadlock.
+        let big = "x".repeat(1 << 20);
+        assert_sexp_eq(&format!("(%length (%exec cat :stdin \"{big}\"))"), "1048576");
+    }
+
+    #[test]
+    fn test_literate_xml_and_css() {
+        assert_eq!(literate_as("Hi <b>(%do (i x))</b> & bye", "xml").as_deref(), Ok("Hi <b><i>x</i></b> & bye"));
+        assert_eq!(literate_as("body { margin: 0; }\n(%do (p :color red))", "css").as_deref(),
+            Ok("body { margin: 0; }\np {\n  color: red;\n}"));
+    }
+
+    #[test]
+    fn test_markdown_from_its_file() {
+        // Once its frontmatter is split off, a body starting with `---` is still content.
+        assert_output_eq("(%markdown :only content (%embed \"tests/fixtures/rule.md\"))",
+            "\"<hr />\\n<h2>not: frontmatter</h2>\\n<p>Text.</p>\\n\"");
+        // Macros in embedded markdown find files from, and know of, the markdown's own file.
+        assert_output_eq("(%markdown (%embed \"tests/fixtures/nested/note.md\"))",
+            "\"<p>Inner: <found>inner</found>, from note.md in nested.</p>\\n\"");
     }
 
     #[test]

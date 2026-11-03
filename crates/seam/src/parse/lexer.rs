@@ -130,6 +130,12 @@ impl<'a> Lexer {
         &self.file.code
     }
 
+    /// The source file being read.
+    #[must_use]
+    pub fn file(&self) -> &SourceFile {
+        &self.file
+    }
+
     fn increment_byte_offsets(&self, offset: usize) {
         let i = self.byte_offset.get();
         let j = self.byte_offset_line.get();
