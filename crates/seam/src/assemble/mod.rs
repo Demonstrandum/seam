@@ -1,4 +1,4 @@
-use crate::parse::tokens::Site;
+use crate::parse::{parser::ParseNode, tokens::Site};
 use std::{convert, error::Error, fmt::{self, Debug}};
 
 use colored::Colorize;
@@ -40,7 +40,7 @@ impl fmt::Display for GenerationError<'_> {
             format!("[{}] Error Generating {} ({}:{}:{})",
                 "**".red().bold(),
                 self.markup.bold(),
-                self.site.source,
+                self.site.source(),
                 self.site.line,
                 self.site.line_column(),
             ).black(),
@@ -76,6 +76,15 @@ impl convert::From<fmt::Error> for GenerationError<'_> {
 
 pub type Formatter<'a> = &'a mut dyn fmt::Write;
 
+/// Leading whitespace to write before the `index`th child of an element:
+/// the first child's whitespace is left out, unless it starts on a new line.
+/// e.g. `(p hello world)` -> `<p>hello world</p>`.
+#[must_use]
+pub fn child_whitespace<'n>(index: usize, node: &'n ParseNode) -> &'n str {
+    let leading = node.leading_whitespace();
+    if index == 0 && !leading.contains('\n') { "" } else { leading }
+}
+
 /// Trait for all structs that can generate specific markup
 /// for the s-expression tree.
 pub trait MarkupFormatter<'a>: Debug {
@@ -107,26 +116,46 @@ impl fmt::Display for dyn MarkupFormatter<'_> + '_ {
     }
 }
 
-/// Performs the following escapes:
+/// Write `text` with the following escapes:
 /// - `<` → `&lt;`
 /// - `>` → `&gt;`
 /// - `"` → `&quot;`
 /// - `'` → `&apos;`
 /// - `&` → `&amp;`
-#[must_use]
-pub fn escape_xml(string: &str) -> String {
-    let mut escaped = String::with_capacity(string.len());
-    for c in string.chars() {
-        match c {
-            '<'  => escaped.push_str("&lt;"),
-            '>'  => escaped.push_str("&gt;"),
-            '"'  => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&apos;"),
-            '&'  => escaped.push_str("&amp;"),
-            _ => escaped.push(c),
-        }
+pub fn write_escaped(f: &mut dyn fmt::Write, text: &str) -> fmt::Result {
+    let mut written = 0;
+    for (index, byte) in text.bytes().enumerate() {
+        let escape = match byte {
+            b'<'  => "&lt;",
+            b'>'  => "&gt;",
+            b'"'  => "&quot;",
+            b'\'' => "&apos;",
+            b'&'  => "&amp;",
+            _ => continue,
+        };
+        f.write_str(&text[written..index])?;
+        f.write_str(escape)?;
+        written = index + 1;
     }
+    f.write_str(&text[written..])
+}
+
+/// Escape a string (see [`write_escaped`]).
+#[must_use]
+pub fn escape_xml(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    // Writing to a `String` never fails.
+    let _ = write_escaped(&mut escaped, text);
     escaped
+}
+
+/// A writer which escapes everything written through it (see [`write_escaped`]).
+pub struct Escaping<'f>(pub &'f mut dyn fmt::Write);
+
+impl fmt::Write for Escaping<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        write_escaped(self.0, text)
+    }
 }
 
 /// Re-constitute original S-expressions.

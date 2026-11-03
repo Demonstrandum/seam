@@ -91,7 +91,7 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 ```
 
 ## Checklist
- - [ ] Literate mode for parser+lexer, where string nodes are not escaped and parentheses are converted to symbols.
+ - [x] Literate mode for parser+lexer, where string nodes are not escaped and parentheses are converted to symbols.
        The only time strings are escaped and parentheses make lists is inside a `(%` and `)` pair, i.e. when calling a macro.
        So `hello world (earth) (%do (p letter "\x61")) "\x61"` turns in to (in HTML mode)
        `hello world <earth></earth> <p>hi a</p> a` normally, but in *literate* (HTML) mode turns into

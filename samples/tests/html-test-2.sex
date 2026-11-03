@@ -14,8 +14,11 @@
        (span text) <3)
     (p Hello(span World)!)
     (pre
-      nothing %title gets
-      evaluated in here)
+      Macros like %title are expanded
+      in here, and    the spacing is kept.)
+    (pre
+      ; Untouched contents are copied as written,
+      (this list),  spacing  and the comment above included.)
     (script :id javascript
       (%define CONSTANT 3.14)
       let my_num = (1 + %CONSTANT) * 2;

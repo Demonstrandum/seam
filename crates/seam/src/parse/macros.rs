@@ -175,55 +175,25 @@ impl<'tree> Arg<'tree> {
 /// Positional or named argument position.
 #[derive(Debug, Clone, Copy)]
 pub enum ArgPos<'a> { Int(usize), Str(&'a str) }
-/// What kind of types can be matched against
-/// when determining an arguments positionality.
-pub trait ArgMatcher {
-    fn unwrap(&self) -> ArgPos<'_>;
+impl From<usize> for ArgPos<'_> {
+    fn from(value: usize) -> Self { ArgPos::Int(value) }
 }
-impl ArgMatcher for usize {
-    fn unwrap(&self) -> ArgPos<'_> { ArgPos::Int(*self) }
+impl<'a> From<&'a str> for ArgPos<'a> {
+    fn from(value: &'a str) -> Self { ArgPos::Str(value) }
 }
-impl<'a> ArgMatcher for  &'a str {
-    fn unwrap(&self) -> ArgPos<'a> { ArgPos::Str(self) }
-}
-impl ArgMatcher for ArgPos<'_> {
-    fn unwrap(&self) -> ArgPos<'_> { *self }
-}
-impl<'a> From<&'a Box<dyn ArgMatcher + 'a>> for Option<usize> {
-    fn from(value: &'a Box<dyn ArgMatcher + 'a>) -> Option<usize> {
-        match value.unwrap() {
+impl<'a> From<ArgPos<'a>> for Option<usize> {
+    fn from(value: ArgPos<'a>) -> Option<usize> {
+        match value {
             ArgPos::Int(int) => Some(int),
             ArgPos::Str(_) => None,
         }
     }
 }
-impl<'a> From<&'a Box<dyn ArgMatcher + 'a>> for Option<&'a str> {
-    fn from(value: &'a Box<dyn ArgMatcher + 'a>) -> Option<&'a str> {
-        match value.unwrap() {
+impl<'a> From<ArgPos<'a>> for Option<&'a str> {
+    fn from(value: ArgPos<'a>) -> Option<&'a str> {
+        match value {
             ArgPos::Str(str) => Some(str),
             ArgPos::Int(_) => None,
-        }
-    }
-}
-impl<'a> From<&'a Box<dyn ArgMatcher + 'a>> for ArgPos<'a> {
-    fn from(value: &'a Box<dyn ArgMatcher + 'a>) -> ArgPos<'a> {
-        value.unwrap()
-    }
-}
-impl<'a> From<usize> for Box<dyn ArgMatcher + 'a> {
-    fn from(value: usize) -> Box<dyn ArgMatcher + 'a> { Box::new(value) }
-}
-impl<'a> From<&'a str> for Box<dyn ArgMatcher + 'a> {
-    fn from(value: &'a str) -> Box<dyn ArgMatcher + 'a> { Box::new(value) }
-}
-impl<'a> From<&'a String> for Box<dyn ArgMatcher + 'a> {
-    fn from(value: &'a String) -> Box<dyn ArgMatcher + 'a> { Box::new(value.as_ref()) }
-}
-impl<'a> From<ArgPos<'a>> for Box<dyn ArgMatcher + 'a> {
-    fn from(value: ArgPos<'a>) -> Box<dyn ArgMatcher + 'a> {
-        match value {
-            ArgPos::Int(i) => Box::new(i),
-            ArgPos::Str(k) => Box::new(k),
         }
     }
 }
@@ -234,26 +204,26 @@ impl<'a> From<ArgPos<'a>> for Box<dyn ArgMatcher + 'a> {
 /// Pattern pertains to how to argument sits
 /// in the macro-call's argument list.
 #[derive(Debug, Clone)]
-struct ArgPattern<'a, 'tree> {
+struct ArgPattern<'tree> {
     argument: Arg<'tree>,
-    pattern: fn(&Box<dyn ArgMatcher + 'a>) -> bool,
+    pattern: fn(ArgPos<'_>) -> bool,
 }
 
 /// A complete description of how a macro's arguments
 /// should be parsed.
 #[derive(Debug, Clone)]
-pub struct ArgRules<'a, 'tree> {
-    patterns: Vec<ArgPattern<'a, 'tree>>,
+pub struct ArgRules<'tree> {
+    patterns: Vec<ArgPattern<'tree>>,
     trailing: Option<ArgType<'tree>>,
 }
 
-impl<'a, 'tree> ArgRules<'a, 'tree> {
+impl<'tree> ArgRules<'tree> {
     #[must_use]
     pub fn new() -> Self {
         Self { patterns: Vec::new(), trailing: None }
     }
     /// Register a pattern to match.
-    pub fn register(&mut self, matcher: fn(&Box<dyn ArgMatcher + 'a>) -> bool, arg: Arg<'tree>)
+    pub fn register(&mut self, matcher: fn(ArgPos<'_>) -> bool, arg: Arg<'tree>)
     {
         self.patterns.push(ArgPattern {
             argument: arg,
@@ -265,7 +235,7 @@ impl<'a, 'tree> ArgRules<'a, 'tree> {
         self.trailing = Some(arg_type);
     }
     /// Turn this structure into a parser.
-    pub fn parser<'params>(self, call_node: &'params ParseNode<'tree>, params: &'params [ParseNode<'tree>]) -> Result<ArgParser<'params, 'a, 'tree>, ExpansionError<'tree>> {
+    pub fn parser<'params>(self, call_node: &'params ParseNode<'tree>, params: &'params [ParseNode<'tree>]) -> Result<ArgParser<'params, 'tree>, ExpansionError<'tree>> {
         ArgParser::new(self, call_node, params)
     }
     /// Count how many mandatory arguments there are.
@@ -279,23 +249,23 @@ impl<'a, 'tree> ArgRules<'a, 'tree> {
     }
 }
 
-impl Default for ArgRules<'_, '_> {
+impl Default for ArgRules<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ArgParser<'params: 'rules, 'rules, 'tree> {
+pub struct ArgParser<'params, 'tree> {
     pub call_node: &'params ParseNode<'tree>,
-    pub rules: ArgRules<'rules, 'tree>,
+    pub rules: ArgRules<'tree>,
     pub positional: HashMap<usize, &'params ParseNode<'tree>>,
-    pub named: HashMap<String, &'params ParseNode<'tree>>,
+    pub named: HashMap<&'params str, &'params ParseNode<'tree>>,
     pub trailing: Vec<&'params ParseNode<'tree>>
 }
 
-impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
-    pub fn new(rules: ArgRules<'rules, 'tree>,
+impl<'params, 'tree> ArgParser<'params, 'tree> {
+    pub fn new(rules: ArgRules<'tree>,
                call_node: &'params ParseNode<'tree>,
                params: &'params [ParseNode<'tree>])
     -> Result<Self, ExpansionError<'tree>>  {
@@ -306,22 +276,19 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
         let mut mandatory_count: usize = 0;
 
         for param in params {
-            let matcher: Box<dyn ArgMatcher + 'rules>;
             // Register each argument with the parser.
-            let param_node: &'params ParseNode;
-            if let ParseNode::Attribute { keyword, node, .. } = param {
-                matcher = keyword.into();
-                param_node = node;
-            } else {
-                position += 1;
-                matcher = position.into();
-                param_node = param;
-            }
+            let (matcher, param_node): (ArgPos<'params>, &'params ParseNode) =
+                if let ParseNode::Attribute { keyword, node, .. } = param {
+                    (ArgPos::Str(keyword), node)
+                } else {
+                    position += 1;
+                    (ArgPos::Int(position), param)
+                };
             // Check if they do actually match with any of the rules.
             let mut arg_rule = None;
             for rule in &rules.patterns {
                 // First check that there is a valid place for this argument.
-                let is_valid_argument = (rule.pattern)(&matcher);
+                let is_valid_argument = (rule.pattern)(matcher);
                 if is_valid_argument {
                     arg_rule = Some(rule);
                     break;
@@ -335,9 +302,9 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
                     let argtype = rule.argument.argtype();
                     argtype.check(param_node)?;
                     // If so, insert the parameter.
-                    match matcher.unwrap() {
+                    match matcher {
                         ArgPos::Int(i) => positional.insert(i, param_node),
-                        ArgPos::Str(k) => named.insert(k.to_owned(), param_node),
+                        ArgPos::Str(k) => named.insert(k, param_node),
                     };
                     // Register if a mandatory argument was consumed.
                     if let Arg::Mandatory(..) = rule.argument { mandatory_count += 1 }
@@ -376,30 +343,24 @@ impl<'params, 'rules, 'tree> ArgParser<'params, 'rules, 'tree> {
         Ok(Self { call_node, rules, positional, named, trailing })
     }
 
-    pub fn get_optional<P>(&self, key: P) -> Option<&&ParseNode<'tree>>
-        where P: Into<Box<dyn ArgMatcher + 'rules>>
-    {
-        let matcher: Box<dyn ArgMatcher + 'rules> = key.into();
-        match matcher.unwrap() {
-            ArgPos::Int(i) => self.positional.get(&i),
-            ArgPos::Str(k) => self.named.get(k),
+    pub fn get_optional<'k>(&self, key: impl Into<ArgPos<'k>>) -> Option<&'params ParseNode<'tree>> {
+        match key.into() {
+            ArgPos::Int(i) => self.positional.get(&i).copied(),
+            ArgPos::Str(k) => self.named.get(k).copied(),
         }
     }
 
-    pub fn get<P>(&self, key: P) -> Result<&&ParseNode<'tree>, ExpansionError<'tree>>
-        where P: Into<Box<dyn ArgMatcher + 'rules>>
-    {
-        let matcher: Box<dyn ArgMatcher + 'rules> = key.into();
-        match matcher.unwrap() {
+    pub fn get<'k>(&self, key: impl Into<ArgPos<'k>>) -> Result<&'params ParseNode<'tree>, ExpansionError<'tree>> {
+        match key.into() {
             ArgPos::Int(i) => match self.positional.get(&i) {
-                Some(value) => Ok(value),
+                Some(value) => Ok(*value),
                 None => Err(ExpansionError(
                     format!("Argument in position {i} not given."),
                     self.call_node.owned_site(),
                 )),
             },
             ArgPos::Str(k) => match self.named.get(k) {
-                Some(value) => Ok(value),
+                Some(value) => Ok(*value),
                 None => Err(ExpansionError(
                     format!("Named argument :{k} not given."),
                     self.call_node.owned_site(),

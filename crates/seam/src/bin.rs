@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut include_dirs: BTreeSet<PathBuf> = BTreeSet::default();
     let mut from_stdin = false;
     let mut is_doc = true;
+    let mut literate = false;
 
     for arg in args {
         if arg.starts_with('-') {
@@ -36,6 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 match opt {
                    "nodocument" | "nodoc" => is_doc = false,
+                   "literate" => literate = true,
                    _ => argument_fatal(
                        format!("Unknown argument: `--{opt}'."))
                 }
@@ -80,14 +82,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     if from_stdin {
         let mut stdin = io::stdin();
         let context = seam::Context::new();
-        let builder = seam::tree_builder_stream(&context, &mut stdin)?;
+        let builder = seam::tree_builder_stream(&context, &mut stdin, literate)?;
         builder.add_includes(include_dirs.iter());
         generate_and_print(builder, &target, is_doc);
     }
 
     for file in files {
         let context = seam::Context::new();
-        let builder = seam::tree_builder_file(&context, &file)?;
+        let builder = seam::tree_builder_file(&context, &file, literate)?;
         builder.add_includes(include_dirs.iter());
         generate_and_print(builder, &target, is_doc);
     }
