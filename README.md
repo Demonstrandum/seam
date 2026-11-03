@@ -89,6 +89,14 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 #stdout:
 #   (hello world)
 ```
+To run a file only for what its macros do, such as writing files with
+`%write`, use `seam run`, which reports each action like `make` does:
+```sh
+seam run build.sex
+#stdout:
+#   write public/index.html
+#   ...
+```
 
 ## Checklist
  - [x] Literate mode for parser+lexer, where string nodes are not escaped and parentheses are converted to symbols.
@@ -106,6 +114,8 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] Shell-style `${var:...}` string manipulation, written `%{var:...}`.
  - [x] `%while`, `%take`, `%drop`, `%split` on symbols in lists, `%intercalate`.
  - [x] `(%basename :suffix "txt" /path/file.txt)` (-> `file`), `(%dirname /path/file.txt)` (-> `/path`) and `(%extension /path/file.txt)` (-> `txt`), macros for paths.
+ - [x] `%path/...` macros: `cwd`, `this`, `here`, `join`, `split`, `stem`, `with-extension`, `normalise`, `canonical`, `absolute`, `relative`, `exists`, `is-file` and `is-directory`.
+ - [x] `seam run file.sex`, running a file for its side effects (`%write`, `%exec`), reported on STDOUT like `make`.
  - [x] Math operators: `+`, `-`, `*`, `/`, `mod`, `pow`, `exp`, `sqrt`, `ln`, `log2`, `log10`, `hypot` (`%log` already logs),
        along with comparisons, `%if`, `%and`, `%or`, `%not` and `%range`.
  - [x] User `(%error msg)` macro for aborting compilation.

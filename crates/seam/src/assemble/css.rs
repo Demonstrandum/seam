@@ -39,10 +39,13 @@ impl<'a> CSSFormatter<'a> {
                      and property-value pairs, wrapped in parentheses.",
                      &site.to_owned()));
             },
+            // Raw text (e.g. hand-written CSS around literate macro calls) is written as it is.
+            ParseNode::Raw(node) => {
+                write!(f, "{leading}{}", node.value)?;
+            },
             ParseNode::Symbol(node)
             | ParseNode::Number(node)
-            | ParseNode::String(node)
-            | ParseNode::Raw(node) => {
+            | ParseNode::String(node) => {
                 let site = node.site;
                 return Err(GenerationError::new("CSS",
                     "Symbolic node not expected here, CSS documents \

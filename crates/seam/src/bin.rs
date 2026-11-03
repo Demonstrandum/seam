@@ -17,8 +17,12 @@ fn argument_fatal(msg: impl std::fmt::Display) -> ! {
 const SUPPORTED_TARGETS: [&str; 5] = ["text", "sexp", "html", "xml", "css"];
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = env::args();
+    let mut args = env::args().peekable();
     let _ = args.next();  // Discard.
+
+    // `seam run file.sex` expands a file only for its side effects
+    // (`%write`, `%exec`, ...), which are reported on STDOUT instead.
+    let run = args.next_if(|arg| arg == "run").is_some();
 
     // Command line flags and options.
     let mut files = Vec::new();
@@ -74,7 +78,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     if files.is_empty() {
         from_stdin = true;
     }
-    if target.is_empty() {
+    if run {
+        if !target.is_empty() {
+            argument_fatal(format!("`seam run' takes no target format, but `--{target}' was given."));
+        }
+    } else if target.is_empty() {
         argument_fatal("No such target format exists / \
                         no target format given.");
     }
@@ -84,17 +92,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         let context = seam::Context::new();
         let builder = seam::tree_builder_stream(&context, &mut stdin, literate)?;
         builder.add_includes(include_dirs.iter());
-        generate_and_print(builder, &target, is_doc);
+        if run { execute(builder) } else { generate_and_print(builder, &target, is_doc) }
     }
 
     for file in files {
         let context = seam::Context::new();
         let builder = seam::tree_builder_file(&context, &file, literate)?;
         builder.add_includes(include_dirs.iter());
-        generate_and_print(builder, &target, is_doc);
+        if run { execute(builder) } else { generate_and_print(builder, &target, is_doc) }
     }
 
     Ok(())
+}
+
+/// Expand a file only for its side effects, discarding the document.
+fn execute(expander: seam::parse::expander::Expander) {
+    expander.set_echo(true);
+    if let Err(e) = expander.expand() {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
 }
 
 fn generate_and_print(expander: seam::parse::expander::Expander, target: &str, is_doc: bool) {

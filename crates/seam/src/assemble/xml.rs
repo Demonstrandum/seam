@@ -40,6 +40,10 @@ impl<'a> XMLFormatter<'a> {
                 write!(f, "{leading}")?;
                 write_escaped(f, &node.value)?;
             },
+            // Raw text (e.g. the text of literate source) is written as it is.
+            ParseNode::Raw(node) => {
+                write!(f, "{leading}{}", node.value)?;
+            },
             ParseNode::List { nodes: list, end_token, .. } => {
                 write!(f, "{leading}")?;
                 let head = list.first();
@@ -110,7 +114,7 @@ impl<'a> XMLFormatter<'a> {
 
                 write!(f, "</{tag}>")?;
             },
-            _ => return Err(GenerationError::new("XML",
+            ParseNode::Attribute { .. } => return Err(GenerationError::new("XML",
                     &format!("Unexpected {} node when generating.", node.node_type()),
                     node.site()))
         }

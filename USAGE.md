@@ -92,7 +92,24 @@ Literate mode is enabled with:
   Elements produced by macros within Markdown are written as HTML.
   Frontmatter and content are expanded separately, so `:only frontmatter`
   or `:only content` expands just that part, and the content can use the
-  frontmatter's definitions.
+  frontmatter's definitions. Macro calls inside code (blocks and spans) are
+  shown as written, not expanded.
+
+### Running build scripts
+
+`seam run file.sex` expands a file only for what its macros *do*, such as
+writing files with `%write` or running programs with `%exec`, and discards
+the document it would otherwise generate. Like `make`, it reports each action
+on STDOUT as it happens, and `%log` prints there too:
+```sh
+seam run build.sex
+#stdout:
+#   write public/index.html
+#   write public/posts/hello-world.html
+#    exec git rev-parse --short HEAD
+#     log Built 3 posts.
+```
+No target format is given, and the other options (`-I`, `--literate`) work as usual.
 
 ## Macros
 
@@ -106,10 +123,13 @@ will be treated as macros.
 - `%ifdef` checks if a symbol is defined, e.g. `(ifdef username (span Hello %username))`,
   or with an else-clause: `(ifdef title (title My Blog - %title) (title My Blog))`.
 - `%include` will include an entire file's contents into another, e.g.
-  `(%include "components/footer.sex")`.
+  `(%include "components/footer.sex")`. Paths are looked up relative to the
+  including file first, then in each include directory (`-I`, and the
+  working directory). `%embed` finds files the same way.
 - `%date` standard `strftime` function, works of current system time, e.g.
   `(span :id timestamp Uploaded on (%date "%Y-%m-%d"))`.
-- `%log` will simply log any information to STDERR, e.g. `(%log Hello, World!)`.
+- `%log` will simply log any information to STDERR (STDOUT under `seam run`),
+  e.g. `(%log Hello, World!)`.
 - `%with` overrides top-level definitions for everything within it, e.g.
   `(%with (:title "Pound Cake") (%layout))` (see [Scoping](#scoping)).
 - `%let` binds patterns for its body, each seeing the ones before it, e.g.
@@ -117,7 +137,8 @@ will be treated as macros.
 
 #### Conditions and arithmetic
 - `(%if condition then else)` expands only the chosen branch. Nothing, `()`,
-  `false` and `""` are false; anything else is true.
+  `false` (or `"false"`, as YAML and TOML booleans arrive) and `""` are false;
+  anything else is true.
 - `%not`, `%and` and `%or`, where `%and` and `%or` stop expanding their
   arguments as soon as the answer is known.
 - Comparisons `%=`, `%!=`, `%<`, `%>`, `%<=` and `%>=` (numbers by value,
@@ -137,6 +158,7 @@ will be treated as macros.
 - `(%split , "a,b")` gives `("a" "b")`; `(%split | (a b | c))` gives `((a b) (c))`.
 - `(%intercalate ", " %tags)` puts the separator between the items (unwrapped).
 - `(%length list)` counts items, or the characters of a string.
+- `(%unique list)` drops repeated items; `(%contains item list)` tests membership.
 - `(%items dict)`, `(%keys dict)` and `(%values dict)` for keyword lists:
   `(%for (key value) in (%items (:a 1 :b 2)) ...)`.
 - `%for` iterates over the items of the list its expression gives
@@ -144,10 +166,29 @@ will be treated as macros.
 
 #### Paths, files and programs
 - `(%basename :suffix md posts/hi.md)` → `hi`, `(%dirname posts/hi.md)` →
-  `posts`, `(%extension posts/hi.md)` → `md`.
+  `posts`, `(%extension posts/hi.md)` → `md` (also `%path/basename`,
+  `%path/dirname` and `%path/extension`).
+- `(%path/cwd)` is the (absolute) directory seam is run from, and
+  `(%path/this)` is the absolute path of the file the call is written in, and
+  `(%path/here)` is its directory (the current directory, for
+  source read from STDIN). Relative paths given to `%glob`, `%write`, `%exec`
+  and the like are from the current directory, so
+  `(%path/join (%path/here) posts)` refers to `posts` next to the
+  file wherever seam is run from.
+- `(%path/join a b/c d.txt)` → `a/b/c/d.txt`, and `(%path/split /a/b.md)` →
+  `("/" a b.md)`.
+- `(%path/stem a/b.tar.gz)` → `b.tar`, `(%path/with-extension a/b.md html)` →
+  `a/b.html` (an empty extension removes it).
+- `(%path/normalise a/./b/../c)` → `a/c`, without looking at the file system,
+  while `(%path/canonical path)` resolves links too, and the file must exist.
+- `(%path/absolute path :from dir)` resolves a path from a directory (by default,
+  the current one), and `(%path/relative path :from dir)` gives the way to a path
+  from a directory: `(%path/relative /a/b/c :from /a/d)` → `../b/c`.
+- `(%path/exists path)`, `(%path/is-file path)` and `(%path/is-directory path)`
+  are `true` or `false`.
 - `(%write path content...)` writes the content's text to a file (making
   directories as needed), expanding to nothing. With the formatter macros
-  below, one source file can generate a whole site.
+  below, one source file can generate a whole site, run with `seam run`.
 - `(%exec program arguments... :stdin text)` runs a program and gives its
   output, e.g. `(%exec git rev-parse --short HEAD)`.
 
@@ -299,3 +340,7 @@ let tree = expander.expand()?;
 This way you can easily construct websites with reusable components,
 cut down on copy-pasting, and generate it statically. Ideal for a blog,
 especially using the `(%markdown ...)` macro.
+
+See [`samples/blog`](samples/blog) for a whole blog: Markdown posts with
+frontmatter, a shared layout, a tags page and an RSS feed, all generated by
+`seam run build.sex` with `%write` and the formatter macros.

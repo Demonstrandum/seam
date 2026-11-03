@@ -95,8 +95,10 @@ enum Definition<'a> {
     Value(Box<[ParseNode<'a>]>),
     /// A macro, e.g. from `(%define (f ...) ...)` or `(%lambda ...)`.
     Macro(&'a Macro<'a>),
-    /// A lazy argument, expanded in the caller's scope each time it is used.
-    Thunk(Box<[ParseNode<'a>]>, &'a Scope<'a>),
+    /// A lazy argument, expanded in the caller's scope each time it is used,
+    /// and then checked against its parameter's type, if it has one
+    /// (given as the macro, and the index of the parameter in its types).
+    Thunk(Box<[ParseNode<'a>]>, &'a Scope<'a>, Option<(&'a Macro<'a>, usize)>),
 }
 
 /// Owns everything that outlives a single macro expansion:
@@ -117,6 +119,9 @@ pub struct Context<'a> {
     /// Stack of `%with` bindings, which override top-level definitions
     /// for as long as the body of the `%with` is being expanded.
     dynamic: RefCell<Vec<HashMap<String, Definition<'a>>>>,
+    /// Whether macros with side effects (`%write`, `%exec`, `%log`)
+    /// report what they do on `STDOUT`, as when running a build script.
+    echo: Cell<bool>,
 }
 
 impl Context<'_> {
@@ -130,6 +135,7 @@ impl Context<'_> {
             includes: RefCell::new(BTreeSet::from([PathBuf::from(".")])),
             lambdas: Cell::new(0),
             dynamic: RefCell::new(Vec::new()),
+            echo: Cell::new(false),
         }
     }
 }
@@ -211,6 +217,20 @@ impl<'a> Expander<'a> {
         let mut includes = self.context.includes.borrow_mut();
         for dir in dirs {
             includes.insert(dir.into());
+        }
+    }
+
+    /// Have macros with side effects report what they do on `STDOUT`,
+    /// like `make` echoing commands, for when the expanded document itself
+    /// is not wanted (`seam run`). `%log` then prints there too.
+    pub fn set_echo(&self, echo: bool) {
+        self.context.echo.set(echo);
+    }
+
+    /// Report an action on `STDOUT`, if echoing.
+    fn echo(&self, action: &str, detail: impl fmt::Display) {
+        if self.context.echo.get() {
+            println!("{} {detail}", format!("{action:>5}").bold().green());
         }
     }
 
@@ -707,6 +727,19 @@ impl<'a> Expander<'a> {
         expanded
     }
 
+    /// Directories to look for a file named at `site` in: first the directory
+    /// of the file it is written in (if it is a file), then the include directories.
+    fn search_directories(&self, site: &Site<'a>) -> Vec<PathBuf> {
+        let includes = self.context.includes.borrow();
+        let mut directories = Vec::with_capacity(includes.len() + 1);
+        let source = std::path::Path::new(site.source());
+        if source.is_file() && let Some(parent) = source.parent() {
+            directories.push(parent.to_path_buf());
+        }
+        directories.extend(includes.iter().cloned());
+        directories
+    }
+
     /// Parse and expand literate source: plain text with embedded `(%...)` macro calls.
     fn expand_literate(&self, name: String, source: String, site: &Site<'a>)
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
@@ -732,7 +765,7 @@ impl<'a> Expander<'a> {
         let mut parser: Result<Parser, ExpansionError> = Err(
             include_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in self.context.includes.borrow().iter() {
+        for include_dir in self.search_directories(site) {
             let path = include_dir.join(&**path);
             parser = super::parser_for_file(&path, literate)
                 .or_else(|err| {
@@ -781,28 +814,33 @@ impl<'a> Expander<'a> {
         // Open file, and read contents!
         let embed_error = |error: Box<dyn fmt::Display>| ExpansionError(
             format!("{error}"), site.to_owned());
-        let mut value: Result<String, ExpansionError> = Err(
+        let mut value: Result<(PathBuf, String), ExpansionError> = Err(
             embed_error(Box::new("No path tested.")));
         // Try all include directories until one is successful.
-        for include_dir in self.context.includes.borrow().iter() {
+        for include_dir in self.search_directories(site) {
             let path = include_dir.join(&**path);
-            value = std::fs::read_to_string(path)
+            value = std::fs::read_to_string(&path)
+                .map(|contents| (path, contents))
                 .map_err(|err| embed_error(Box::new(err)));
             if value.is_ok() { break; }
         }
-        let value = value?;
+        let (path, value) = value?;
+        let path = path.to_string_lossy().into_owned();
         // Literate embeds expand the macros found in the file's text.
         if literate {
-            let mut expanded = self.expand_literate(path.to_string(), value, site)?;
+            let mut expanded = self.expand_literate(path, value, site)?;
             if let Some(first) = expanded.first_mut() {
                 first.set_leading_whitespace(node.leading_whitespace().clone());
             }
             return Ok(expanded);
         }
+        // The text is sited in its own file, so that macros given it (such as
+        // `%markdown`) know where it came from, e.g. to find files next to it.
+        let file = self.register_parser(Parser::new(Lexer::new(path, value))).file();
         Ok(Box::new([
             ParseNode::String(Node {
-                value: value.into(),
-                site: node.owned_site(),
+                value: Cow::Borrowed(&file.code),
+                site: Site::new(file, 1, 0, 0, file.code.len()),
                 leading_whitespace: node.leading_whitespace().clone(),
             }),
         ]))
@@ -838,32 +876,32 @@ impl<'a> Expander<'a> {
         let sep: &str = args.separator.map_or("/", |sep| &sep.value);
         // Embedded HTML is passed through by default, `:allow-html false` escapes it.
         let allow_html = args.allow_html.is_none_or(|option| option.value == "true");
-        // Live dangerously / trust the author:
-        let danger = markdown::CompileOptions {
-          allow_dangerous_html: allow_html,
-          allow_dangerous_protocol: true,
-          ..markdown::CompileOptions::default()
-        };
-        // Flavour options:
-        let flavour = markdown::ParseOptions {
-            gfm_strikethrough_single_tilde: false,
-            math_text_single_dollar: true,
-            constructs: markdown::Constructs {
-                frontmatter: true,
-                gfm_table: true,
-                gfm_task_list_item: true,
-                ..markdown::Constructs::default()
+        let options = |frontmatter| markdown::Options {
+            // Live dangerously / trust the author:
+            compile: markdown::CompileOptions {
+                allow_dangerous_html: allow_html,
+                allow_dangerous_protocol: true,
+                ..markdown::CompileOptions::default()
             },
-            ..markdown::ParseOptions::default()
+            // Flavour options:
+            parse: markdown::ParseOptions {
+                gfm_strikethrough_single_tilde: false,
+                math_text_single_dollar: true,
+                constructs: markdown::Constructs {
+                    frontmatter,
+                    gfm_table: true,
+                    gfm_task_list_item: true,
+                    ..markdown::Constructs::default()
+                },
+                ..markdown::ParseOptions::default()
+            },
         };
-        // Options.
-        let options = markdown::Options { parse: flavour, compile: danger, };
         let markdown_error = |err: markdown::message::Message| ExpansionError(
             format!("Failed to render markdown: {err}"), site);
 
         // Split off the frontmatter first, so that literate expansion
         // only runs over the part (or parts) actually being used.
-        let (frontmatter, body) = split_frontmatter(contents, &options.parse)
+        let MarkdownParts { frontmatter, body, code } = split_frontmatter(contents, &options(true).parse)
             .map_err(markdown_error)?;
         // Expand any `(%...)` calls in a part, keeping line numbers
         // relative to the whole string by padding with new lines.
@@ -871,8 +909,10 @@ impl<'a> Expander<'a> {
             if !literate || !text.contains("(%") {
                 return Ok(text.to_owned());
             }
-            let source = "\n".repeat(line) + text;
-            let expanded = self.expand_literate(format!("{} (markdown)", site.source()), source, &site)?;
+            // Named after the file the markdown is from (for finding files relative
+            // to it), and padded to the lines of the markdown within it.
+            let source = "\n".repeat(site.line.saturating_sub(1) as usize + line) + text;
+            let expanded = self.expand_literate(site.source().to_owned(), source, &site)?;
             nodes_to_text(&expanded)
         };
         // Convert frontmatter into macro definitions.
@@ -890,10 +930,14 @@ impl<'a> Expander<'a> {
             }
             Ok(())
         };
-        // Render the markdown content as raw HTML.
+        // Render the markdown content as raw HTML. Its frontmatter is already split
+        // off, so a body starting with `---` is not taken for more frontmatter.
+        let body_options = options(false);
         let to_html = |(body, line): (&str, usize)| -> Result<ParseTree<'a>, ExpansionError<'a>> {
-            let body = expand(body, line)?;
-            let html = markdown::to_html_with_options(&body, &options)
+            // Macro calls within code are shown, not expanded.
+            let body = if literate && !code.is_empty() { Cow::Owned(escape_ranges(body, &code)) } else { Cow::Borrowed(body) };
+            let body = expand(&body, line)?;
+            let html = markdown::to_html_with_options(&body, &body_options)
                 .map_err(markdown_error)?;
             Ok(Box::new([
                 ParseNode::Raw(Node {
@@ -1091,7 +1135,12 @@ impl<'a> Expander<'a> {
             datetime.timestamp()
         } else {
             // Parse NaiveDateTime instead and get timzone from attribute, or default to local time.
-            let datetime = match chrono::NaiveDateTime::parse_from_str(date_string, format) {
+            // A date without a time is taken to be at midnight.
+            let datetime = chrono::NaiveDateTime::parse_from_str(date_string, format)
+                .or_else(|err| chrono::NaiveDate::parse_from_str(date_string, format)
+                    .map(|date| date.and_time(chrono::NaiveTime::MIN))
+                    .map_err(|_| err));
+            let datetime = match datetime {
                 Ok(datetime) => datetime,
                 Err(err) => return Err(ExpansionError(
                     format!("Failed to parse date: {err}"),
@@ -1132,8 +1181,12 @@ impl<'a> Expander<'a> {
             }
         }
 
-        eprintln!("{} {} {}: {}", "[#]".bold(), "log".bold().yellow(),
-            node.site(), words.join(" "));
+        if self.context.echo.get() {
+            self.echo("log", words.join(" "));
+        } else {
+            eprintln!("{} {} {}: {}", "[#]".bold(), "log".bold().yellow(),
+                node.site(), words.join(" "));
+        }
         Ok(Box::new([]))
     }
 
@@ -2128,14 +2181,49 @@ impl<'a> Expander<'a> {
         let Some((separator, list)) = params.split_first() else {
             return Err(ExpansionError::new("Expected a separator, and a list.", node.site()));
         };
+        // The separator's whitespace is kept, but not the items' own.
         let mut expanded = vec![];
         for (index, item) in list_argument(list).iter().enumerate() {
+            let mut item = item.clone();
             if index > 0 {
                 expanded.push(separator.clone());
+                item.set_leading_whitespace("");
             }
-            expanded.push(item.clone());
+            expanded.push(item);
+        }
+        if let Some(first) = expanded.first_mut() {
+            first.set_leading_whitespace(node.leading_whitespace().clone());
         }
         Ok(expanded.into_boxed_slice())
+    }
+
+    /// `(%unique list)`, the list without repeated items (keeping the first of each).
+    fn expand_unique_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut items = vec![];
+        for item in list_argument(&params) {
+            if seen.insert(node_text(item)?) {
+                items.push(item.clone());
+            }
+        }
+        Ok(Box::new([list_node(node, without_leading(items))]))
+    }
+
+    /// `(%contains item list)`, whether the list has an item equal to the given one.
+    fn expand_contains_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let Some((item, list)) = params.split_first() else {
+            return Err(ExpansionError::new("Expected an item, and a list.", node.site()));
+        };
+        let item = node_text(item)?;
+        let mut found = false;
+        for other in list_argument(list) {
+            found |= node_text(other)? == item;
+        }
+        Ok(Box::new([bool_node(node, found)]))
     }
 
     /// `(%length list)` counts a list's items, `(%length text)` its characters.
@@ -2169,16 +2257,99 @@ impl<'a> Expander<'a> {
         Ok(Box::new([list_node(node, spaced(items))]))
     }
 
-    /// `(%basename path :suffix ext)`, `(%dirname path)` and `(%extension path)`.
-    fn expand_path_macro(&self, part: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    /// The `%path/...` macros (also `%basename`, `%dirname` and `%extension`):
+    /// taking paths apart, joining and resolving them, and asking about files.
+    fn expand_path_macro(&self, operation: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        use std::path::Path;
         let params = self.expand_nodes(params)?;
+        let failed = |error: String| ExpansionError(format!("`%path/{operation}': {error}"), node.owned_site());
+        let cwd = || std::env::current_dir().map_err(|error| failed(error.to_string()));
+        let path_node = |path: &Path| ParseNode::String(Node::new(
+            path.to_string_lossy().into_owned(), node.site(), node.leading_whitespace().clone()));
+
+        // Paths of where seam is, and of the file this call is written in.
+        let this = || {
+            let source = Path::new(node.site().source());
+            if source.is_file() {
+                Ok(normalise(&cwd()?.join(source)))
+            } else {
+                Err(failed(String::from("this call is not written in a file.")))
+            }
+        };
+        match operation {
+            "cwd" | "this" | "here" => {
+                arguments! { node, &params; }?;
+                let path = match operation {
+                    "cwd" => cwd()?,
+                    "this" => this()?,
+                    _ => match this() {
+                        Ok(file) => file.parent().map_or_else(|| file.clone(), Path::to_path_buf),
+                        Err(_) => cwd()?,
+                    },
+                };
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "join" => {
+                let args = arguments! { node, &params; rest: literal, }?;
+                let path: PathBuf = args.rest.iter().map(|part| part.value.as_ref()).collect();
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "absolute" | "relative" => {
+                let args = arguments! { node, &params;
+                    mandatory(1): literal,
+                    optional("from"): literal,
+                }?;
+                let base = match args.from {
+                    Some(from) => normalise(&cwd()?.join(from.value.as_ref())),
+                    None => cwd()?,
+                };
+                // `%path/absolute` resolves the path from `:from`, while
+                // `%path/relative` gives the way to it (from where we are) from `:from`.
+                let path = args.number.1.value.as_ref();
+                let path = if operation == "absolute" {
+                    normalise(&base.join(path))
+                } else {
+                    relative_path(&normalise(&cwd()?.join(path)), &base)
+                };
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "with-extension" => {
+                let args = arguments! { node, &params;
+                    mandatory(1): literal,
+                    mandatory(2): literal,
+                }?;
+                let path = Path::new(args.number.1.value.as_ref()).with_extension(args.number.2.value.as_ref());
+                return Ok(Box::new([path_node(&path)]));
+            },
+            "split" => {
+                let args = arguments! { node, &params; mandatory(1): literal, }?;
+                let parts = Path::new(args.number.1.value.as_ref()).components()
+                    .map(|part| ParseNode::String(Node::new(
+                        part.as_os_str().to_string_lossy().into_owned(), node.site(), " ")))
+                    .collect();
+                return Ok(Box::new([list_node(node, without_leading(parts))]));
+            },
+            "exists" | "is-file" | "is-directory" => {
+                let args = arguments! { node, &params; mandatory(1): literal, }?;
+                let path = Path::new(args.number.1.value.as_ref());
+                let answer = match operation {
+                    "exists" => path.exists(),
+                    "is-file" => path.is_file(),
+                    _ => path.is_dir(),
+                };
+                return Ok(Box::new([bool_node(node, answer)]));
+            },
+            _ => {},
+        }
+
+        // The rest each give a part of the path they are given.
         let args = arguments! { node, &params;
             mandatory(1): literal,
             optional("suffix"): literal,
         }?;
-        let path = std::path::Path::new(args.number.1.value.as_ref());
-        let result: String = match part {
+        let path = Path::new(args.number.1.value.as_ref());
+        let result: String = match operation {
             "basename" => {
                 let name = path.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
                 match args.suffix {
@@ -2189,12 +2360,18 @@ impl<'a> Expander<'a> {
                     _ => name,
                 }
             },
+            "stem" => path.file_stem().map_or(String::new(), |stem| stem.to_string_lossy().into_owned()),
             "dirname" => match path.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => parent.to_string_lossy().into_owned(),
                 _ => String::from(if path.has_root() { "/" } else { "." }),
             },
             "extension" => path.extension().map_or(String::new(), |ext| ext.to_string_lossy().into_owned()),
-            _ => unreachable!(),
+            "normalise" | "normalize" => normalise(path).to_string_lossy().into_owned(),
+            "canonical" => std::fs::canonicalize(path)
+                .map_err(|error| failed(format!("`{}': {error}", path.display())))?
+                .to_string_lossy().into_owned(),
+            _ => return Err(ExpansionError::new(
+                format!("Macro not found (`path/{operation}')."), &node.owned_site())),
         };
         let path = params.iter().find(|param| !param.is_attribute()).unwrap_or(node);
         let value = result_string(&args.number.1.value, result);
@@ -2229,7 +2406,7 @@ impl<'a> Expander<'a> {
         let (name, operation) = inner.split_at(split.unwrap_or(inner.len()));
         let value: Option<ParseNode<'a>> = match self.lookup(name, |definition| match definition {
             Definition::Value(value) => Ok(value.clone()),
-            Definition::Thunk(nodes, env) => self.within(env).expand_nodes(nodes),
+            Definition::Thunk(nodes, env, typed) => self.expand_thunk(nodes, env, *typed),
             Definition::Macro(_) => Err(error(format!("`{name}' is a macro, not a variable."))),
         }) {
             Some(value) => match &*value? {
@@ -2325,6 +2502,7 @@ impl<'a> Expander<'a> {
             }
             std::fs::write(path, text)
         };
+        self.echo("write", path.display());
         write().map_err(|error| ExpansionError(
             format!("Could not write `{}': {error}", path.display()), node.owned_site()))?;
         Ok(Box::new([]))
@@ -2343,6 +2521,13 @@ impl<'a> Expander<'a> {
         }?;
         let program: &str = &args.number.1.value;
         let failed = |error: String| ExpansionError(format!("`%exec {program}' failed: {error}"), node.owned_site());
+        if self.context.echo.get() {
+            let command: Vec<String> = std::iter::once(program)
+                .chain(args.rest.iter().map(|arg| arg.value.as_ref()))
+                .map(shell_quote)
+                .collect();
+            self.echo("exec", command.join(" "));
+        }
         let mut child = std::process::Command::new(program)
             .args(args.rest.iter().map(|arg| arg.value.as_ref()))
             .stdin(std::process::Stdio::piped())
@@ -2350,11 +2535,19 @@ impl<'a> Expander<'a> {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|error| failed(error.to_string()))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            let input = args.stdin.map_or("", |input| input.value.as_ref());
-            stdin.write_all(input.as_bytes()).map_err(|error| failed(error.to_string()))?;
-        }
+        // Input is written from another thread while the output is read,
+        // so that neither side blocks on a full pipe waiting for the other.
+        let input = args.stdin.map_or_else(Vec::new, |input| input.value.as_bytes().to_vec());
+        let writer = child.stdin.take().map(|mut stdin| std::thread::spawn(move || stdin.write_all(&input)));
         let output = child.wait_with_output().map_err(|error| failed(error.to_string()))?;
+        if let Some(writer) = writer {
+            match writer.join() {
+                // A program may finish without reading all its input.
+                Ok(Err(error)) if error.kind() != std::io::ErrorKind::BrokenPipe => return Err(failed(error.to_string())),
+                Err(_) => return Err(failed(String::from("could not write its input."))),
+                Ok(_) => {},
+            }
+        }
         if !output.status.success() {
             return Err(failed(String::from_utf8_lossy(&output.stderr).trim_end().to_owned()));
         }
@@ -2473,27 +2666,31 @@ impl<'a> Expander<'a> {
         Ok(arguments.into_boxed_slice())
     }
 
-    /// Check the arguments bound to typed parameters.
+    /// Check the arguments bound to typed parameters, except lazy ones,
+    /// which are checked once expanded, each time they are used.
     fn check_types(&self, mac: &Macro<'a>) -> Result<(), ExpansionError<'a>> {
         let definitions = self.scope.definitions.borrow();
-        for (name, kind, rest) in &mac.types {
-            let Some(Definition::Value(nodes)) = definitions.get(name) else { continue };
-            let wrong = if *rest {
-                nodes.iter().find(|node| !kind.admits(node))
-            } else {
-                nodes.iter().find(|node| !kind.admits(node)).or(if nodes.len() == 1 { None } else { nodes.first() })
-            };
-            if let Some(node) = wrong {
-                return Err(ExpansionError(
-                    format!("Argument `{name}' of `%{}' must be a {}, got a {} instead.",
-                        mac.name, kind.name(), node.node_type()),
-                    node.owned_site()));
+        for (index, (name, ..)) in mac.types.iter().enumerate() {
+            if mac.lazy.contains(name) {
+                continue;
             }
+            let Some(Definition::Value(nodes)) = definitions.get(name) else { continue };
+            check_type(mac, index, nodes)?;
         }
         Ok(())
     }
 
-    fn apply_macro(&self, mac: &Macro<'a>, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    /// Expand a lazy argument where it was written, and check its type.
+    fn expand_thunk(&self, nodes: &[ParseNode<'a>], env: &'a Scope<'a>, typed: Option<(&'a Macro<'a>, usize)>)
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let expanded = self.within(env).expand_nodes(nodes)?;
+        if let Some((mac, index)) = typed {
+            check_type(mac, index, &expanded)?;
+        }
+        Ok(expanded)
+    }
+
+    fn apply_macro(&self, mac: &'a Macro<'a>, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         // The body is expanded in a new scope within the scope the macro
         // was defined in (lexical scoping), not the scope of the caller.
@@ -2507,7 +2704,8 @@ impl<'a> Expander<'a> {
             for name in &mac.lazy {
                 if let Some(definition) = definitions.get_mut(name)
                 && let Definition::Value(nodes) = definition {
-                    *definition = Definition::Thunk(std::mem::take(nodes), self.scope);
+                    let typed = mac.types.iter().position(|(typed, ..)| typed == name).map(|index| (mac, index));
+                    *definition = Definition::Thunk(std::mem::take(nodes), self.scope, typed);
                 }
             }
         }
@@ -2527,7 +2725,7 @@ impl<'a> Expander<'a> {
             Definition::Macro(mac) => Ok(*mac),
             // A variable may also be called, with no arguments: `(%name)`.
             Definition::Value(value) if params.is_empty() => Err(Ok(value.clone())),
-            Definition::Thunk(nodes, env) if params.is_empty() => Err(self.within(env).expand_nodes(nodes)),
+            Definition::Thunk(nodes, env, typed) if params.is_empty() => Err(self.expand_thunk(nodes, env, *typed)),
             Definition::Value(_) | Definition::Thunk(..) => Err(Ok(Box::default())),
         });
         let mac = match definition {
@@ -2608,8 +2806,12 @@ impl<'a> Expander<'a> {
             "split"     => self.expand_split_macro(node, params),
             "intercalate" => self.expand_intercalate_macro(node, params),
             "length"    => self.expand_length_macro(node, params),
+            "unique"    => self.expand_unique_macro(node, params),
+            "contains"  => self.expand_contains_macro(node, params),
             "items" | "keys" | "values" => self.expand_dictionary_macro(name, node, params),
             "basename" | "dirname" | "extension" => self.expand_path_macro(name, node, params),
+            _ if name.starts_with("path/")
+                => self.expand_path_macro(&name["path/".len()..], node, params),
             "write"     => self.expand_write_macro(node, params),
             "exec"      => self.expand_exec_macro(node, params),
             _ if name.starts_with("formatter/")
@@ -2634,10 +2836,8 @@ impl<'a> Expander<'a> {
                         out.extend_from_slice(value);
                         Ok(None)
                     },
-                    Definition::Thunk(nodes, env) => {
-                        for node in nodes {
-                            self.within(env).expand_into(node, out)?;
-                        }
+                    Definition::Thunk(nodes, env, typed) => {
+                        out.extend(self.expand_thunk(nodes, env, *typed)?);
                         Ok(None)
                     },
                     Definition::Macro(mac) if mac.params.is_empty() => Ok(Some(*mac)),
@@ -2736,12 +2936,30 @@ fn list_argument<'p, 'a>(arguments: &'p [ParseNode<'a>]) -> &'p [ParseNode<'a>] 
     }
 }
 
+/// Check the argument bound to a macro's typed parameter (the `index`-th of its types).
+fn check_type<'a>(mac: &Macro<'a>, index: usize, nodes: &[ParseNode<'a>]) -> Result<(), ExpansionError<'a>> {
+    let (name, kind, rest) = &mac.types[index];
+    let wrong = if *rest {
+        nodes.iter().find(|node| !kind.admits(node))
+    } else {
+        nodes.iter().find(|node| !kind.admits(node)).or(if nodes.len() == 1 { None } else { nodes.first() })
+    };
+    match wrong {
+        Some(node) => Err(ExpansionError(
+            format!("Argument `{name}' of `%{}' must be a {}, got a {} instead.",
+                mac.name, kind.name(), node.node_type()),
+            node.owned_site())),
+        None => Ok(()),
+    }
+}
+
 /// Whether expanded nodes count as true: nothing, `()`, `false` and `""` are false.
+/// (`"false"` is false too, being how YAML and TOML booleans arrive.)
 fn truthy(nodes: &[ParseNode]) -> bool {
     match nodes {
         [] => false,
         [node] => !(node.null()
-            || node.symbol().is_some_and(|symbol| symbol.value == "false")
+            || node.atomic().is_some_and(|atom| atom.value == "false")
             || node.string().is_some_and(|string| string.value.is_empty())),
         _ => true,
     }
@@ -3033,22 +3251,100 @@ enum Frontmatter {
     Toml(String),
 }
 
-/// Split markdown into its frontmatter (if any) and the rest of the
-/// document, along with the line the rest starts on (counting from 0).
+/// Markdown split into its frontmatter (if any) and the rest of the document,
+/// along with the line the rest starts on (counting from 0), and the byte
+/// ranges of code (blocks and spans) within the rest.
+struct MarkdownParts<'s> {
+    frontmatter: Option<Frontmatter>,
+    body: (&'s str, usize),
+    code: Vec<std::ops::Range<usize>>,
+}
+
 fn split_frontmatter<'s>(contents: &'s str, options: &markdown::ParseOptions)
--> Result<(Option<Frontmatter>, (&'s str, usize)), markdown::message::Message> {
+-> Result<MarkdownParts<'s>, markdown::message::Message> {
     use markdown::mdast;
-    let mdast::Node::Root(root) = markdown::to_mdast(contents, options)? else {
-        unreachable!()
-    };
+    fn find_code(node: &mdast::Node, code: &mut Vec<std::ops::Range<usize>>) {
+        match node {
+            mdast::Node::Code(mdast::Code { position: Some(position), .. })
+          | mdast::Node::InlineCode(mdast::InlineCode { position: Some(position), .. }) =>
+                code.push(position.start.offset..position.end.offset),
+            _ => for child in node.children().into_iter().flatten() {
+                find_code(child, code);
+            },
+        }
+    }
+    let ast = markdown::to_mdast(contents, options)?;
+    let mut code = vec![];
+    find_code(&ast, &mut code);
+    let mdast::Node::Root(root) = ast else { unreachable!() };
     let (frontmatter, position) = match root.children.into_iter().next() {
         Some(mdast::Node::Yaml(mdast::Yaml { value, position })) => (Frontmatter::Yaml(value), position),
         Some(mdast::Node::Toml(mdast::Toml { value, position })) => (Frontmatter::Toml(value), position),
-        _ => return Ok((None, (contents, 0))),
+        _ => return Ok(MarkdownParts { frontmatter: None, body: (contents, 0), code }),
     };
     let end = position.map_or(0, |position| position.end.offset);
     let (head, body) = contents.split_at(end);
-    Ok((Some(frontmatter), (body, head.matches('\n').count())))
+    let code = code.into_iter().map(|range| range.start - end..range.end - end).collect();
+    Ok(MarkdownParts { frontmatter: Some(frontmatter), body: (body, head.matches('\n').count()), code })
+}
+
+/// Escape macro calls within the given ranges of text, so literate expansion leaves them be.
+/// Tidy a path without looking at the file system:
+/// drop `.` parts, and remove a `..` along with the part before it.
+fn normalise(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut result = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {},
+            Component::ParentDir => match result.components().next_back() {
+                Some(Component::Normal(_)) => { result.pop(); },
+                Some(Component::RootDir | Component::Prefix(_)) => {},
+                _ => result.push(".."),
+            },
+            _ => result.push(part),
+        }
+    }
+    if result.as_os_str().is_empty() {
+        result.push(".");
+    }
+    result
+}
+
+/// The path to `path` from the directory `base`, both absolute and normalised.
+fn relative_path(path: &std::path::Path, base: &std::path::Path) -> PathBuf {
+    let path: Vec<_> = path.components().collect();
+    let base: Vec<_> = base.components().collect();
+    let common = path.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    let mut result: PathBuf = std::iter::repeat_n(std::path::Component::ParentDir, base.len() - common).collect();
+    result.extend(&path[common..]);
+    if result.as_os_str().is_empty() {
+        result.push(".");
+    }
+    result
+}
+
+/// Quote a word for display as part of a shell command, only if needed.
+fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty() && word.chars().all(|c|
+        c.is_alphanumeric() || "-_./:=+,@%".contains(c));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+fn escape_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    let mut last = 0;
+    for range in ranges {
+        escaped += &text[last..range.start];
+        escaped += &text[range.clone()].replace("(%", "\\(%");
+        last = range.end;
+    }
+    escaped += &text[last..];
+    escaped
 }
 
 /// Join expanded nodes back into text, such as for markdown: text and atoms

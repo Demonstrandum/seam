@@ -33,6 +33,19 @@ fn literate_html(source: &str) -> Result<String, String> {
     assemble::html::HTMLFormatter::new(tree).display().map_err(|err| err.message)
 }
 
+/// Expand literate source and render it with the given formatter.
+fn literate_as(source: &str, format: &str) -> Result<String, String> {
+    use assemble::MarkupFormatter;
+    let context = Context::new();
+    let expander = tree_builder(&context, Some("<test>"), source.to_owned(), true);
+    let tree = expander.expand().map_err(|err| format!("{err}"))?;
+    let formatter: Box<dyn MarkupFormatter> = match format {
+        "xml" => Box::new(assemble::xml::XMLFormatter::new(tree)),
+        _ => Box::new(assemble::css::CSSFormatter::new(tree)),
+    };
+    formatter.display().map_err(|err| err.message)
+}
+
 /// Expand source and render it as CSS.
 fn css(source: &str) -> Result<String, String> {
     use assemble::MarkupFormatter;
@@ -439,6 +452,21 @@ mod cases {
     fn test_path_macros() {
         assert_sexp_eq("(%basename :suffix txt /a/f.txt) (%basename /a/f.txt) (%dirname /a/f.txt) (%dirname f) (%extension /a/f.txt)",
             "f f.txt /a . txt");
+        assert_sexp_eq("(%path/basename a/b.md) (%path/stem a/b.tar.gz) (%path/with-extension a/b.md html) (%path/join a b/c d.txt)",
+            "b.md b.tar \"a/b.html\" \"a/b/c/d.txt\"");
+        assert_sexp_eq("(%path/split /a/b.md) (%path/normalise a/./b/../../../c) (%path/normalise /../a)",
+            "(\"/\" \"a\" \"b.md\") ../c /a");
+        assert_sexp_eq("(%path/absolute :from /a/b ../c) (%path/relative /a/b/c :from /a/d) (%path/relative /a :from /a)",
+            "\"/a/c\" \"../b/c\" \".\"");
+        assert_sexp_eq("(%path/exists Cargo.toml) (%path/is-file src) (%path/is-directory src) (%path/exists nowhere)",
+            "true false true false");
+        let cwd = std::env::current_dir().unwrap();
+        assert_sexp_eq("(%path/cwd) (%path/relative (%path/cwd))", &format!("\"{}\" \".\"", cwd.display()));
+        // Paths of the file a call is written in, which a string of source is not.
+        assert_sexp_eq("(%include \"tests/fixtures/paths.sex\")",
+            &format!("\"{0}/tests/fixtures/paths.sex\" \"{0}/tests/fixtures\"", cwd.display()));
+        assert!(sexp("(%path/this)").is_err());
+        assert_sexp_eq("(%path/here)", &format!("\"{}\"", cwd.display()));
     }
 
     #[test]
@@ -474,6 +502,11 @@ mod cases {
             .contains("Argument `n' of `%r' must be a number, got a symbol instead."));
         assert!(sexp("(%define (r &xs:number) ok) (%r 1 a)").unwrap_err().contains("`xs'"));
         assert!(sexp("(%define (g :n:number x) %n)").unwrap_err().contains("Default value of `:n'"));
+        // Lazy arguments are checked once expanded, each time they are used.
+        assert_sexp_eq("(%define (twice ~n:number) %n %n) (%twice (%+ 1 2))", " 3 3");
+        assert!(sexp("(%define (twice ~n:number) %n %n) (%twice (%concat a b))").unwrap_err()
+            .contains("Argument `n' of `%twice' must be a number, got a string instead."));
+        assert_sexp_eq("(%define (unless c ~body:number) (%if %c () %body)) (%unless true (%error x))", " ()");
     }
 
     #[test]
@@ -516,6 +549,45 @@ mod cases {
     fn test_exec_macro() {
         assert_sexp_eq("(%exec echo hi there) (%exec tr a-z A-Z :stdin shout)", "\"hi there\" \"SHOUT\"");
         assert!(sexp("(%exec false)").unwrap_err().contains("`%exec false' failed"));
+        // Input and output larger than a pipe's buffer do not deadlock.
+        let big = "x".repeat(1 << 20);
+        assert_sexp_eq(&format!("(%length (%exec cat :stdin \"{big}\"))"), "1048576");
+    }
+
+    #[test]
+    fn test_literate_xml_and_css() {
+        assert_eq!(literate_as("Hi <b>(%do (i x))</b> & bye", "xml").as_deref(), Ok("Hi <b><i>x</i></b> & bye"));
+        assert_eq!(literate_as("body { margin: 0; }\n(%do (p :color red))", "css").as_deref(),
+            Ok("body { margin: 0; }\np {\n  color: red;\n}"));
+    }
+
+    #[test]
+    fn test_markdown_from_its_file() {
+        // Once its frontmatter is split off, a body starting with `---` is still content.
+        assert_output_eq("(%markdown :only content (%embed \"tests/fixtures/rule.md\"))",
+            "\"<hr />\\n<h2>not: frontmatter</h2>\\n<p>Text.</p>\\n\"");
+        // Macros in embedded markdown find files from, and know of, the markdown's own file.
+        assert_output_eq("(%markdown (%embed \"tests/fixtures/nested/note.md\"))",
+            "\"<p>Inner: <found>inner</found>, from note.md in nested.</p>\\n\"");
+    }
+
+    #[test]
+    fn test_relative_include() {
+        // a file's includes are found relative to it first.
+        assert_sexp_eq("(%include \"tests/fixtures/nested/outer.sex\")", "(found inner)");
+    }
+
+    #[test]
+    fn test_markdown_code_is_not_expanded() {
+        assert_output_eq("(%markdown :only content (%embed \"tests/fixtures/code.md\"))",
+            "\"<p>Text 2, <code>(%+ 1 1)</code> and:</p>\\n<pre><code>(%+ 1 1)\\n</code></pre>\\n\"");
+    }
+
+    #[test]
+    fn test_unique_contains_and_dates() {
+        assert_sexp_eq("(%unique (a b a c b)) (%contains b (a b)) (%contains z (a b)) (%if \"false\" y n)",
+            "(a b c) true false n");
+        assert_sexp_eq("(%timestamp \"%Y-%m-%d\" 2024-03-10 :timezone 0)", "1710028800");
     }
 
     #[test]
