@@ -703,7 +703,7 @@ impl<'a> Expander<'a> {
     fn expand_include_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): literal,
             optional("literate"): literal["true", "false"],
         }?;
@@ -755,7 +755,7 @@ impl<'a> Expander<'a> {
     fn expand_embed_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params: Box<[ParseNode<'a>]> = self.expand_nodes(params)?;
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): literal,
             optional("literate"): literal["true", "false"],
         }?;
@@ -798,7 +798,7 @@ impl<'a> Expander<'a> {
     fn expand_markdown_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): string,
             optional("only"): literal["frontmatter", "content"],
             optional("separator"): literal,
@@ -914,7 +914,7 @@ impl<'a> Expander<'a> {
     fn expand_yaml_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): string,
             optional("separator"): literal,
         }?;
@@ -927,7 +927,7 @@ impl<'a> Expander<'a> {
     fn expand_toml_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): string,
             optional("separator"): literal,
         }?;
@@ -940,7 +940,7 @@ impl<'a> Expander<'a> {
     fn expand_get_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): literal,
             mandatory(2): any,
             optional("separator"): literal,
@@ -975,7 +975,7 @@ impl<'a> Expander<'a> {
     fn expand_date_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?;
-        let (_, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): literal,
             optional(2): number,
             optional("timezone"): number,
@@ -1025,7 +1025,7 @@ impl<'a> Expander<'a> {
     fn expand_timestamp_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?;
-        let (_, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): literal,
             mandatory(2): literal,
             optional("timezone"): number,
@@ -1227,7 +1227,7 @@ impl<'a> Expander<'a> {
 
     fn expand_for_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): any,
             mandatory(2): symbol["in"],
             mandatory(3): list,
@@ -1254,7 +1254,7 @@ impl<'a> Expander<'a> {
     fn expand_glob_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): literal,
             optional("type"): literal["file", "directory", "any"],
             optional("sort"): literal["modified", "created", "name", "type", "none"],
@@ -1447,7 +1447,7 @@ impl<'a> Expander<'a> {
     fn expand_number_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             rest: literal,
         }?;
         let mut expanded = Vec::with_capacity(args.rest.len());
@@ -1460,7 +1460,7 @@ impl<'a> Expander<'a> {
     fn expand_symbol_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             rest: literal,
         }?;
         let mut expanded = Vec::with_capacity(args.rest.len());
@@ -1473,7 +1473,7 @@ impl<'a> Expander<'a> {
     fn expand_reverse_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): list,
         }?;
         let list = args.number.1;
@@ -1498,7 +1498,7 @@ impl<'a> Expander<'a> {
     fn expand_sort_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): any,
             optional("order"): literal["ascending", "descending"],
             optional("key"): symbol,
@@ -1592,7 +1592,7 @@ impl<'a> Expander<'a> {
     fn expand_join_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): literal,
             optional("trailing"): literal["true", "false"],
             rest: literal,
@@ -1614,7 +1614,7 @@ impl<'a> Expander<'a> {
     fn expand_concat_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             rest: literal,
         }?;
 
@@ -1635,7 +1635,7 @@ impl<'a> Expander<'a> {
     fn expand_map_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): symbol,
             rest: any,
         }?;
@@ -1651,7 +1651,7 @@ impl<'a> Expander<'a> {
     fn expand_filter_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): symbol,
             rest: any,
         }?;
@@ -1713,7 +1713,7 @@ impl<'a> Expander<'a> {
     fn expand_apply_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): symbol,
             rest: any,
         }?;
@@ -1725,7 +1725,7 @@ impl<'a> Expander<'a> {
 
     fn expand_lambda_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let (_parser, args) = arguments! { [&params]
+        let args = arguments! { node, &params;
             mandatory(1): any,
             rest: any,
         }?;
