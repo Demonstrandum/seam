@@ -114,7 +114,7 @@ seam run build.sex
  - [x] Shell-style `${var:...}` string manipulation, written `%{var:...}`.
  - [x] `%while`, `%take`, `%drop`, `%split` on symbols in lists, `%intercalate`.
  - [x] `(%basename :suffix "txt" /path/file.txt)` (-> `file`), `(%dirname /path/file.txt)` (-> `/path`) and `(%extension /path/file.txt)` (-> `txt`), macros for paths.
- - [x] `%path/...` macros: `cwd`, `here`, `this-directory`, `join`, `split`, `stem`, `with-extension`, `normalise`, `canonical`, `absolute`, `relative`, `exists`, `is-file` and `is-directory`.
+ - [x] `%path/...` macros: `cwd`, `this`, `here`, `join`, `split`, `stem`, `with-extension`, `normalise`, `canonical`, `absolute`, `relative`, `exists`, `is-file` and `is-directory`.
  - [x] `seam run file.sex`, running a file for its side effects (`%write`, `%exec`), reported on STDOUT like `make`.
  - [x] Math operators: `+`, `-`, `*`, `/`, `mod`, `pow`, `exp`, `sqrt`, `ln`, `log2`, `log10`, `hypot` (`%log` already logs),
        along with comparisons, `%if`, `%and`, `%or`, `%not` and `%range`.

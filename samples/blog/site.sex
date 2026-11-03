@@ -23,7 +23,7 @@
 ;; Every published post, newest first.
 (%define posts
   (%sort :order descending :key (%lambda ((:date _ &&_)) %date)
-    (%list (%for file in (%glob (%path/relative (%path/join (%path/this-directory) "posts/*.md")))
+    (%list (%for file in (%glob (%path/relative (%path/join (%path/here) "posts/*.md")))
       (%let ((post (%read-post %file)))
         (%if (%not (%get draft %post)) %post))))))
 

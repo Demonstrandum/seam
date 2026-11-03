@@ -169,11 +169,11 @@ will be treated as macros.
   `posts`, `(%extension posts/hi.md)` → `md` (also `%path/basename`,
   `%path/dirname` and `%path/extension`).
 - `(%path/cwd)` is the (absolute) directory seam is run from, and
-  `(%path/here)` and `(%path/this-directory)` are the absolute path of the
-  file the call is written in, and its directory (the current directory, for
+  `(%path/this)` is the absolute path of the file the call is written in, and
+  `(%path/here)` is its directory (the current directory, for
   source read from STDIN). Relative paths given to `%glob`, `%write`, `%exec`
   and the like are from the current directory, so
-  `(%path/join (%path/this-directory) posts)` refers to `posts` next to the
+  `(%path/join (%path/here) posts)` refers to `posts` next to the
   file wherever seam is run from.
 - `(%path/join a b/c d.txt)` → `a/b/c/d.txt`, and `(%path/split /a/b.md)` →
   `("/" a b.md)`.

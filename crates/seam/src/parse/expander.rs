@@ -2258,7 +2258,7 @@ impl<'a> Expander<'a> {
             path.to_string_lossy().into_owned(), node.site(), node.leading_whitespace().clone()));
 
         // Paths of where seam is, and of the file this call is written in.
-        let here = || {
+        let this = || {
             let source = Path::new(node.site().source());
             if source.is_file() {
                 Ok(normalise(&cwd()?.join(source)))
@@ -2267,12 +2267,12 @@ impl<'a> Expander<'a> {
             }
         };
         match operation {
-            "cwd" | "here" | "this-directory" => {
+            "cwd" | "this" | "here" => {
                 arguments! { node, &params; }?;
                 let path = match operation {
                     "cwd" => cwd()?,
-                    "here" => here()?,
-                    _ => match here() {
+                    "this" => this()?,
+                    _ => match this() {
                         Ok(file) => file.parent().map_or_else(|| file.clone(), Path::to_path_buf),
                         Err(_) => cwd()?,
                     },

@@ -4,7 +4,7 @@
 (%include "site.sex")
 
 ;; Where to write the site, from wherever seam is run.
-(%define public (%path/relative (%path/join (%path/this-directory) public)))
+(%define public (%path/relative (%path/join (%path/here) public)))
 
 (%define (write/html path &content)
   (%write (%path/join %public %path) (%formatter/html :document true %content)))

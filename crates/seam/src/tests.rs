@@ -450,10 +450,10 @@ mod cases {
         let cwd = std::env::current_dir().unwrap();
         assert_sexp_eq("(%path/cwd) (%path/relative (%path/cwd))", &format!("\"{}\" \".\"", cwd.display()));
         // Paths of the file a call is written in, which a string of source is not.
-        assert_sexp_eq("(%include \"tests/fixtures/here.sex\")",
-            &format!("\"{0}/tests/fixtures/here.sex\" \"{0}/tests/fixtures\"", cwd.display()));
-        assert!(sexp("(%path/here)").is_err());
-        assert_sexp_eq("(%path/this-directory)", &format!("\"{}\"", cwd.display()));
+        assert_sexp_eq("(%include \"tests/fixtures/paths.sex\")",
+            &format!("\"{0}/tests/fixtures/paths.sex\" \"{0}/tests/fixtures\"", cwd.display()));
+        assert!(sexp("(%path/this)").is_err());
+        assert_sexp_eq("(%path/here)", &format!("\"{}\"", cwd.display()));
     }
 
     #[test]

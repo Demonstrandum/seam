@@ -21,6 +21,6 @@ seam run build.sex     # Writes the site into public/.
 - `style.sex` is the stylesheet, in seam's CSS syntax.
 
 Paths given to `%glob` and `%write` are relative to the working directory, so
-`site.sex` and `build.sex` find their files from `(%path/this-directory)`, and
+`site.sex` and `build.sex` find their files from `(%path/here)`, and
 the blog builds from anywhere: `seam run samples/blog/build.sex` also writes
 into `samples/blog/public/`.
