@@ -1,0 +1,7 @@
+;; The list of posts. Render it alone with `seam --html index.sex`.
+(%include "site.sex")
+
+(%page
+  (h1 Posts)
+  (%for post in %posts
+    (%post-summary %post)))

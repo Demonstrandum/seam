@@ -1,0 +1,67 @@
+;; Definitions shared by every page: the site's details, its posts and its layout.
+;; Including this file defines things, and outputs nothing.
+
+(%define site-title "Seam Notes")
+(%define site-url "https://example.com/")
+(%define author "Samuel")
+;; The path from a page back to the site's root (pages in a
+;; subdirectory override it, with `(%with (:root "../") ...)`).
+(%define root "")
+
+;; A post's details, read from its Markdown frontmatter.
+(%define (read-post file:string)
+  (%markdown :only frontmatter (%embed %file))
+  (:file %file
+   :slug (%basename :suffix md %file)
+   :title %title
+   :date %date
+   :tags (%ifdef tags %tags ())
+   :description %{description:-}
+   :draft %{draft:-false}
+   :minutes (%max 1 (%round (%/ (%length (%split " " (%embed %file))) 200)))))
+
+;; Every published post, newest first.
+(%define posts
+  (%sort :order descending :key (%lambda ((:date _ &&_)) %date)
+    (%list (%for file in (%glob "posts/*.md")
+      (%let ((post (%read-post %file)))
+        (%if (%not (%get draft %post)) %post))))))
+
+(%define (pretty-date date)
+  (%date "%B %-d, %Y" (%timestamp "%Y-%m-%d" %date :timezone 0) :timezone 0))
+
+(%define (post-url slug) (%concat %root "posts/" %slug ".html"))
+
+(%define (tag-links tags:list)
+  (%intercalate ", "
+    (%for tag in %tags (a :class tag :href (%concat %root "tags.html#" %tag) %tag))))
+
+;; The date, reading time and tags of a post.
+(%define (post-meta date minutes tags)
+  (p :class meta
+    (time :datetime %date (%pretty-date %date))
+    · %minutes min read
+    (%if %tags (%do · (%tag-links %tags)))))
+
+;; A post's title and summary, as listed on the index.
+(%define (post-summary post)
+  (%let (((:slug _ :title _ :date _ :tags _ :description _ :minutes _ &&_) %post))
+    (article :class summary
+      (h2 (a :href (%post-url %slug) %title))
+      (%post-meta %date %minutes %tags)
+      (p %description))))
+
+;; The page skeleton. `%title` and `%root` may be given with `%with`.
+(%define (page &body)
+  (html :lang en
+    (head
+      (meta :charset utf-8)
+      (meta :name viewport :content "width=device-width, initial-scale=1")
+      (title (%ifdef title (%concat %title " — " %site-title) %site-title))
+      (link :rel stylesheet :href (%concat %root "style.css"))
+      (link :rel alternate :type application/rss+xml
+            :title %site-title :href (%concat %root "feed.xml")))
+    (body
+      (%include "includes/header.sex")
+      (main %body)
+      (%include "includes/footer.sex"))))

@@ -1,0 +1,6 @@
+(header
+  (a :class site-title :href (%concat %root "index.html") %site-title)
+  (nav
+    (a :href (%concat %root "index.html") Posts)
+    (a :href (%concat %root "tags.html") Tags)
+    (a :href (%concat %root "feed.xml") Feed)))
