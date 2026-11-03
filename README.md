@@ -151,7 +151,8 @@ seam run build.sex
  - [x] `(%lambda (x y) ...)` macro which just evaluates to an secret symbol, e.g. `__lambda0`.
        used by applying `%apply`, e.g. `(%apply (%lambda (a b) b a) x y)` becomes `y x`
  - [x] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
- - [x] `(%concat ...)` which is just `(%join "" ...)`.
+ - [x] `(%concat ...)` which is just `(%join "" ...)`, or joins lists.
+ - [x] Lazy lists, internally: ranges, slices, reversals and concatenations are made as needed, and `%for` never makes a whole list.
  - [x] Add options to `%glob` for sorting by type, date(s), name, etc.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
  - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.

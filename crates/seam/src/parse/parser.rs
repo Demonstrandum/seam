@@ -2,7 +2,7 @@ use std::{borrow::Cow, error::Error, fmt};
 use unicode_width::UnicodeWidthStr;
 use descape::UnescapeExt;
 
-use super::{lexer::{LexError, Lexer}, tokens::{Kind, Site, Token}};
+use super::{lexer::{LexError, Lexer}, list::List, tokens::{Kind, Site, Token}};
 
 /// The [`Node`] type represents what atomic/literals are parsed
 /// into; i.e. not compound types (e.g. lists, attributes).
@@ -48,7 +48,7 @@ pub enum ParseNode<'a> {
     String(Node<'a>),
     Raw(Node<'a>), //< Raw-content strings are not parsed, only expanded by macros.
     List {
-        nodes: Box<[ParseNode<'a>]>,
+        nodes: List<'a>,
         site: Site<'a>,
         end_token: Token<'a>,
         leading_whitespace: Cow<'a, str>,
@@ -186,7 +186,7 @@ impl<'a> ParseNode<'a> {
 
     /// Unwrap list node into vector of nodes.
     #[must_use]
-    pub fn list(&self) -> Option<&ParseTree<'a>> {
+    pub fn list(&self) -> Option<&List<'a>> {
         match self {
             Self::List { nodes, .. } => Some(nodes),
             _ => None,
@@ -308,7 +308,7 @@ impl<'p, 'a> TryFrom<&'p ParseNode<'a>> for &'p Node<'a> {
     }
 }
 
-impl<'p, 'a> TryFrom<&'p ParseNode<'a>> for &'p [ParseNode<'a>] {
+impl<'p, 'a> TryFrom<&'p ParseNode<'a>> for &'p List<'a> {
     type Error = ();
 
     fn try_from(value: &'p ParseNode<'a>) -> Result<Self, Self::Error> {
@@ -488,7 +488,7 @@ impl<'a> Parser {
             first.set_leading_whitespace("");
         }
         Ok(ParseNode::List {
-            nodes: elements.into_boxed_slice(),
+            nodes: elements.into(),
             site: lparen.site,
             end_token: rparen,
             leading_whitespace: Cow::Borrowed(lparen.leading_whitespace),
