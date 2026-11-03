@@ -452,7 +452,7 @@ mod cases {
         // Paths of the file a call is written in, which a string of source is not.
         assert_sexp_eq("(%include \"tests/fixtures/here.sex\")",
             &format!("\"{0}/tests/fixtures/here.sex\" \"{0}/tests/fixtures\"", cwd.display()));
-        assert!(sexp("(%path/this-file)").is_err());
+        assert!(sexp("(%path/here)").is_err());
         assert_sexp_eq("(%path/this-directory)", &format!("\"{}\"", cwd.display()));
     }
 

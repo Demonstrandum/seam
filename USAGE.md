@@ -169,7 +169,7 @@ will be treated as macros.
   `posts`, `(%extension posts/hi.md)` → `md` (also `%path/basename`,
   `%path/dirname` and `%path/extension`).
 - `(%path/cwd)` is the (absolute) directory seam is run from, and
-  `(%path/this-file)` and `(%path/this-directory)` are the absolute path of the
+  `(%path/here)` and `(%path/this-directory)` are the absolute path of the
   file the call is written in, and its directory (the current directory, for
   source read from STDIN). Relative paths given to `%glob`, `%write`, `%exec`
   and the like are from the current directory, so
