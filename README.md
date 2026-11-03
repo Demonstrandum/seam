@@ -168,7 +168,7 @@ seam run build.sex
  - [x] `%glob` which returns a list of files/directories matching a glob.
  - [x] `%markdown` renders Markdown given to it as `%raw` html-string.
  - [x] Add keyword macro arguments.
- - [ ] Caching or checking time-stamps as to not regenerate unmodified source files.
+ - [x] Caching or checking time-stamps as to not regenerate unmodified source files: `(%write path :from (sources...) ...)`, and unchanged files are not rewritten.
  - [x] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
  - [ ] Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
  - [x] Allow for arbitrary embedding of code with their REPLs, that can be run by

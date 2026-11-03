@@ -1,24 +1,40 @@
 ;; Builds the whole site into `public/`, next to this file:
 ;;   seam run build.sex
 ;; Each page is generated with a formatter macro, and written with `%write`.
+;; A page is only made again when a file it is made `:from` has changed
+;; since, so running this again after editing one post rebuilds just that
+;; post's page, and the pages listing posts.
 (%include "site.sex")
 
-;; Where to write the site, from wherever seam is run.
+;; Where to write the site, and find its sources, from wherever seam is run.
 (%define public (%path/relative (%path/join (%path/here) public)))
+(%define (source file) (%path/relative (%path/join (%path/here) %file)))
 
-(%define (write/html path &content)
-  (%write (%path/join %public %path) (%formatter/html :document true %content)))
+;; What every page is made from, and what each listing of posts is made from.
+(%define shared (%source build.sex) (%source site.sex)
+                (%source includes/header.sex) (%source includes/footer.sex))
+(%define posts/files (%for post in %posts (%get file %post)))
 
-(%write/html "index.html" (%include "index.sex"))
-(%write/html "tags.html" (%include "tags.sex"))
+;; The content is lazy (`~`), so it is not expanded when the page is up to date.
+(%define (write/html path :from () ~&content)
+  (%write (%path/join %public %path) :from %from
+    (%formatter/html :document true %content)))
+
+(%write/html "index.html" :from (%list %shared (%source index.sex) %posts/files)
+  (%include "index.sex"))
+(%write/html "tags.html" :from (%list %shared (%source tags.sex) %posts/files)
+  (%include "tags.sex"))
 
 (%for post in %posts
   (%write/html (%concat "posts/" (%get slug %post) ".html")
+    :from (%list %shared (%source post.sex) (%get file %post))
     (%with %post
       (%with (:root "../")
         (%include "post.sex")))))
 
-(%write (%path/join %public feed.xml) (%formatter/xml :document true (%include "feed.sex")))
-(%write (%path/join %public style.css) (%formatter/css (%include "style.sex")))
+(%write (%path/join %public feed.xml) :from (%list %shared (%source feed.sex) %posts/files)
+  (%formatter/xml :document true (%include "feed.sex")))
+(%write (%path/join %public style.css) :from (%list (%source style.sex))
+  (%formatter/css (%include "style.sex")))
 
 (%log Built (%length %posts) posts into %public)

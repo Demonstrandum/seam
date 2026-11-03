@@ -105,10 +105,14 @@ on STDOUT as it happens, and `%log` prints there too:
 seam run build.sex
 #stdout:
 #   write public/index.html
-#   write public/posts/hello-world.html
+#   fresh public/posts/hello-world.html
+#    same public/feed.xml
 #    exec git rev-parse --short HEAD
 #     log Built 3 posts.
 ```
+`write` is a file written, `same` one whose content did not change (so was
+not written), and `fresh` one that was newer than everything it is made
+`:from` (so was not even made).
 No target format is given, and the other options (`-I`, `--literate`) work as usual.
 
 ## Macros
@@ -189,6 +193,12 @@ will be treated as macros.
 - `(%write path content...)` writes the content's text to a file (making
   directories as needed), expanding to nothing. With the formatter macros
   below, one source file can generate a whole site, run with `seam run`.
+  A file whose content is unchanged is left as it is. With
+  `:from (paths...)`, as in a Makefile, the content is not even expanded
+  while the file is newer than every one of those paths:
+  `(%write public/post.html :from (post.md post.sex) ...)`.
+- `(%path/modified path)` is when a file was last changed, as a UNIX timestamp
+  (for `%date`).
 - `(%exec program arguments... :stdin text)` runs a program and gives its
   output, e.g. `(%exec git rev-parse --short HEAD)`.
 
