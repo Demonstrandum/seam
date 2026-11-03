@@ -809,16 +809,10 @@ impl<'a> Expander<'a> {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Only { Frontmatter, Content, Both }
         // Extract arguments and options.
-        let contents = args.number.1.value.clone();
+        let contents: &str = &args.number.1.value;
+        let site = args.number.1.site;
         // Markdown is literate by default: macro calls `(%...)` in its text are expanded.
         let literate = args.literate.is_none_or(|option| option.value == "true");
-        let contents = if literate && contents.contains("(%") {
-            let site = args.number.1.site;
-            let expanded = self.expand_literate(format!("{} (markdown)", site.source()), contents.into_owned(), &site)?;
-            Cow::Owned(nodes_to_text(&expanded)?)
-        } else {
-            contents
-        };
         let only = args.only.map_or(Only::Both, |option| match option.value.as_ref() {
             "frontmatter" => Only::Frontmatter,
             "content" => Only::Content,
@@ -848,18 +842,43 @@ impl<'a> Expander<'a> {
         };
         // Options.
         let options = markdown::Options { parse: flavour, compile: danger, };
+        let markdown_error = |err: markdown::message::Message| ExpansionError(
+            format!("Failed to render markdown: {err}"), site);
 
-        // How to convert to HTML.
-        let to_html = | | -> Result<ParseTree, _> {
-            // Convert to HTML.
-            let html = match markdown::to_html_with_options(contents.as_ref(), &options) {
-                Ok(html) => html,
-                Err(err) => return Err(ExpansionError(
-                    format!("Failed to render markdown: {err}"),
-                    args.number.1.site,
-                ))
+        // Split off the frontmatter first, so that literate expansion
+        // only runs over the part (or parts) actually being used.
+        let (frontmatter, body) = split_frontmatter(contents, &options.parse)
+            .map_err(markdown_error)?;
+        // Expand any `(%...)` calls in a part, keeping line numbers
+        // relative to the whole string by padding with new lines.
+        let expand = |text: &'_ str, line: usize| -> Result<String, ExpansionError<'a>> {
+            if !literate || !text.contains("(%") {
+                return Ok(text.to_owned());
+            }
+            let source = "\n".repeat(line) + text;
+            let expanded = self.expand_literate(format!("{} (markdown)", site.source()), source, &site)?;
+            nodes_to_text(&expanded)
+        };
+        // Convert frontmatter into macro definitions.
+        let define = |frontmatter: Frontmatter| -> Result<(), ExpansionError<'a>> {
+            let (text, toml) = match frontmatter {
+                Frontmatter::Yaml(text) => (text, false),
+                Frontmatter::Toml(text) => (text, true),
             };
-            // Return the raw html.
+            // The frontmatter's text starts after its opening fence line.
+            let text = expand(&text, 1)?;
+            if toml {
+                expand_toml(self, &text, sep, node.site())?;
+            } else {
+                expand_yaml(self, &text, sep, node.site())?;
+            }
+            Ok(())
+        };
+        // Render the markdown content as raw HTML.
+        let to_html = |(body, line): (&str, usize)| -> Result<ParseTree<'a>, ExpansionError<'a>> {
+            let body = expand(body, line)?;
+            let html = markdown::to_html_with_options(&body, &options)
+                .map_err(markdown_error)?;
             Ok(Box::new([
                 ParseNode::Raw(Node {
                     value: html.into(),
@@ -869,47 +888,25 @@ impl<'a> Expander<'a> {
             ]))
         };
 
-        // How to extract front-matter.
-        let extract_frontmatter = | | -> Result<(), _> {
-            use markdown::mdast;
-            let ast = match markdown::to_mdast(contents.as_ref(), &options.parse) {
-                Ok(ast) => ast,
-                Err(err) => return Err(ExpansionError(
-                    format!("Failed to render markdown: {err}"),
-                    args.number.1.site,
-                ))
-            };
-            let mdast::Node::Root(root) = ast else { unreachable!() };
-            let root = root.children;
-            let root: &[mdast::Node] = root.as_ref();
-            match root {
-                [mdast::Node::Yaml(mdast::Yaml { value: yaml, .. }), ..] => {
-                    // Parse the YAML and convert it into macro definitions.
-                    let _ = expand_yaml(self, yaml, sep, node.site())?;
-                    Ok(())
-                },
-                [mdast::Node::Toml(mdast::Toml { value: toml, .. }), ..] => {
-                    // Parse the TOML and convert it into macro definitions.
-                    let _ = expand_toml(self, toml, sep, node.site())?;
-                    Ok(())
-                },
-                _ => Err(ExpansionError::new(
-                    "This markdown does not contain any frontmatter.",
-                    &args.number.1.site,
-                ))
-            }
-        };
-
         match only {
             Only::Frontmatter => {
-                extract_frontmatter()?;
+                let Some(frontmatter) = frontmatter else {
+                    return Err(ExpansionError::new(
+                        "This markdown does not contain any frontmatter.",
+                        &site,
+                    ));
+                };
+                define(frontmatter)?;
                 Ok(Box::new([]))
             },
-            Only::Content => to_html(),
+            Only::Content => to_html(body),
             Only::Both => {
-                // Ignore any errors if no frontmatter exists.
-                let _ = extract_frontmatter();
-                to_html()
+                // Define the frontmatter (if there is any) before
+                // expanding the content, so the content can use it.
+                if let Some(frontmatter) = frontmatter {
+                    define(frontmatter)?;
+                }
+                to_html(body)
             },
         }
     }
@@ -1974,6 +1971,30 @@ impl<'a> Expander<'a> {
 
 /// Join expanded nodes back into text, such as for markdown: text and atoms
 /// are written as they are, and any elements are generated as HTML.
+/// Frontmatter at the start of a markdown document.
+enum Frontmatter {
+    Yaml(String),
+    Toml(String),
+}
+
+/// Split markdown into its frontmatter (if any) and the rest of the
+/// document, along with the line the rest starts on (counting from 0).
+fn split_frontmatter<'s>(contents: &'s str, options: &markdown::ParseOptions)
+-> Result<(Option<Frontmatter>, (&'s str, usize)), markdown::message::Message> {
+    use markdown::mdast;
+    let mdast::Node::Root(root) = markdown::to_mdast(contents, options)? else {
+        unreachable!()
+    };
+    let (frontmatter, position) = match root.children.into_iter().next() {
+        Some(mdast::Node::Yaml(mdast::Yaml { value, position })) => (Frontmatter::Yaml(value), position),
+        Some(mdast::Node::Toml(mdast::Toml { value, position })) => (Frontmatter::Toml(value), position),
+        _ => return Ok((None, (contents, 0))),
+    };
+    let end = position.map_or(0, |position| position.end.offset);
+    let (head, body) = contents.split_at(end);
+    Ok((Some(frontmatter), (body, head.matches('\n').count())))
+}
+
 fn nodes_to_text<'a>(nodes: &[ParseNode<'a>]) -> Result<String, ExpansionError<'a>> {
     let mut text = String::new();
     for node in nodes {

@@ -1,0 +1,4 @@
+---
+title: Hello (%name)
+---
+# (%title)

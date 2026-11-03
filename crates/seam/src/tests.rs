@@ -306,6 +306,22 @@ mod cases {
     }
 
     #[test]
+    fn test_literate_markdown_frontmatter() {
+        // only the part being used is expanded.
+        let error = expand(String::from(
+            "(%markdown :only content (%embed \"tests/fixtures/front-errors.md\"))")).unwrap_err();
+        assert!(error.contains("nope-body") && error.contains(":4:"), "{}", error);
+        let error = expand(String::from(
+            "(%markdown :only frontmatter (%embed \"tests/fixtures/front-errors.md\"))")).unwrap_err();
+        assert!(error.contains("nope-front") && error.contains(":2:"), "{}", error);
+        // the content can use the frontmatter's definitions.
+        assert_output_eq(
+            "(%define name Sam) (%markdown (%embed \"tests/fixtures/front.md\"))",
+            " \"<h1>Hello Sam</h1>\\n\""
+        );
+    }
+
+    #[test]
     fn test_escaped_newline_line_numbers() {
         // an escaped new line in a symbol only counts as one line.
         let error = expand(String::from("(p a\\\nb)\n(%nope)")).unwrap_err();

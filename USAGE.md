@@ -90,6 +90,9 @@ Literate mode is enabled with:
   expands the file's macros rather than giving its contents as a string;
 - `(%markdown ...)`, where it is on by default (disable it with `:literate false`).
   Elements produced by macros within Markdown are written as HTML.
+  Frontmatter and content are expanded separately, so `:only frontmatter`
+  or `:only content` expands just that part, and the content can use the
+  frontmatter's definitions.
 
 ## Macros
 
