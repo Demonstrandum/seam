@@ -1,5 +1,6 @@
 use super::lexer::Lexer;
 use super::parser::{Node, ParseNode, ParseTree, Parser};
+use super::macros::ArgType;
 use super::tokens::Site;
 use crate::assemble::{html::HTMLFormatter, sexp::SExpFormatter};
 
@@ -67,11 +68,24 @@ impl Error for ExpansionError<'_> { }
 /// - and the scope it was defined in, which its body is expanded in.
 #[derive(Debug)]
 pub struct Macro<'a> {
-    #[allow(dead_code)]  // Only for debugging.
     name: String,
     params: Box<[ParseNode<'a>]>,
     body: Box<[ParseNode<'a>]>,
     env: &'a Scope<'a>,
+    /// Which positional parameters (`~name`), and whether the `&rest`
+    /// parameter (`~&rest`), are lazy: given their arguments unexpanded.
+    lazy_positional: Box<[bool]>,
+    lazy_rest: bool,
+    /// Names of the lazy parameters.
+    lazy: Box<[String]>,
+    /// Parameters with a type (e.g. `n:number`), and whether each is `&rest`.
+    types: Box<[(String, ArgType, bool)]>,
+}
+
+impl Macro<'_> {
+    fn is_lazy(&self) -> bool {
+        !self.lazy.is_empty()
+    }
 }
 
 /// What a name is defined as within a scope.
@@ -81,6 +95,8 @@ enum Definition<'a> {
     Value(Box<[ParseNode<'a>]>),
     /// A macro, e.g. from `(%define (f ...) ...)` or `(%lambda ...)`.
     Macro(&'a Macro<'a>),
+    /// A lazy argument, expanded in the caller's scope each time it is used.
+    Thunk(Box<[ParseNode<'a>]>, &'a Scope<'a>),
 }
 
 /// Owns everything that outlives a single macro expansion:
@@ -941,12 +957,29 @@ impl<'a> Expander<'a> {
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
         let params = self.expand_nodes(params)?; // Eager.
         let args = arguments! { node, &params;
-            mandatory(1): literal,
+            mandatory(1): any,
             mandatory(2): any,
             optional("separator"): literal,
         }?;
+        // A slice, `(%get (first last) list)`, inclusive of both ends.
+        if let Some([first, last]) = args.number.1.list().map(|list| &**list) {
+            let Some(list) = args.number.2.list() else {
+                return Err(ExpansionError(
+                    format!("Cannot slice a {} node.", args.number.2.node_type()),
+                    args.number.2.owned_site()));
+            };
+            let start = list_index(first, list.len())?;
+            let end = list_index(last, list.len())?;
+            let items = if start <= end { without_leading(list[start..=end].to_vec()) } else { vec![] };
+            return Ok(Box::new([list_node(args.number.2, items)]));
+        }
+        let Some(path) = args.number.1.atomic() else {
+            return Err(ExpansionError::new(
+                "`%get' takes an index, a keyword or a path, or a list `(first last)` to slice.",
+                args.number.1.site()));
+        };
         let sep: &str = args.separator.map_or("/", |sep| &sep.value);
-        let path = args.number.1.value.split(&sep);
+        let path = path.value.split(&sep);
 
         let mut node: &ParseNode<'a> = args.number.2;
         for item in path {
@@ -957,8 +990,10 @@ impl<'a> Expander<'a> {
                     node.owned_site(),
                 ))
             };
-            // Find the n-th element, or else the `:item` attribute in the list.
-            let index = item.parse::<usize>().ok();
+            // Find the n-th element (counting from the end if negative),
+            // or else the `:item` attribute in the list.
+            let index = item.parse::<isize>().ok().map(|index|
+                if index < 0 { index.unsigned_abs().wrapping_neg().wrapping_add(list.len()) } else { index.unsigned_abs() });
             let found = index.and_then(|index| list.get(index)).or_else(|| list.iter().find_map(|node| match node {
                 ParseNode::Attribute { keyword, node, .. } if item == keyword => Some(&**node),
                 _ => None,
@@ -1230,12 +1265,15 @@ impl<'a> Expander<'a> {
         let args = arguments! { node, &params;
             mandatory(1): any,
             mandatory(2): symbol["in"],
-            mandatory(3): list,
+            mandatory(3): any,
             rest: any,
         }?;
         let it = args.number.1;
-        let list = args.number.3;
-        let list = self.expand_nodes(list)?;
+        // Iterate over the items of a list, or else over all the nodes it expands to.
+        let mut list = self.expand_node(args.number.3)?;
+        if let [ParseNode::List { nodes, .. }] = &mut *list {
+            list = std::mem::take(nodes);
+        }
         let body = args.rest;
 
         let mut expanded = Vec::with_capacity(list.len());
@@ -1762,6 +1800,568 @@ impl<'a> Expander<'a> {
         ]))
     }
 
+    /// `(%eval ...)` expands its arguments, and then expands what they gave.
+    fn expand_eval_macro(&self, _node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let code = self.expand_nodes(params)?;
+        self.expand_nodes(&code)
+    }
+
+    /// `(%let ((pattern value) ...) body...)` binds each pattern in turn,
+    /// in a new scope for the body.
+    fn expand_let_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let Some((bindings, body)) = params.split_first() else {
+            return Err(ExpansionError::new(
+                "`%let` syntax is: `(%let ((pattern value) ...) body...)`.", node.site()));
+        };
+        let Some(bindings) = bindings.list() else {
+            return Err(ExpansionError::new(
+                "`%let` bindings must be a list of `(pattern value)` lists.", bindings.site()));
+        };
+        let context = self.child();
+        let expanded = (|| {
+            for binding in bindings {
+                let Some([pattern, value @ ..]) = binding.list().map(|list| &**list) else {
+                    return Err(ExpansionError::new(
+                        "Each `%let` binding must be a list `(pattern value)`.", binding.site()));
+                };
+                // Later bindings see earlier ones.
+                let mut value = context.expand_nodes(value)?.into_vec();
+                let value = if value.len() == 1 { value.swap_remove(0) } else { list_node(binding, value) };
+                context.bind(pattern, &value)?;
+            }
+            context.expand_nodes(body)
+        })();
+        context.release();
+        expanded
+    }
+
+    /// `(%if condition then else)`, where only the chosen branch is expanded.
+    /// Nothing, `()`, `false` and `""` are false, anything else is true.
+    fn expand_if_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let [condition, consequent, alternative @ ..] = params else {
+            return Err(ExpansionError::new(
+                "`%if` syntax is: `(%if condition then else)`, where `else` is optional.", node.site()));
+        };
+        if alternative.len() > 1 {
+            return Err(ExpansionError::new(
+                "`%if` takes at most one alternative; wrap several nodes in `(%do ...)`.",
+                alternative[1].site()));
+        }
+        let branch = if truthy(&self.expand_node(condition)?) { Some(consequent) } else { alternative.first() };
+        let mut expanded = match branch {
+            Some(branch) => self.expand_node(branch)?,
+            None => Box::new([]),
+        };
+        if let Some(first) = expanded.get_mut(0) {
+            first.set_leading_whitespace(node.leading_whitespace().clone());
+        }
+        Ok(expanded)
+    }
+
+    fn expand_not_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        Ok(Box::new([bool_node(node, !truthy(&self.expand_nodes(params)?))]))
+    }
+
+    /// `(%and ...)` gives `false` at the first false argument (not expanding
+    /// the rest), and otherwise the last argument. `(%or ...)` gives the
+    /// first true argument, and otherwise `false`.
+    fn expand_and_or_macro(&self, and: bool, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut last: ParseTree<'a> = Box::new([bool_node(node, and)]);
+        for param in params {
+            let value = self.expand_node(param)?;
+            if truthy(&value) != and {
+                return Ok(if and { Box::new([bool_node(node, false)]) } else { value });
+            }
+            last = value;
+        }
+        Ok(if and { last } else { Box::new([bool_node(node, false)]) })
+    }
+
+    /// Comparisons, `(%< a b c)`, true when each pair in turn compares so.
+    /// Numbers compare by value, anything else by its text.
+    fn expand_comparison_macro(&self, operator: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        use std::cmp::Ordering;
+        let params = self.expand_nodes(params)?;
+        if params.len() < 2 {
+            return Err(ExpansionError(
+                format!("`%{operator}` compares at least two values."), node.owned_site()));
+        }
+        let mut result = true;
+        for pair in params.windows(2) {
+            let ordering = match (Number::of(&pair[0]), Number::of(&pair[1])) {
+                (Some(a), Some(b)) => a.float().partial_cmp(&b.float()),
+                _ => Some(node_text(&pair[0])?.cmp(&node_text(&pair[1])?)),
+            };
+            result &= match operator {
+                "=" => ordering == Some(Ordering::Equal),
+                "!=" => ordering != Some(Ordering::Equal),
+                "<" => ordering == Some(Ordering::Less),
+                ">" => ordering == Some(Ordering::Greater),
+                "<=" => matches!(ordering, Some(Ordering::Less | Ordering::Equal)),
+                ">=" => matches!(ordering, Some(Ordering::Greater | Ordering::Equal)),
+                _ => unreachable!(),
+            };
+        }
+        Ok(Box::new([bool_node(node, result)]))
+    }
+
+    /// The arguments of an arithmetic macro, as numbers.
+    fn numbers(&self, name: &str, params: &[ParseNode<'a>])
+    -> Result<Vec<(Number, Site<'a>)>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        params.iter().map(|param| match Number::of(param) {
+            Some(number) => Ok((number, param.owned_site())),
+            None => Err(ExpansionError(
+                format!("`%{name}` expects numbers, got {} instead.", match param.atomic() {
+                    Some(atom) => format!("`{}'", atom.value),
+                    None => format!("a {}", param.node_type()),
+                }),
+                param.owned_site())),
+        }).collect()
+    }
+
+    /// `+ - * / mod pow min max`, folding over their arguments.
+    fn expand_arithmetic_macro(&self, operator: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let numbers = self.numbers(operator, params)?;
+        let result = match (operator, numbers.as_slice()) {
+            ("+", _) => numbers.iter().try_fold(Number::Int(0), |a, (b, _)| Ok(a.add(*b)))?,
+            ("*", _) => numbers.iter().try_fold(Number::Int(1), |a, (b, _)| Ok(a.mul(*b)))?,
+            ("-", [(only, _)]) => Number::Int(0).sub(*only),
+            (_, []) => return Err(ExpansionError(
+                format!("`%{operator}` expects at least one number."), node.owned_site())),
+            (_, [(first, _), rest @ ..]) => rest.iter().try_fold(*first, |a, (b, site)| match operator {
+                "-" => Ok(a.sub(*b)),
+                "/" => a.div(*b).ok_or_else(|| ExpansionError::new("Division by zero.", site)),
+                "mod" => a.rem(*b).ok_or_else(|| ExpansionError::new("Division by zero.", site)),
+                "pow" => Ok(a.pow(*b)),
+                "min" => Ok(if b.float() < a.float() { *b } else { a }),
+                "max" => Ok(if b.float() > a.float() { *b } else { a }),
+                _ => unreachable!(),
+            })?,
+        };
+        Ok(Box::new([number_node(node, result.to_string())]))
+    }
+
+    /// `exp sqrt ln log2 log10 abs floor ceil round` of one number,
+    /// and `hypot` of any.
+    fn expand_math_function_macro(&self, function: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let numbers = self.numbers(function, params)?;
+        if function == "hypot" {
+            let sum: f64 = numbers.iter().map(|(n, _)| n.float() * n.float()).sum();
+            return Ok(Box::new([number_node(node, Number::Float(sum.sqrt()).to_string())]));
+        }
+        let [(number, _)] = numbers.as_slice() else {
+            return Err(ExpansionError(
+                format!("`%{function}` expects exactly one number."), node.owned_site()));
+        };
+        let x = number.float();
+        let result = match (function, number) {
+            ("abs", Number::Int(n)) => n.checked_abs().map_or(Number::Float(x.abs()), Number::Int),
+            ("floor" | "ceil" | "round", Number::Int(n)) => Number::Int(*n),
+            ("floor", _) => Number::Float(x.floor()).integral(),
+            ("ceil", _) => Number::Float(x.ceil()).integral(),
+            ("round", _) => Number::Float(x.round()).integral(),
+            ("abs", _) => Number::Float(x.abs()),
+            ("exp", _) => Number::Float(x.exp()),
+            ("sqrt", _) => Number::Float(x.sqrt()),
+            ("ln", _) => Number::Float(x.ln()),
+            ("log2", _) => Number::Float(x.log2()),
+            ("log10", _) => Number::Float(x.log10()),
+            _ => unreachable!(),
+        };
+        Ok(Box::new([number_node(node, result.to_string())]))
+    }
+
+    /// `(%range first last step)`, a list of numbers from first to last inclusive.
+    fn expand_range_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let numbers = self.numbers("range", params)?;
+        let (first, last, step) = match numbers.as_slice() {
+            [(first, _), (last, _)] => (*first, *last, Number::Int(1)),
+            [(first, _), (last, _), (step, _)] => (*first, *last, *step),
+            _ => return Err(ExpansionError::new(
+                "`%range` syntax is: `(%range first last)` or `(%range first last step)`.", node.site())),
+        };
+        if step.float() == 0.0 || step.float().is_nan() {
+            return Err(ExpansionError::new("`%range` step must not be zero.", node.site()));
+        }
+        let mut items = vec![];
+        let mut current = first;
+        while (step.float() > 0.0 && current.float() <= last.float())
+           || (step.float() < 0.0 && current.float() >= last.float()) {
+            let whitespace = if items.is_empty() { "" } else { " " };
+            items.push(ParseNode::Number(Node::new(current.to_string(), node.site(), whitespace)));
+            if items.len() > 1_000_000 {
+                return Err(ExpansionError::new("`%range` is too long.", node.site()));
+            }
+            current = current.add(step);
+        }
+        Ok(Box::new([list_node(node, items)]))
+    }
+
+    /// `(%error message...)` stops with an error.
+    fn expand_error_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut params = self.expand_nodes(params)?;
+        if let Some(first) = params.get_mut(0) {
+            first.set_leading_whitespace("");
+        }
+        Err(ExpansionError(nodes_to_text(&params)?, node.owned_site()))
+    }
+
+    /// `(%try expression :error name fallback...)` gives the expression,
+    /// or if it fails, the fallback, with `%name` the error's message.
+    fn expand_try_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut name = None;
+        let mut positional = vec![];
+        for param in params {
+            match param {
+                ParseNode::Attribute { keyword, node: variable, .. } if keyword == "error" => {
+                    let Some(variable) = variable.symbol() else {
+                        return Err(ExpansionError::new(
+                            "`:error` names the variable for the error's message.", variable.site()));
+                    };
+                    name = Some(variable.value.to_string());
+                },
+                _ => positional.push(param),
+            }
+        }
+        let Some((expression, fallback)) = positional.split_first() else {
+            return Err(ExpansionError::new(
+                "`%try` syntax is: `(%try expression :error name fallback...)`.", node.site()));
+        };
+        match self.expand_node(expression) {
+            Ok(expanded) => Ok(expanded),
+            Err(ExpansionError(message, site)) => {
+                let context = self.child();
+                if let Some(name) = name {
+                    let message = Node::new(message, &site, "");
+                    context.define_value(name, Box::new([ParseNode::String(message)]));
+                }
+                let mut expanded = Vec::new();
+                let result = fallback.iter().try_for_each(|node| context.expand_into(node, &mut expanded));
+                context.release();
+                result.map(|()| expanded.into_boxed_slice())
+            },
+        }
+    }
+
+    /// `(%take n list)` and `(%drop n list)`.
+    fn expand_take_drop_macro(&self, take: bool, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let Some((count, list)) = params.split_first() else {
+            return Err(ExpansionError::new("Expected a count, and a list.", node.site()));
+        };
+        let Some(Number::Int(count)) = Number::of(count) else {
+            return Err(ExpansionError::new("Expected a whole number of items.", count.site()));
+        };
+        let items = list_argument(list);
+        let count = usize::try_from(count).unwrap_or(0).min(items.len());
+        let items = if take { &items[..count] } else { &items[count..] };
+        Ok(Box::new([list_node(node, without_leading(items.to_vec()))]))
+    }
+
+    /// `(%while predicate list)`, the items up to the first for
+    /// which the predicate macro is false.
+    fn expand_while_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let Some((predicate, list)) = params.split_first() else {
+            return Err(ExpansionError::new("Expected a predicate macro, and a list.", node.site()));
+        };
+        let Some(predicate) = predicate.symbol() else {
+            return Err(ExpansionError::new("Expected the name of a predicate macro.", predicate.site()));
+        };
+        let mut items = vec![];
+        for item in list_argument(list) {
+            if !truthy(&self.expand_invocation(&predicate.value, node, std::slice::from_ref(item))?) {
+                break;
+            }
+            items.push(item.clone());
+        }
+        Ok(Box::new([list_node(node, without_leading(items))]))
+    }
+
+    /// `(%split separator text)` splits text into a list of strings;
+    /// `(%split separator (a b ...))` splits a list on items equal to the separator.
+    fn expand_split_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let args = arguments! { node, &params;
+            mandatory(1): literal,
+            mandatory(2): any,
+        }?;
+        let separator: &str = &args.number.1.value;
+        let parts = match args.number.2 {
+            ParseNode::List { nodes, .. } => nodes
+                .split(|item| item.atomic().is_some_and(|atom| atom.value == separator))
+                .map(|part| list_node(args.number.2, without_leading(part.to_vec())))
+                .collect(),
+            text => {
+                let Some(text) = text.atomic() else { unreachable!() };
+                if separator.is_empty() {
+                    return Err(ExpansionError::new("Cannot split on an empty separator.", &args.number.1.site));
+                }
+                text.value.split(separator)
+                    .map(|part| ParseNode::String(Node::new(part.to_owned(), &text.site, "")))
+                    .collect()
+            },
+        };
+        Ok(Box::new([list_node(node, spaced(parts))]))
+    }
+
+    /// `(%intercalate separator list)` gives the items with the separator
+    /// between each pair (not wrapped in a list).
+    fn expand_intercalate_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let Some((separator, list)) = params.split_first() else {
+            return Err(ExpansionError::new("Expected a separator, and a list.", node.site()));
+        };
+        let mut expanded = vec![];
+        for (index, item) in list_argument(list).iter().enumerate() {
+            if index > 0 {
+                expanded.push(separator.clone());
+            }
+            expanded.push(item.clone());
+        }
+        Ok(expanded.into_boxed_slice())
+    }
+
+    /// `(%length list)` counts a list's items, `(%length text)` its characters.
+    fn expand_length_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let length = match &*params {
+            [ParseNode::List { nodes, .. }] => nodes.len(),
+            [atom] if atom.is_atomic() => atom.atomic().map_or(0, |atom| atom.value.chars().count()),
+            nodes => nodes.len(),
+        };
+        Ok(Box::new([number_node(node, length.to_string())]))
+    }
+
+    /// `(%items (:a 1 :b 2))` gives `((a 1) (b 2))`, `%keys` gives `(a b)`
+    /// and `%values` gives `(1 2)`.
+    fn expand_dictionary_macro(&self, part: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let mut items = vec![];
+        for item in list_argument(&params) {
+            let ParseNode::Attribute { keyword, node: value, site, .. } = item else { continue };
+            let key = ParseNode::Symbol(Node::new(keyword.clone(), site, ""));
+            let mut value = (**value).clone();
+            items.push(match part {
+                "keys" => key,
+                "values" => { value.set_leading_whitespace(""); value },
+                _ => { value.set_leading_whitespace(" "); list_node(node, vec![key, value]) },
+            });
+        }
+        Ok(Box::new([list_node(node, spaced(items))]))
+    }
+
+    /// `(%basename path :suffix ext)`, `(%dirname path)` and `(%extension path)`.
+    fn expand_path_macro(&self, part: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let params = self.expand_nodes(params)?;
+        let args = arguments! { node, &params;
+            mandatory(1): literal,
+            optional("suffix"): literal,
+        }?;
+        let path = std::path::Path::new(args.number.1.value.as_ref());
+        let result: String = match part {
+            "basename" => {
+                let name = path.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
+                match args.suffix {
+                    Some(suffix) if name.len() > suffix.value.len() => match name.strip_suffix(suffix.value.as_ref()) {
+                        Some(stripped) => stripped.strip_suffix('.').unwrap_or(stripped).to_owned(),
+                        None => name,
+                    },
+                    _ => name,
+                }
+            },
+            "dirname" => match path.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent.to_string_lossy().into_owned(),
+                _ => String::from(if path.has_root() { "/" } else { "." }),
+            },
+            "extension" => path.extension().map_or(String::new(), |ext| ext.to_string_lossy().into_owned()),
+            _ => unreachable!(),
+        };
+        let path = params.iter().find(|param| !param.is_attribute()).unwrap_or(node);
+        let value = result_string(&args.number.1.value, result);
+        let result = Node::new(value, &args.number.1.site, node.leading_whitespace().clone());
+        Ok(Box::new([same_kind(path, result)]))
+    }
+
+    /// `%{name...}`, shell-style manipulation of a variable's text:
+    /// `%{name:-default}`, `%{name:+alternative}`, `%{#name}` (length),
+    /// `%{name:offset:length}`, `%{name#pattern}`, `%{name##pattern}`,
+    /// `%{name%pattern}`, `%{name%%pattern}`, `%{name/pattern/replacement}`,
+    /// `%{name//pattern/replacement}`, `%{name^}`, `%{name^^}`, `%{name,}`, `%{name,,}`.
+    /// Patterns are globs, as in a shell.
+    fn expand_shell(&self, symbol: &Node<'a>) -> Result<ParseNode<'a>, ExpansionError<'a>> {
+        let inner = &symbol.value[2..symbol.value.len() - 1];
+        let error = |message: String| ExpansionError(message, symbol.site);
+        let (length, inner) = match inner.strip_prefix('#') {
+            Some(name) => (true, name),
+            None => (false, inner),
+        };
+        // The longest defined name before an operator, or else the first such name.
+        let boundaries = inner.char_indices()
+            .filter(|(_, c)| matches!(c, ':' | '#' | '%' | '/' | '^' | ','))
+            .map(|(i, _)| i)
+            .chain(std::iter::once(inner.len()));
+        let mut split = None;
+        for boundary in boundaries {
+            if split.is_none() || self.has_variable(&inner[..boundary]) {
+                split = Some(boundary);
+            }
+        }
+        let (name, operation) = inner.split_at(split.unwrap_or(inner.len()));
+        let value: Option<ParseNode<'a>> = match self.lookup(name, |definition| match definition {
+            Definition::Value(value) => Ok(value.clone()),
+            Definition::Thunk(nodes, env) => self.within(env).expand_nodes(nodes),
+            Definition::Macro(_) => Err(error(format!("`{name}' is a macro, not a variable."))),
+        }) {
+            Some(value) => match &*value? {
+                [] => None,
+                [node] if node.is_atomic() => Some(node.clone()),
+                _ => return Err(error(format!("`%{{...}}' needs `{name}' to be a single literal."))),
+            },
+            None => None,
+        };
+        let text = value.as_ref().and_then(ParseNode::atomic).map_or("", |atom| atom.value.as_ref());
+        let set = !text.is_empty();
+        let missing = || error(format!("No such variable, `{name}`."));
+        let result: String = if length {
+            if !operation.is_empty() {
+                return Err(error(String::from("`%{#name}' takes no other operation.")));
+            }
+            value.as_ref().ok_or_else(missing)?;
+            return Ok(ParseNode::Number(Node::new(text.chars().count().to_string(), &symbol.site, symbol.leading_whitespace.clone())));
+        } else if let Some(default) = operation.strip_prefix(":-") {
+            if set { text.to_owned() } else { default.to_owned() }
+        } else if let Some(alternative) = operation.strip_prefix(":+") {
+            if set { alternative.to_owned() } else { String::new() }
+        } else {
+            value.as_ref().ok_or_else(missing)?;
+            shell_operation(text, operation).map_err(error)?
+        };
+        let node = Node::new(result, &symbol.site, symbol.leading_whitespace.clone());
+        Ok(match &value {
+            Some(value) => same_kind(value, node),
+            None => ParseNode::String(node),
+        })
+    }
+
+    /// `(%formatter/html ...)` (and `text`, `xml`, `css`, `sexp`) generates its
+    /// arguments with that formatter, giving the result as text. With
+    /// `:document true`, a whole document is generated.
+    fn expand_formatter_macro(&self, format: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        use crate::assemble::{MarkupFormatter, css::CSSFormatter, text::PlainTextFormatter, xml::XMLFormatter};
+        let params = self.expand_nodes(params)?;
+        let mut document = false;
+        let mut content = Vec::with_capacity(params.len());
+        for param in params {
+            match &param {
+                ParseNode::Attribute { keyword, node: value, .. } if keyword == "document" => {
+                    document = value.atomic().is_some_and(|value| value.value == "true");
+                },
+                _ => content.push(param),
+            }
+        }
+        if let Some(first) = content.first_mut() {
+            first.set_leading_whitespace("");
+        }
+        let tree = content.into_boxed_slice();
+        let formatter: Box<dyn MarkupFormatter<'a> + 'a> = match format {
+            "html" => Box::new(HTMLFormatter::new(tree)),
+            "xml" => Box::new(XMLFormatter::new(tree)),
+            "css" => Box::new(CSSFormatter::new(tree)),
+            "text" => Box::new(PlainTextFormatter::new(tree)),
+            "sexp" => Box::new(SExpFormatter::new(tree)),
+            _ => return Err(ExpansionError(format!("No such formatter, `{format}`."), node.owned_site())),
+        };
+        let text = if document { formatter.document() } else { formatter.display() }
+            .map_err(|error| ExpansionError(error.message, error.site))?;
+        let text = Node::new(text, node.site(), node.leading_whitespace().clone());
+        // Plain text is escaped wherever it ends up, markup is not.
+        Ok(Box::new([match format {
+            "text" | "sexp" => ParseNode::String(text),
+            _ => ParseNode::Raw(text),
+        }]))
+    }
+
+    /// `(%write path content...)` writes the content's text to a file
+    /// (making any missing directories), expanding to nothing.
+    fn expand_write_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        let mut params = self.expand_nodes(params)?.into_vec();
+        if params.is_empty() {
+            return Err(ExpansionError::new("`%write` expects a path, and content.", node.site()));
+        }
+        let path = params.remove(0);
+        let Some(path) = path.atomic() else {
+            return Err(ExpansionError::new("`%write` expects a path first.", path.site()));
+        };
+        if let Some(first) = params.first_mut() {
+            first.set_leading_whitespace("");
+        }
+        let text = nodes_to_text(&params)?;
+        let path = std::path::Path::new(path.value.as_ref());
+        let write = || -> std::io::Result<()> {
+            if let Some(parent) = path.parent() && !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, text)
+        };
+        write().map_err(|error| ExpansionError(
+            format!("Could not write `{}': {error}", path.display()), node.owned_site()))?;
+        Ok(Box::new([]))
+    }
+
+    /// `(%exec program arguments... :stdin text)` runs a program,
+    /// giving its output (without trailing new lines) as a string.
+    fn expand_exec_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        use std::io::Write as _;
+        let params = self.expand_nodes(params)?;
+        let args = arguments! { node, &params;
+            mandatory(1): literal,
+            optional("stdin"): literal,
+            rest: literal,
+        }?;
+        let program: &str = &args.number.1.value;
+        let failed = |error: String| ExpansionError(format!("`%exec {program}' failed: {error}"), node.owned_site());
+        let mut child = std::process::Command::new(program)
+            .args(args.rest.iter().map(|arg| arg.value.as_ref()))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| failed(error.to_string()))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let input = args.stdin.map_or("", |input| input.value.as_ref());
+            stdin.write_all(input.as_bytes()).map_err(|error| failed(error.to_string()))?;
+        }
+        let output = child.wait_with_output().map_err(|error| failed(error.to_string()))?;
+        if !output.status.success() {
+            return Err(failed(String::from_utf8_lossy(&output.stderr).trim_end().to_owned()));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).trim_end_matches(['\n', '\r']).to_owned();
+        Ok(Box::new([ParseNode::String(Node::new(stdout, node.site(), node.leading_whitespace().clone()))]))
+    }
+
     fn create_macro(&self, name: String, arglist: Vec<ParseNode<'a>>, body: ParseTree<'a>)
     -> Result<&'a Macro<'a>, ExpansionError<'a>> {
         // Check excess &-macros and &&-macros are not present.
@@ -1781,14 +2381,116 @@ impl<'a> Expander<'a> {
             excess.site()
         )) }
 
+        // Strip `~` (lazy) markers and `:type` annotations from the parameters.
+        let mut params = Vec::with_capacity(arglist.len());
+        let mut lazy_positional = vec![];
+        let mut lazy_rest = false;
+        let mut lazy = vec![];
+        let mut types = vec![];
+        for mut param in arglist {
+            match &mut param {
+                ParseNode::Symbol(symbol) => {
+                    let mut name: &str = &symbol.value;
+                    let is_lazy = name.starts_with('~');
+                    name = name.trim_start_matches('~');
+                    let mut kind = None;
+                    if let Some((stripped, annotation)) = name.rsplit_once(':')
+                    && let Some(annotated) = ArgType::from_name(annotation) {
+                        name = stripped;
+                        kind = Some(annotated);
+                    }
+                    let is_rest = name.starts_with('&');
+                    let bare = name.trim_start_matches('&').to_owned();
+                    if name.starts_with("&&") {
+                        if is_lazy || kind.is_some() {
+                            return Err(ExpansionError::new(
+                                "Named argument `&&`-capture cannot be lazy or typed.", &symbol.site));
+                        }
+                    } else if is_rest {
+                        lazy_rest = is_lazy;
+                    } else {
+                        lazy_positional.push(is_lazy);
+                    }
+                    if is_lazy { lazy.push(bare.clone()); }
+                    if let Some(kind) = kind { types.push((bare, kind, is_rest)); }
+                    let name = name.to_owned();
+                    symbol.value = name.into();
+                },
+                ParseNode::Attribute { keyword, node: default, .. } => {
+                    if let Some((stripped, annotation)) = keyword.rsplit_once(':')
+                    && let Some(kind) = ArgType::from_name(annotation) {
+                        if !kind.admits(default) {
+                            return Err(ExpansionError(
+                                format!("Default value of `:{stripped}' must be a {}, got a {} instead.",
+                                    kind.name(), default.node_type()),
+                                default.owned_site()));
+                        }
+                        let stripped = stripped.to_owned();
+                        types.push((stripped.clone(), kind, false));
+                        *keyword = stripped.into();
+                    }
+                },
+                _ => lazy_positional.push(false),
+            }
+            params.push(param);
+        }
+
         // The macro remembers the scope it was defined in, which must be kept.
         self.scope.capture();
         Ok(self.context.macros.alloc(Macro {
             name,
-            params: arglist.into_boxed_slice(),
+            params: params.into_boxed_slice(),
             body,
             env: self.scope,
+            lazy_positional: lazy_positional.into_boxed_slice(),
+            lazy_rest,
+            lazy: lazy.into_boxed_slice(),
+            types: types.into_boxed_slice(),
         }))
+    }
+
+    /// Expand a call's arguments, except those given to lazy parameters,
+    /// which are kept as written.
+    fn macro_arguments(&self, mac: &Macro<'a>, params: &[ParseNode<'a>])
+    -> Result<ParseTree<'a>, ExpansionError<'a>> {
+        if !mac.is_lazy() {
+            return self.expand_nodes(params);
+        }
+        let mut arguments = Vec::with_capacity(params.len());
+        let mut position = 0;
+        for param in params {
+            let lazy = !param.is_attribute()
+                && mac.lazy_positional.get(position).copied().unwrap_or(mac.lazy_rest);
+            if lazy {
+                arguments.push(param.clone());
+                position += 1;
+            } else {
+                let start = arguments.len();
+                self.expand_into(param, &mut arguments)?;
+                position += arguments[start..].iter().filter(|node| !node.is_attribute()).count();
+            }
+        }
+        Ok(arguments.into_boxed_slice())
+    }
+
+    /// Check the arguments bound to typed parameters.
+    fn check_types(&self, mac: &Macro<'a>) -> Result<(), ExpansionError<'a>> {
+        let definitions = self.scope.definitions.borrow();
+        for (name, kind, rest) in &mac.types {
+            let Some(Definition::Value(nodes)) = definitions.get(name) else { continue };
+            let wrong = if *rest {
+                nodes.iter().find(|node| !kind.admits(node))
+            } else {
+                nodes.iter().find(|node| !kind.admits(node)).or(if nodes.len() == 1 { None } else { nodes.first() })
+            };
+            if let Some(node) = wrong {
+                return Err(ExpansionError(
+                    format!("Argument `{name}' of `%{}' must be a {}, got a {} instead.",
+                        mac.name, kind.name(), node.node_type()),
+                    node.owned_site()));
+            }
+        }
+        Ok(())
     }
 
     fn apply_macro(&self, mac: &Macro<'a>, node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -1798,8 +2500,23 @@ impl<'a> Expander<'a> {
         let subcontext = self.child_of(mac.env);
         // Construct fake list of arguments and parameters and pattern match on them.
         subcontext.bind_list(node, &mac.params, params)?;
+        subcontext.check_types(mac)?;
+        // Lazy arguments are expanded where they were written, whenever they are used.
+        if mac.is_lazy() {
+            let mut definitions = subcontext.scope.definitions.borrow_mut();
+            for name in &mac.lazy {
+                if let Some(definition) = definitions.get_mut(name)
+                && let Definition::Value(nodes) = definition {
+                    *definition = Definition::Thunk(std::mem::take(nodes), self.scope);
+                }
+            }
+        }
         // Expand body.
         let expanded = subcontext.expand_nodes(&mac.body);
+        // If anything made within the body outlives it, so must its lazy arguments' scope.
+        if mac.is_lazy() && subcontext.scope.captured.get() {
+            self.scope.capture();
+        }
         subcontext.release();
         expanded
     }
@@ -1809,19 +2526,20 @@ impl<'a> Expander<'a> {
         let definition = self.lookup(name, |definition| match definition {
             Definition::Macro(mac) => Ok(*mac),
             // A variable may also be called, with no arguments: `(%name)`.
-            Definition::Value(value) if params.is_empty() => Err(value.clone()),
-            Definition::Value(_) => Err(Box::default()),
+            Definition::Value(value) if params.is_empty() => Err(Ok(value.clone())),
+            Definition::Thunk(nodes, env) if params.is_empty() => Err(self.within(env).expand_nodes(nodes)),
+            Definition::Value(_) | Definition::Thunk(..) => Err(Ok(Box::default())),
         });
         let mac = match definition {
             Some(Ok(mac)) => mac,
-            Some(Err(value)) if params.is_empty() => return Ok(value),
+            Some(Err(value)) if params.is_empty() => return value,
             Some(Err(_)) => return Err(ExpansionError::new(
                 format!("`{name}' is a variable, and takes no arguments."), node.site())),
             None => return Err(ExpansionError::new(
                 format!("Macro not found (`{name}')."), &node.owned_site())),
         };
-        // Eagerly evaluate parameters passed to macro invocation.
-        let params = self.expand_nodes(params)?;
+        // Evaluate parameters passed to macro invocation (except lazy ones).
+        let params = self.macro_arguments(mac, params)?;
         self.apply_macro(mac, node, &params)
     }
 
@@ -1867,6 +2585,35 @@ impl<'a> Expander<'a> {
             "log"       => self.expand_log_macro(node, params),
             "format"    => self.expand_format_macro(node, params),
             "os/env"    => self.expand_os_env_macro(node, params),
+            // `(%quote ...)` gives its arguments unexpanded, as code to `%eval` later.
+            "quote"     => Ok(params.into()),
+            "eval"      => self.expand_eval_macro(node, params),
+            "let"       => self.expand_let_macro(node, params),
+            "if"        => self.expand_if_macro(node, params),
+            "not"       => self.expand_not_macro(node, params),
+            "and"       => self.expand_and_or_macro(true, node, params),
+            "or"        => self.expand_and_or_macro(false, node, params),
+            "=" | "!=" | "<" | ">" | "<=" | ">="
+                => self.expand_comparison_macro(name, node, params),
+            "+" | "-" | "*" | "/" | "mod" | "pow" | "min" | "max"
+                => self.expand_arithmetic_macro(name, node, params),
+            "exp" | "sqrt" | "ln" | "log2" | "log10" | "abs" | "floor" | "ceil" | "round" | "hypot"
+                => self.expand_math_function_macro(name, node, params),
+            "range"     => self.expand_range_macro(node, params),
+            "error"     => self.expand_error_macro(node, params),
+            "try"       => self.expand_try_macro(node, params),
+            "take"      => self.expand_take_drop_macro(true, node, params),
+            "drop"      => self.expand_take_drop_macro(false, node, params),
+            "while"     => self.expand_while_macro(node, params),
+            "split"     => self.expand_split_macro(node, params),
+            "intercalate" => self.expand_intercalate_macro(node, params),
+            "length"    => self.expand_length_macro(node, params),
+            "items" | "keys" | "values" => self.expand_dictionary_macro(name, node, params),
+            "basename" | "dirname" | "extension" => self.expand_path_macro(name, node, params),
+            "write"     => self.expand_write_macro(node, params),
+            "exec"      => self.expand_exec_macro(node, params),
+            _ if name.starts_with("formatter/")
+                => self.expand_formatter_macro(&name["formatter/".len()..], node, params),
             _           => self.expand_macro(name, node, params),
         }
     }
@@ -1877,11 +2624,20 @@ impl<'a> Expander<'a> {
         let start = out.len();
         match node {
             // Symbols starting with %... are replaced with their defined value.
+            ParseNode::Symbol(sym) if sym.value.starts_with("%{") && sym.value.ends_with('}') => {
+                out.push(self.expand_shell(sym)?);
+            },
             ParseNode::Symbol(sym) if sym.value.starts_with('%') => {
                 let name = &sym.value[1..];
                 let lazy = self.lookup(name, |definition| match definition {
                     Definition::Value(value) => {
                         out.extend_from_slice(value);
+                        Ok(None)
+                    },
+                    Definition::Thunk(nodes, env) => {
+                        for node in nodes {
+                            self.within(env).expand_into(node, out)?;
+                        }
                         Ok(None)
                     },
                     Definition::Macro(mac) if mac.params.is_empty() => Ok(Some(*mac)),
@@ -1971,8 +2727,306 @@ impl<'a> Expander<'a> {
     }
 }
 
-/// Join expanded nodes back into text, such as for markdown: text and atoms
-/// are written as they are, and any elements are generated as HTML.
+/// The list a list macro operates on: its argument if it is a list,
+/// otherwise all the nodes given.
+fn list_argument<'p, 'a>(arguments: &'p [ParseNode<'a>]) -> &'p [ParseNode<'a>] {
+    match arguments {
+        [ParseNode::List { nodes, .. }] => nodes,
+        nodes => nodes,
+    }
+}
+
+/// Whether expanded nodes count as true: nothing, `()`, `false` and `""` are false.
+fn truthy(nodes: &[ParseNode]) -> bool {
+    match nodes {
+        [] => false,
+        [node] => !(node.null()
+            || node.symbol().is_some_and(|symbol| symbol.value == "false")
+            || node.string().is_some_and(|string| string.value.is_empty())),
+        _ => true,
+    }
+}
+
+fn bool_node<'a>(call: &ParseNode<'a>, value: bool) -> ParseNode<'a> {
+    ParseNode::Symbol(Node::new(if value { "true" } else { "false" }, call.site(), call.leading_whitespace().clone()))
+}
+
+fn number_node<'a>(call: &ParseNode<'a>, value: String) -> ParseNode<'a> {
+    ParseNode::Number(Node::new(value, call.site(), call.leading_whitespace().clone()))
+}
+
+/// A new list, in the place of (and like) the list `like`.
+fn list_node<'a>(like: &ParseNode<'a>, nodes: Vec<ParseNode<'a>>) -> ParseNode<'a> {
+    let ParseNode::List { site, end_token, leading_whitespace, .. } = like else {
+        unreachable!("a list is made like another list.");
+    };
+    ParseNode::List {
+        nodes: nodes.into_boxed_slice(),
+        site: *site,
+        end_token: *end_token,
+        leading_whitespace: leading_whitespace.clone(),
+    }
+}
+
+/// Items taken from within a list, starting it off without leading whitespace.
+fn without_leading(mut items: Vec<ParseNode<'_>>) -> Vec<ParseNode<'_>> {
+    if let Some(first) = items.first_mut() {
+        first.set_leading_whitespace("");
+    }
+    items
+}
+
+/// New items for a list, separated by spaces.
+fn spaced(mut items: Vec<ParseNode<'_>>) -> Vec<ParseNode<'_>> {
+    for (index, item) in items.iter_mut().enumerate() {
+        item.set_leading_whitespace(if index == 0 { "" } else { " " });
+    }
+    items
+}
+
+/// An atom of the same kind as `like` (string, symbol, ...).
+fn same_kind<'a>(like: &ParseNode<'a>, node: Node<'a>) -> ParseNode<'a> {
+    match like {
+        ParseNode::Symbol(_) => ParseNode::Symbol(node),
+        ParseNode::Number(_) => ParseNode::Number(node),
+        ParseNode::Raw(_) => ParseNode::Raw(node),
+        _ => ParseNode::String(node),
+    }
+}
+
+/// Keep the original text when unchanged, so as not to copy it.
+fn result_string<'a>(original: &Cow<'a, str>, result: String) -> Cow<'a, str> {
+    if *original == result { original.clone() } else { Cow::Owned(result) }
+}
+
+/// The text of a node, for comparing: an atom's value, or a list as an s-expression.
+fn node_text<'a>(node: &ParseNode<'a>) -> Result<Cow<'a, str>, ExpansionError<'a>> {
+    if let Some(atom) = node.atomic() {
+        return Ok(atom.value.clone());
+    }
+    let mut text = String::new();
+    SExpFormatter::generate_children(&mut text, std::slice::from_ref(node))
+        .map_err(|error| ExpansionError(error.message, error.site))?;
+    Ok(Cow::Owned(text))
+}
+
+/// A list index, counting from the end if negative.
+fn list_index<'a>(index: &ParseNode<'a>, length: usize) -> Result<usize, ExpansionError<'a>> {
+    let Some(Number::Int(int)) = Number::of(index) else {
+        return Err(ExpansionError::new("A list index must be a whole number.", index.site()));
+    };
+    let resolved = if int < 0 {
+        usize::try_from(int.unsigned_abs()).ok().and_then(|back| length.checked_sub(back))
+    } else {
+        usize::try_from(int).ok()
+    };
+    match resolved {
+        Some(resolved) if resolved < length => Ok(resolved),
+        _ => Err(ExpansionError(
+            format!("Index {int} is out of bounds in list of length {length}."), index.owned_site())),
+    }
+}
+
+/// A number, kept whole where possible.
+#[derive(Debug, Clone, Copy)]
+enum Number { Int(i64), Float(f64) }
+
+impl Number {
+    fn of(node: &ParseNode) -> Option<Self> {
+        let text: &str = &node.atomic()?.value;
+        let (sign, digits) = match text.strip_prefix('-') {
+            Some(digits) => (-1, digits),
+            None => (1, text.strip_prefix('+').unwrap_or(text)),
+        };
+        let radix = |prefix: &str, radix| digits.strip_prefix(prefix)
+            .and_then(|digits| i64::from_str_radix(digits, radix).ok());
+        if let Some(int) = radix("0x", 16).or_else(|| radix("0o", 8)).or_else(|| radix("0b", 2)) {
+            return Some(Self::Int(sign * int));
+        }
+        if let Ok(int) = text.parse::<i64>() {
+            return Some(Self::Int(int));
+        }
+        text.parse::<f64>().ok().filter(|float| !float.is_nan()).map(Self::Float)
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn float(self) -> f64 {
+        match self {
+            Self::Int(int) => int as f64,
+            Self::Float(float) => float,
+        }
+    }
+
+    /// A whole float as an integer, if it fits.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    fn integral(self) -> Self {
+        match self {
+            Self::Float(float) if float.fract() == 0.0 && float.abs() < 9.0e15 => Self::Int(float as i64),
+            number => number,
+        }
+    }
+
+    fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.checked_add(b).map_or(Self::Float(self.float() + other.float()), Self::Int),
+            _ => Self::Float(self.float() + other.float()),
+        }
+    }
+
+    fn sub(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.checked_sub(b).map_or(Self::Float(self.float() - other.float()), Self::Int),
+            _ => Self::Float(self.float() - other.float()),
+        }
+    }
+
+    fn mul(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.checked_mul(b).map_or(Self::Float(self.float() * other.float()), Self::Int),
+            _ => Self::Float(self.float() * other.float()),
+        }
+    }
+
+    /// Division, whole if it divides exactly.
+    fn div(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (_, Self::Int(0)) => None,
+            (Self::Int(a), Self::Int(b)) if a % b == 0 => Some(Self::Int(a / b)),
+            _ if other.float() == 0.0 => None,
+            _ => Some(Self::Float(self.float() / other.float())),
+        }
+    }
+
+    /// The remainder, with the sign of the divisor's absolute value (always non-negative).
+    fn rem(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (_, Self::Int(0)) => None,
+            (Self::Int(a), Self::Int(b)) => Some(Self::Int(a.rem_euclid(b))),
+            _ if other.float() == 0.0 => None,
+            _ => Some(Self::Float(self.float().rem_euclid(other.float()))),
+        }
+    }
+
+    fn pow(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => u32::try_from(b).ok()
+                .and_then(|b| a.checked_pow(b))
+                .map_or(Self::Float(self.float().powf(other.float())), Self::Int),
+            _ => Self::Float(self.float().powf(other.float())),
+        }
+    }
+}
+
+impl fmt::Display for Number {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Int(int) => write!(f, "{int}"),
+            Self::Float(float) => write!(f, "{float}"),
+        }
+    }
+}
+
+/// Apply a shell-style operation (see [`Expander::expand_shell`]) to text.
+fn shell_operation(text: &str, operation: &str) -> Result<String, String> {
+    let glob = |pattern: &str| glob::Pattern::new(pattern)
+        .map_err(|error| format!("Invalid pattern `{pattern}': {error}"));
+    // Every character boundary in the text.
+    let boundaries: Vec<usize> = text.char_indices().map(|(i, _)| i).chain(std::iter::once(text.len())).collect();
+    let chars: Vec<char> = text.chars().collect();
+    if operation.is_empty() {
+        return Ok(text.to_owned());
+    }
+    if let Some(range) = operation.strip_prefix(':') {
+        // `:offset` or `:offset:length`. As in a shell, these may be a subtraction,
+        // so a negative offset is written `0-n` (since `:-` gives a default).
+        let parse = |n: &str| {
+            let number = |n: &str| n.parse::<i64>().map_err(|_| format!("Expected a number in `:{range}'."));
+            match n.get(1..).and_then(|tail| tail.find('-')) {
+                Some(minus) => Ok(number(&n[..=minus])? - number(&n[minus + 2..])?),
+                None => number(n),
+            }
+        };
+        let (offset, length) = match range.split_once(':') {
+            Some((offset, length)) => (parse(offset)?, Some(parse(length)?)),
+            None => (parse(range)?, None),
+        };
+        let count = i64::try_from(chars.len()).unwrap_or(i64::MAX);
+        let start = if offset < 0 { (count + offset).max(0) } else { offset.min(count) };
+        let end = match length {
+            Some(length) if length < 0 => (count + length).max(start),
+            Some(length) => (start + length).min(count),
+            None => count,
+        };
+        let (start, end) = (usize::try_from(start).unwrap_or(0), usize::try_from(end).unwrap_or(0));
+        return Ok(chars[start..end].iter().collect());
+    }
+    if let Some(pattern) = operation.strip_prefix("##") {
+        let pattern = glob(pattern)?;
+        let cut = boundaries.iter().rev().find(|&&i| pattern.matches(&text[..i])).copied().unwrap_or(0);
+        return Ok(text[cut..].to_owned());
+    }
+    if let Some(pattern) = operation.strip_prefix('#') {
+        let pattern = glob(pattern)?;
+        let cut = boundaries.iter().find(|&&i| pattern.matches(&text[..i])).copied().unwrap_or(0);
+        return Ok(text[cut..].to_owned());
+    }
+    if let Some(pattern) = operation.strip_prefix("%%") {
+        let pattern = glob(pattern)?;
+        let cut = boundaries.iter().find(|&&i| pattern.matches(&text[i..])).copied().unwrap_or(text.len());
+        return Ok(text[..cut].to_owned());
+    }
+    if let Some(pattern) = operation.strip_prefix('%') {
+        let pattern = glob(pattern)?;
+        let cut = boundaries.iter().rev().find(|&&i| pattern.matches(&text[i..])).copied().unwrap_or(text.len());
+        return Ok(text[..cut].to_owned());
+    }
+    if let Some(replace) = operation.strip_prefix('/') {
+        let (all, anchor, replace) = match replace.chars().next() {
+            Some('/') => (true, None, &replace[1..]),
+            Some('#') => (false, Some('#'), &replace[1..]),
+            Some('%') => (false, Some('%'), &replace[1..]),
+            _ => (false, None, replace),
+        };
+        let (pattern, replacement) = replace.split_once('/').unwrap_or((replace, ""));
+        let pattern = glob(pattern)?;
+        let mut result = String::new();
+        let mut index = 0; // Index into `boundaries` of where to search from.
+        while index < boundaries.len() {
+            let start = boundaries[index];
+            if anchor == Some('#') && start != 0 { break; }
+            // The longest match starting here (non-empty).
+            let found = boundaries[index + 1..].iter().rev()
+                .filter(|&&end| anchor != Some('%') || end == text.len())
+                .find(|&&end| pattern.matches(&text[start..end]))
+                .copied();
+            if let Some(end) = found {
+                result += replacement;
+                index = boundaries.iter().position(|&i| i == end).unwrap_or(boundaries.len());
+                if !all {
+                    result += &text[end..];
+                    return Ok(result);
+                }
+            } else {
+                if let Some(&next) = boundaries.get(index + 1) {
+                    result += &text[start..next];
+                }
+                index += 1;
+            }
+        }
+        if anchor == Some('#') {
+            result += &text[boundaries.get(index).copied().unwrap_or(text.len())..];
+        }
+        return Ok(result);
+    }
+    match operation {
+        "^^" => Ok(text.to_uppercase()),
+        ",," => Ok(text.to_lowercase()),
+        "^" => Ok(chars.first().map_or_else(String::new, |c| c.to_uppercase().chain(chars[1..].iter().copied()).collect())),
+        "," => Ok(chars.first().map_or_else(String::new, |c| c.to_lowercase().chain(chars[1..].iter().copied()).collect())),
+        _ => Err(format!("Unknown operation `{operation}'.")),
+    }
+}
+
 /// Frontmatter at the start of a markdown document.
 enum Frontmatter {
     Yaml(String),
@@ -1997,6 +3051,8 @@ fn split_frontmatter<'s>(contents: &'s str, options: &markdown::ParseOptions)
     Ok((Some(frontmatter), (body, head.matches('\n').count())))
 }
 
+/// Join expanded nodes back into text, such as for markdown: text and atoms
+/// are written as they are, and any elements are generated as HTML.
 fn nodes_to_text<'a>(nodes: &[ParseNode<'a>]) -> Result<String, ExpansionError<'a>> {
     let mut text = String::new();
     for node in nodes {

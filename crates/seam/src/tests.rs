@@ -383,6 +383,141 @@ mod cases {
         assert_eq!(check("a b :mode fast :mode slow"), Err("Named argument `:mode' is given more than once.".to_owned()));
     }
 
+    /// Expand source to s-expressions.
+    fn sexp(source: &str) -> Result<String, String> {
+        use assemble::MarkupFormatter;
+        let context = Context::new();
+        let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
+        let tree = expander.expand().map_err(|err| format!("{err}"))?;
+        assemble::sexp::SExpFormatter::new(tree).document().map_err(|err| err.message)
+    }
+
+    fn assert_sexp_eq(input: &str, expect: &str) {
+        assert_eq!(sexp(input).as_deref(), Ok(expect), "{input}");
+    }
+
+    #[test]
+    fn test_math() {
+        assert_sexp_eq("(%+ 1 2 3) (%- 10 4 1) (%- 5) (%* 2 3.5) (%/ 6 3) (%/ 7 2)", "6 5 -5 7 2 3.5");
+        assert_sexp_eq("(%mod -7 3) (%pow 2 10) (%min 3 1 2) (%max 3 1 2) (%+ 0x10 1)", "2 1024 1 3 17");
+        assert_sexp_eq("(%sqrt 16) (%hypot 3 4) (%abs -3) (%floor 2.7) (%round 2.5) (%log10 1000)", "4 5 3 2 3 3");
+        assert!(sexp("(%/ 1 0)").unwrap_err().contains("Division by zero"));
+        assert!(sexp("(%+ 1 a)").unwrap_err().contains("expects numbers"));
+    }
+
+    #[test]
+    fn test_logic() {
+        assert_sexp_eq("(%= 1 1.0) (%< 1 2 3) (%< 1 3 2) (%= a a) (%!= a b) (%>= 3 3)",
+            "true true false true true true");
+        // `%if`, `%and` and `%or` only expand what they need.
+        assert_sexp_eq("(%if (%< 1 2) yes (%error no)) (%if false (%error yes) no) (%if \"\" yes)", "yes no");
+        assert_sexp_eq("(%not ()) (%and a b c) (%and a false (%error x)) (%or false () x (%error y))",
+            "true c false x");
+    }
+
+    #[test]
+    fn test_list_macros() {
+        assert_sexp_eq("(%take 2 (a b c d)) (%drop 2 (a b c d)) (%range 1 4) (%range 5 1 -2)",
+            "(a b) (c d) (1 2 3 4) (5 3 1)");
+        assert_sexp_eq("(%get -1 (a b c)) (%get (1 3) (a b c d e)) (%get (-2 -1) (a b c d e))",
+            "c (b c d) (d e)");
+        assert_sexp_eq("(%split , \"a,b\") (%split | (a b | c)) (%intercalate , (a b c)) (%length (a b)) (%length héllo)",
+            "(\"a\" \"b\") ((a b) (c)) a , b , c 2 5");
+        assert_sexp_eq("(%while (%lambda (x) (%< %x 3)) (1 2 3 1))", "(1 2)");
+    }
+
+    #[test]
+    fn test_dictionary_macros() {
+        assert_sexp_eq("(%define d (:a 1 :b 2)) (%items %d) (%keys %d) (%values %d)",
+            " ((a 1) (b 2)) (a b) (1 2)");
+        // `%for` iterates over what its list expression expands to.
+        assert_sexp_eq("(%define d (:a 1 :b 2)) (%for (k v) in (%items %d) %k = %v ,)",
+            " a = 1 , b = 2 ,");
+    }
+
+    #[test]
+    fn test_path_macros() {
+        assert_sexp_eq("(%basename :suffix txt /a/f.txt) (%basename /a/f.txt) (%dirname /a/f.txt) (%dirname f) (%extension /a/f.txt)",
+            "f f.txt /a . txt");
+    }
+
+    #[test]
+    fn test_error_and_try() {
+        assert_eq!(sexp("(%error Something (%+ 1 1) went wrong)").unwrap_err().lines().last(),
+            Some("[**] Error Expanding Macro (<test>:1:1): Something 2 went wrong"));
+        assert_sexp_eq("(%try (%error bad) :error e caught %e) (%try fine (%error never))", "caught \"bad\" fine");
+    }
+
+    #[test]
+    fn test_let_quote_eval() {
+        assert_sexp_eq("(%let ((a 1) (b (%+ %a 1)) ((c d) (x y))) %a %b %c %d)", "1 2 x y");
+        assert_sexp_eq("(%define code (%quote (%+ 1 2))) %code (%eval %code)", " (%+ 1 2) 3");
+    }
+
+    #[test]
+    fn test_lazy_parameters() {
+        // lazy arguments are only expanded when used, in the caller's scope.
+        assert_sexp_eq("(%define (unless c ~body) (%if %c () %body)) (%unless true (%error x)) (%unless false ran)",
+            " () ran");
+        assert_sexp_eq("(%define (my-if c ~a ~b) (%if %c %a %b)) (%define (f x) (%my-if true %x no)) (%f inner)",
+            " inner");
+        assert_sexp_eq("(%define (twice ~&body) %body %body) (%twice a b)", " a b a b");
+        // recursion terminates, since `%if` is lazy.
+        assert_sexp_eq("(%define (fact n) (%if (%<= %n 1) 1 (%* %n (%fact (%- %n 1))))) (%fact 10)", " 3628800");
+    }
+
+    #[test]
+    fn test_typed_parameters() {
+        assert_sexp_eq("(%define (r n:number &s:string) %n %s) (%r 2 \"a\" \"b\")", " 2 \"a\" \"b\"");
+        assert_sexp_eq("(%define (g :name:string \"you\") %name) (%g) (%g :name \"Sam\")", " \"you\" \"Sam\"");
+        assert!(sexp("(%define (r n:number) %n) (%r a)").unwrap_err()
+            .contains("Argument `n' of `%r' must be a number, got a symbol instead."));
+        assert!(sexp("(%define (r &xs:number) ok) (%r 1 a)").unwrap_err().contains("`xs'"));
+        assert!(sexp("(%define (g :n:number x) %n)").unwrap_err().contains("Default value of `:n'"));
+    }
+
+    #[test]
+    fn test_shell_expansion() {
+        let define = "(%define name \"Samuel Knutsen\") (%define file posts/2024-01-hi.md)";
+        let check = |expression: &str, expect: &str| assert_sexp_eq(&format!("{define} {expression}"), &format!(" {expect}"));
+        check("%{#name} %{name:0:6} %{name:0-7} %{name:7:3}", "14 \"Samuel\" \"Knutsen\" \"Knu\"");
+        check("%{file#*/} %{file##*-} %{file%.md} %{file%%-*}", "2024-01-hi.md hi.md posts/2024-01-hi posts/2024");
+        check("%{name/Samuel/Sam} %{file//-/_} %{file/#posts/drafts} %{file/%md/html}",
+            "\"Sam Knutsen\" posts/2024_01_hi.md drafts/2024-01-hi.md posts/2024-01-hi.html");
+        check("%{name^^} %{name,,} %{missing:-none} %{name:+set}",
+            "\"SAMUEL KNUTSEN\" \"samuel knutsen\" \"none\" \"set\"");
+        assert!(sexp("%{nope}").unwrap_err().contains("No such variable, `nope`."));
+    }
+
+    #[test]
+    fn test_formatter_macros() {
+        assert_html_document_eq("(div (%formatter/sexp (p hi)) (%formatter/html (b <x>)))",
+            "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<div>(p hi) <b>&lt;x&gt;</b></div>\n</body>\n</html>");
+        assert_eq!(literate_html("(%formatter/css (a :color red))").as_deref(), Ok("a {\n  color: red;\n}"));
+    }
+
+    #[test]
+    fn test_attribute_lists() {
+        assert_eq!(literate_html("(%do (p :style (:color red :margin (0 auto)) :class (a b) x))").as_deref(),
+            Ok("<p style=\"color: red; margin: 0 auto;\" class=\"a b\">x</p>"));
+    }
+
+    #[test]
+    fn test_write_macro() {
+        let directory = std::env::temp_dir().join(format!("seam-test-{}", std::process::id()));
+        let path = directory.join("nested/out.txt");
+        assert_sexp_eq(&format!("(%write {:?} Hello (%+ 1 1))", path.display().to_string()), "");
+        assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), Some("Hello 2"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_exec_macro() {
+        assert_sexp_eq("(%exec echo hi there) (%exec tr a-z A-Z :stdin shout)", "\"hi there\" \"SHOUT\"");
+        assert!(sexp("(%exec false)").unwrap_err().contains("`%exec false' failed"));
+    }
+
     #[test]
     fn test_escaped_newline_line_numbers() {
         // an escaped new line in a symbol only counts as one line.

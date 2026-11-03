@@ -112,6 +112,103 @@ will be treated as macros.
 - `%log` will simply log any information to STDERR, e.g. `(%log Hello, World!)`.
 - `%with` overrides top-level definitions for everything within it, e.g.
   `(%with (:title "Pound Cake") (%layout))` (see [Scoping](#scoping)).
+- `%let` binds patterns for its body, each seeing the ones before it, e.g.
+  `(%let ((n 2) ((a b) (x y))) %n %a %b)`.
+
+#### Conditions and arithmetic
+- `(%if condition then else)` expands only the chosen branch. Nothing, `()`,
+  `false` and `""` are false; anything else is true.
+- `%not`, `%and` and `%or`, where `%and` and `%or` stop expanding their
+  arguments as soon as the answer is known.
+- Comparisons `%=`, `%!=`, `%<`, `%>`, `%<=` and `%>=` (numbers by value,
+  anything else by its text), e.g. `(%< 1 %n 10)`.
+- Arithmetic `%+`, `%-`, `%*`, `%/`, `%mod`, `%pow`, `%min`, `%max`, and
+  `%exp`, `%sqrt`, `%ln`, `%log2`, `%log10`, `%abs`, `%floor`, `%ceil`,
+  `%round` and `%hypot`. Whole numbers stay whole where possible:
+  `(%/ 6 3)` is `2`, `(%/ 7 2)` is `3.5`. (`%log` already logs to STDERR,
+  hence `%ln`, `%log2` and `%log10`.)
+- `(%range first last step)`, the numbers from first to last inclusive.
+
+#### Lists
+- `(%get 1 list)`, `(%get -1 list)` (from the end), `(%get key dict)`,
+  `(%get a/b nested)`, and `(%get (1 3) list)` for a slice (inclusive).
+- `(%take n list)`, `(%drop n list)`, and `(%while predicate list)`, the
+  items before the first one the predicate macro is false for.
+- `(%split , "a,b")` gives `("a" "b")`; `(%split | (a b | c))` gives `((a b) (c))`.
+- `(%intercalate ", " %tags)` puts the separator between the items (unwrapped).
+- `(%length list)` counts items, or the characters of a string.
+- `(%items dict)`, `(%keys dict)` and `(%values dict)` for keyword lists:
+  `(%for (key value) in (%items (:a 1 :b 2)) ...)`.
+- `%for` iterates over the items of the list its expression gives
+  (or over all the nodes it gives), e.g. `(%for post in %posts ...)`.
+
+#### Paths, files and programs
+- `(%basename :suffix md posts/hi.md)` → `hi`, `(%dirname posts/hi.md)` →
+  `posts`, `(%extension posts/hi.md)` → `md`.
+- `(%write path content...)` writes the content's text to a file (making
+  directories as needed), expanding to nothing. With the formatter macros
+  below, one source file can generate a whole site.
+- `(%exec program arguments... :stdin text)` runs a program and gives its
+  output, e.g. `(%exec git rev-parse --short HEAD)`.
+
+#### Errors
+- `(%error message...)` stops with an error.
+- `(%try expression :error name fallback...)` gives the expression, or if it
+  fails, the fallback, with `%name` bound to the error message.
+
+#### Code as data
+- `(%quote ...)` gives its arguments unexpanded; `(%eval ...)` expands its
+  arguments, then expands the result: `(%eval (%quote (%+ 1 2)))` → `3`.
+
+#### Formatters
+- `(%formatter/html ...)`, `(%formatter/xml ...)`, `(%formatter/css ...)`,
+  `(%formatter/text ...)` and `(%formatter/sexp ...)` generate their arguments
+  with that formatter, as text. Markup is kept as it is (raw), while text and
+  s-expressions are escaped in the output. `:document true` generates a whole
+  document, e.g. `(%write "out/index.html" (%formatter/html :document true ...))`.
+
+#### Shell-style variables
+`%{name...}` manipulates a variable's text, as `${name...}` does in a shell:
+
+| Form | Gives |
+|---|---|
+| `%{name}` | the value |
+| `%{#name}` | its length |
+| `%{name:-default}` / `%{name:+other}` | `default` if unset or empty / `other` if set |
+| `%{name:2}`, `%{name:2:3}`, `%{name:0-3}` | from offset 2; 3 characters from 2; the last 3 |
+| `%{name#glob}`, `%{name##glob}` | without the shortest / longest matching prefix |
+| `%{name%glob}`, `%{name%%glob}` | without the shortest / longest matching suffix |
+| `%{name/glob/to}`, `%{name//glob/to}` | first / every match replaced |
+| `%{name/#glob/to}`, `%{name/%glob/to}` | a matching prefix / suffix replaced |
+| `%{name^}`, `%{name^^}`, `%{name,}`, `%{name,,}` | first letter / all upper case; lower case |
+
+These can't contain spaces, since a space ends the symbol.
+
+### Defining macros
+
+`(%define (name parameters...) body...)` makes a macro, called as
+`(%name arguments...)`. Its parameters are patterns:
+- `x` binds a positional argument, and `(a b)` destructures a list;
+- `&rest` binds the remaining positional arguments;
+- `:key default` binds the keyword argument `:key`, or else the default;
+- `&&rest` binds the remaining keyword arguments.
+
+Parameters may be **typed** with the same types as the built-in macros use
+(`literal`, `string`, `symbol`, `number`, `symbolic`, `list`, `any`), checked
+on every call: `n:number`, `&items:string`, `:sep:string ", "`.
+
+A parameter prefixed with `~` is **lazy**: its argument is not expanded
+before the call. Instead, each use of `%param` expands the argument as it was
+written, in the caller's scope. This lets macros decide what to evaluate:
+```lisp
+(%define (unless condition ~body) (%if %condition () %body))
+(%unless %draft (%include "comments.sex"))
+(%define (twice ~&body) %body %body)  ; Lazy rest.
+```
+Since `%if` is lazy too, macros can be recursive:
+```lisp
+(%define (fact n:number) (%if (%<= %n 1) 1 (%* %n (%fact (%- %n 1)))))
+```
 
 ### Scoping
 
