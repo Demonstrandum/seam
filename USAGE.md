@@ -67,6 +67,12 @@ Any of these elements written explicitly are kept as they are (along with
 their attributes, e.g. `(html :lang en ...)`). Only the top-level, and the
 inside of `(html ...)`, are looked at.
 
+Inside `(pre ...)`, macros and variables are expanded as they are anywhere
+else, so `(pre (%embed "example.c"))` shows that file. When nothing inside
+was expanded, the contents are copied exactly as written, including their
+spacing, parentheses and `;` comments. The text of `pre`, `title` and
+`textarea` is always HTML-escaped.
+
 ### Literate mode
 
 In *literate* mode, source is plain text, kept exactly as written, and only
