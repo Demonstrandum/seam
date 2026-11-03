@@ -38,6 +38,21 @@ impl ArgType {
         }
     }
 
+    /// The type with the given name, as written in a schema or annotation.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "literal" => Self::Literal,
+            "string" => Self::String,
+            "symbol" => Self::Symbol,
+            "number" => Self::Number,
+            "symbolic" => Self::Symbolic,
+            "list" => Self::List,
+            "any" => Self::Any,
+            _ => return None,
+        })
+    }
+
     /// Whether a node is of this kind.
     #[must_use]
     pub fn admits(self, node: &ParseNode) -> bool {

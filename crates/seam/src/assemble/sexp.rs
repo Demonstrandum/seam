@@ -19,8 +19,12 @@ impl<'a> SExpFormatter<'a> {
 
     /// Generate a sequence of nodes.
     pub fn generate_nodes(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
-        for node in nodes {
-            Self::generate_node(f, node, node.leading_whitespace())?;
+        for (index, node) in nodes.iter().enumerate() {
+            let leading = node.leading_whitespace();
+            // Expanded nodes may lack whitespace, which would join adjacent atoms.
+            let separate = leading.is_empty() && index > 0
+                && !node.is_list() && !nodes[index - 1].is_list();
+            Self::generate_node(f, node, if separate { " " } else { leading })?;
         }
         Ok(())
     }
@@ -64,7 +68,8 @@ impl<'a> SExpFormatter<'a> {
             ParseNode::Attribute { keyword, node, .. } => {
                 write!(f, "{leading}")?;
                 write!(f, ":{keyword}")?;
-                Self::generate_node(f, node, node.leading_whitespace())?;
+                let leading = node.leading_whitespace();
+                Self::generate_node(f, node, if leading.is_empty() { " " } else { leading })?;
             },
         }
         Ok(())
