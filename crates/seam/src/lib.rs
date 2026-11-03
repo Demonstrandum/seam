@@ -1,6 +1,5 @@
 #![allow(incomplete_features)]
 #![feature(pattern)]
-#![feature(box_patterns)]
 #![feature(associated_type_defaults)]
 
 pub mod parse;
