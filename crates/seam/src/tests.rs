@@ -564,6 +564,31 @@ mod cases {
         let _ = std::fs::remove_dir_all(directory);
     }
 
+    #[test]
+    fn test_write_from_sources() {
+        let directory = std::env::temp_dir().join(format!("seam-test-from-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (source, output) = (directory.join("source.txt"), directory.join("output.txt"));
+        let at = |path: &std::path::Path, seconds: u64| std::fs::File::options().append(true).open(path).unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)).unwrap();
+        let write = |content: &str| sexp(&format!("(%write {:?} :from ({:?}) {content})",
+            output.display().to_string(), source.display().to_string()));
+        std::fs::write(&source, "").unwrap();
+        // Made, since it does not exist yet.
+        assert!(write("first").is_ok());
+        // Up to date: newer than its source, so the content is not even expanded.
+        at(&source, 1_000);
+        at(&output, 2_000);
+        assert!(write("(%error not expanded)").is_ok());
+        assert_eq!(std::fs::read_to_string(&output).ok().as_deref(), Some("first"));
+        // Out of date: made again.
+        at(&source, 3_000);
+        assert!(write("second").is_ok());
+        assert_eq!(std::fs::read_to_string(&output).ok().as_deref(), Some("second"));
+        assert_sexp_eq(&format!("(%path/modified {:?})", source.display().to_string()), "3000");
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_exec_macro() {

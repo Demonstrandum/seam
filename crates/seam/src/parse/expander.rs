@@ -231,7 +231,9 @@ impl<'a> Expander<'a> {
     /// Report an action on `STDOUT`, if echoing.
     fn echo(&self, action: &str, detail: impl fmt::Display) {
         if self.context.echo.get() {
-            println!("{} {detail}", format!("{action:>5}").bold().green());
+            use std::io::Write as _;
+            // Reporting is best effort, e.g. when piped into `head`.
+            let _ = writeln!(std::io::stdout(), "{} {detail}", format!("{action:>5}").bold().green());
         }
     }
 
@@ -2347,6 +2349,14 @@ impl<'a> Expander<'a> {
                     .collect();
                 return Ok(Box::new([list_node(node, without_leading(parts))]));
             },
+            "modified" => {
+                let args = arguments! { node, &params; mandatory(1): literal, }?;
+                let path = Path::new(args.number.1.value.as_ref());
+                let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified())
+                    .map_err(|error| failed(format!("`{}': {error}", path.display())))?;
+                let seconds = modified.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+                return Ok(Box::new([number_node(node, seconds.to_string())]));
+            },
             "exists" | "is-file" | "is-directory" => {
                 let args = arguments! { node, &params; mandatory(1): literal, }?;
                 let path = Path::new(args.number.1.value.as_ref());
@@ -2498,30 +2508,77 @@ impl<'a> Expander<'a> {
 
     /// `(%write path content...)` writes the content's text to a file
     /// (making any missing directories), expanding to nothing.
+    /// A file whose content is unchanged is not written again, and with
+    /// `:from (paths...)`, the content is not even expanded when the file is
+    /// newer than every one of those paths (like a rule in a Makefile).
     fn expand_write_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let mut params = self.expand_nodes(params)?.into_vec();
-        if params.is_empty() {
-            return Err(ExpansionError::new("`%write` expects a path, and content.", node.site()));
+        let mut sources = None;
+        let mut positional = Vec::with_capacity(params.len());
+        for param in params {
+            match param {
+                ParseNode::Attribute { keyword, node: value, .. } if keyword == "from" => {
+                    sources = Some(self.expand_node(value)?);
+                },
+                ParseNode::Attribute { keyword, .. } => return Err(crate::parse::macros::unexpected_named(param, keyword)),
+                _ => positional.push(param),
+            }
         }
-        let path = params.remove(0);
+        let Some((path, content)) = positional.split_first() else {
+            return Err(ExpansionError::new("`%write` expects a path, and content.", node.site()));
+        };
+        let path = self.expand_node(path)?;
+        let [ref path] = *path else {
+            return Err(ExpansionError::new("`%write` expects a path first.", node.site()));
+        };
         let Some(path) = path.atomic() else {
             return Err(ExpansionError::new("`%write` expects a path first.", path.site()));
         };
-        if let Some(first) = params.first_mut() {
+        let path = std::path::Path::new(path.value.as_ref());
+        let failed = |error: std::io::Error| ExpansionError(
+            format!("Could not write `{}': {error}", path.display()), node.owned_site());
+
+        // Up to date: newer than everything it is made from.
+        let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+        if let (Some(sources), Some(modified)) = (&sources, modified) {
+            let mut fresh = true;
+            for source in list_argument(sources) {
+                let Some(source) = source.atomic() else {
+                    return Err(ExpansionError::new("`:from` expects paths.", source.site()));
+                };
+                // A source that cannot be read always counts as newer.
+                let source = std::fs::metadata(source.value.as_ref()).and_then(|metadata| metadata.modified());
+                fresh &= source.is_ok_and(|source| source <= modified);
+            }
+            if fresh {
+                self.echo("fresh", path.display());
+                return Ok(Box::new([]));
+            }
+        }
+
+        let mut content = Vec::with_capacity(content.len());
+        for node in &positional[1..] {
+            self.expand_into(node, &mut content)?;
+        }
+        if let Some(first) = content.first_mut() {
             first.set_leading_whitespace("");
         }
-        let text = nodes_to_text(&params)?;
-        let path = std::path::Path::new(path.value.as_ref());
-        let write = || -> std::io::Result<()> {
-            if let Some(parent) = path.parent() && !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
+        let text = nodes_to_text(&content)?;
+        // Unchanged: leave it be, but mark it as up to date.
+        if modified.is_some() && std::fs::read(path).is_ok_and(|old| old == text.as_bytes()) {
+            self.echo("same", path.display());
+            if sources.is_some() {
+                std::fs::File::options().append(true).open(path)
+                    .and_then(|file| file.set_modified(std::time::SystemTime::now()))
+                    .map_err(failed)?;
             }
-            std::fs::write(path, text)
-        };
+            return Ok(Box::new([]));
+        }
         self.echo("write", path.display());
-        write().map_err(|error| ExpansionError(
-            format!("Could not write `{}': {error}", path.display()), node.owned_site()))?;
+        if let Some(parent) = path.parent() && !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(failed)?;
+        }
+        std::fs::write(path, text).map_err(failed)?;
         Ok(Box::new([]))
     }
 

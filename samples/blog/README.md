@@ -17,7 +17,9 @@ seam run build.sex     # Writes the site into public/.
   alone (`seam --html index.sex`, `seam --xml feed.sex`), while `post.sex`
   renders a post given its details by `%with`.
 - `build.sex` renders every page with a formatter macro
-  (`%formatter/html :document true ...`) and saves it with `%write`.
+  (`%formatter/html :document true ...`) and saves it with `%write`, giving
+  the files each page is made `:from`, so a page is only made again when one
+  of them has changed.
 - `style.sex` is the stylesheet, in seam's CSS syntax.
 
 Paths given to `%glob` and `%write` are relative to the working directory, so
