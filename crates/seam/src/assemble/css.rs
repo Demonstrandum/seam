@@ -1,6 +1,6 @@
 //! Assembles an expanded tree into valid CSS.
-use super::{GenerationError, MarkupFormatter, Formatter};
-use crate::parse::parser::{ParseNode, ParseTree};
+use super::{child_whitespace, GenerationError, MarkupFormatter, Formatter};
+use crate::parse::{parser::{ParseNode, ParseTree}, tokens::Site};
 
 use std::slice::Iter;
 
@@ -10,6 +10,54 @@ pub struct CSSFormatter<'a> {
 }
 
 impl<'a> CSSFormatter<'a> {
+    /// Generate a sequence of CSS rules.
+    pub fn generate_nodes(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for node in nodes {
+            Self::generate_node(f, node, node.leading_whitespace())?;
+        }
+        Ok(())
+    }
+
+    /// Generate the rules within an element (see [`child_whitespace`]).
+    pub fn generate_children(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for (index, node) in nodes.iter().enumerate() {
+            Self::generate_node(f, node, child_whitespace(index, node))?;
+        }
+        Ok(())
+    }
+
+    fn generate_node(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
+        match node {
+            ParseNode::List { nodes: list, .. } => {
+                write!(f, "{leading}")?;
+                generate_css_rule(f, list.iter())?;
+            },
+            ParseNode::Attribute { site, .. }  => {
+                return Err(GenerationError::new("CSS",
+                    "Attribute not expected here, CSS documents \
+                     are supposed to be a series of selectors \
+                     and property-value pairs, wrapped in parentheses.",
+                     &site.to_owned()));
+            },
+            // Raw text (e.g. hand-written CSS around literate macro calls) is written as it is.
+            ParseNode::Raw(node) => {
+                write!(f, "{leading}{}", node.value)?;
+            },
+            ParseNode::Symbol(node)
+            | ParseNode::Number(node)
+            | ParseNode::String(node) => {
+                let site = node.site;
+                return Err(GenerationError::new("CSS",
+                    "Symbolic node not expected here, CSS documents \
+                     are supposed to be a series of selectors \
+                     and property-value pairs, wrapped in parentheses.",
+                     &site));
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self { tree }
     }
@@ -64,7 +112,7 @@ const CSS_NON_NESTED_SELECTORS: [&str; 3]
 /// or at least I think.
 const BINARY_OPERATORS: [&str; 4] = ["+", "-", "*", "/"];
 
-fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<'a>> {
+fn convert_value<'a>(node: &ParseNode<'a>) -> Result<String, GenerationError<'a>> {
     match node {
         ParseNode::List { nodes: list, .. } => {
             let result = match &**list {
@@ -73,7 +121,7 @@ fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<
 
                     let mut tail_tmp = vec![String::new(); tail.len()];
                     for (i, e) in tail.iter().enumerate() {
-                        tail_tmp[i] = convert_value(e)?
+                        tail_tmp[i] = convert_value(e)?;
                     }
                     let tail = tail_tmp.as_slice();
 
@@ -85,41 +133,41 @@ fn convert_value<'a>(node: &'a ParseNode<'a>) -> Result<String, GenerationError<
                     let args = tail.join(delim);
                     let args = args.trim();
                     if CSS_FUNCTIONS.contains(&head.as_str()) {
-                        format!("{}({})", head, args)
+                        format!("{head}({args})")
                     } else if BINARY_OPERATORS.contains(&head.as_str()) {
                         let args = tail
-                            .join(&format!(" {} ", head));
-                        format!("({})", args)
+                            .join(&format!(" {head} "));
+                        format!("({args})")
                     } else {
-                        format!("{} {}", head, args)
+                        format!("{head} {args}")
                     }
                 },
-                [] => String::from("")
+                [] => String::new()
             };
             Ok(result)
         },
         ParseNode::Number(node)
         | ParseNode::Symbol(node)
         | ParseNode::String(node) =>
-            Ok(if node.value.chars().any(|c| c.is_whitespace()) {
+            Ok(if node.value.chars().any(char::is_whitespace) {
                 format!("{:?}", node.value)
             } else {
-                node.value.to_owned()
+                node.value.to_string()
             }),
         ParseNode::Raw(node) => {
-            Ok(node.value.to_owned())
+            Ok(node.value.to_string())
         },
         ParseNode::Attribute { .. } => Err(GenerationError::new("CSS-value",
                 "Incompatible structure (attribute) found in CSS \
                  property value.",
-                &node.site()))
+                node.site()))
     }
 }
 
 /// Function responsible for translating a CSS value (i.e.
 /// a value of a CSS property) from some s-expression into
 /// a valid CSS value.
-pub fn css_value<'a>(_property: &str, node: &'a ParseNode<'a>)
+pub fn css_value<'a>(_property: &str, node: &ParseNode<'a>)
 -> Result<String, GenerationError<'a>> {
     // Naïve way (in future consider the type of property,
     //  and take care of special cases):
@@ -132,28 +180,28 @@ pub fn css_value<'a>(_property: &str, node: &'a ParseNode<'a>)
 /// (@symbol :attr arg)                -> @symbol (attr: arg); OR @symbol { attr: arg }
 /// (@symbol (select :prop val))       -> @symbol { select { prop: val; } }
 /// (@sym x :attr arg (sel :prop val)) -> @sym x (attr: arg) { sel { prop: val; } }
-fn generate_special_selector<'a>(f: Formatter,
+fn generate_special_selector<'b, 'a>(f: Formatter,
                                  selector: &str,
-                                 mut arguments: Iter<'a, ParseNode<'a>>)
+                                 mut arguments: Iter<'b, ParseNode<'a>>)
 -> Result<(), GenerationError<'a>> {
     let mut parsing_rules: bool = false;
-    let unexpected_node = |node: &'a ParseNode<'a>, rules: bool| {
+    let unexpected_node = |node: &'b ParseNode<'a>, rules: bool| {
         if rules {
             Err(GenerationError::new("CSS",
                 "Expected list (i.e. a CSS rule) here!",
-                &node.site()))
+                node.site()))
         } else {
             Ok(())
         }
     };
     // Deal with one-line rules quickly.
     if CSS_ONELINE_RULES.contains(&selector) {
-        write!(f, "{} ", selector)?;
+        write!(f, "{selector} ")?;
         arguments.next();  // Skip `@`-selector.
         for arg in arguments {
             match arg {
-                ParseNode::Attribute { ref keyword, node, .. } => {
-                    write!(f, "({}: {}) ", keyword, css_value(keyword, &*node)?)?;
+                ParseNode::Attribute { keyword, node, .. } => {
+                    write!(f, "({}: {}) ", keyword, css_value(keyword, node)?)?;
                 },
                 _ => write!(f, "{} ", css_value(selector, arg)?)?
             }
@@ -163,26 +211,26 @@ fn generate_special_selector<'a>(f: Formatter,
     }
 
     // Handle @-rules with nested elements.
-    write!(f, "{} ", selector)?;
+    write!(f, "{selector} ")?;
     arguments.next();  // Skip `@`-selector.
 
     for arg in arguments {
         match arg {
-            ParseNode::Attribute { ref keyword, node, .. } => {
-                unexpected_node(&arg, parsing_rules)?;
-                write!(f, "({}: {}) ", keyword, css_value(keyword, &*node)?)?;
+            ParseNode::Attribute { keyword, node, .. } => {
+                unexpected_node(arg, parsing_rules)?;
+                write!(f, "({}: {}) ", keyword, css_value(keyword, node)?)?;
             },
-            ParseNode::List { nodes: ref rule, leading_whitespace, .. } => {
+            ParseNode::List { nodes: rule, leading_whitespace, .. } => {
                 // Now we parse nested rules!
                 if !parsing_rules {
                     writeln!(f, "{{")?;
                 }
                 parsing_rules = true;
-                write!(f, "{}", leading_whitespace)?;
+                write!(f, "{leading_whitespace}")?;
                 generate_css_rule(f, rule.into_iter())?;
             },
             _ => {
-                unexpected_node(&arg, parsing_rules)?;
+                unexpected_node(arg, parsing_rules)?;
                 write!(f, "{} ", css_value(selector, arg)?)?;
             }
         }
@@ -191,24 +239,63 @@ fn generate_special_selector<'a>(f: Formatter,
     Ok(())
 }
 
-fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<(), GenerationError<'a>> {
-    let mut prop_i = 0; // Index of first property.
-    // TODO: Selector functions such as nth-child(...), etc.
-    // e.g. (ul li(:nth-child (+ 2n 1))) -> ul li:nth-child(2n + 1).
-    let mut selectors = iter.clone()
-        .take_while(|n| { prop_i += 1; n.atomic().is_some() })
-        .map(|n| n.atomic().unwrap()) // We've checked.
-        .peekable();
+/// The argument to a selector function, e.g. `(+ 2n 1)` -> `2n + 1`.
+fn selector_argument<'a>(node: &ParseNode<'a>) -> Result<String, GenerationError<'a>> {
+    if let ParseNode::List { nodes, .. } = node
+    && let [head, tail@..] = &**nodes
+    && let Some(op) = head.atomic().filter(|op| BINARY_OPERATORS.contains(&op.value.as_ref())) {
+        // Unlike in values, an+b syntax may not be parenthesised.
+        let tail = tail.iter().map(convert_value).collect::<Result<Vec<_>, _>>()?;
+        return Ok(tail.join(&format!(" {} ", op.value)));
+    }
+    convert_value(node)
+}
+
+fn generate_css_rule<'a>(f: Formatter, iter: Iter<'_, ParseNode<'a>>) -> Result<(), GenerationError<'a>> {
+    // Collect the selectors: symbols, along with selector functions written
+    // as a list of attributes, e.g. `(ul li(:nth-child (+ 2n 1)))` -> `ul li:nth-child(2n + 1)`.
+    let mut nodes = iter.as_slice();
+    let mut selector = String::new();
+    let mut head = None;
+    while let Some((node, rest)) = nodes.split_first() {
+        match node {
+            ParseNode::List { nodes: functions, leading_whitespace, .. } if head.is_some()
+                && !functions.is_empty()
+                && functions.iter().all(|function| matches!(function, ParseNode::Attribute { .. })) => {
+                // Written apart from the preceding selector, it selects descendants.
+                if !leading_whitespace.is_empty() {
+                    selector.push(' ');
+                }
+                for function in functions {
+                    let ParseNode::Attribute { keyword, node, .. } = function else { unreachable!() };
+                    selector += ":";
+                    selector += keyword;
+                    selector += "(";
+                    selector += &selector_argument(node)?;
+                    selector += ")";
+                }
+            },
+            _ => {
+                let Some(atom) = node.atomic() else { break };
+                if head.is_some() {
+                    selector.push(' ');
+                }
+                head.get_or_insert(atom);
+                selector += &atom.value;
+            },
+        }
+        nodes = rest;
+    }
 
     // Check we were actually provided with
     // some selectors.
-    let head = if let Some(head) = selectors.next() {
-        head
-    } else {
+    let Some(head) = head else {
+        // Point at the rule's first (non-selector) node, if there is one.
+        let site = iter.clone().next().map_or_else(Site::unknown, ParseNode::owned_site);
         return Err(GenerationError::new("CSS",
             "CSS selector(s) missing. \
              Expected a symbol/identifier node, none was found!",
-             &selectors.peek().unwrap().site));
+             &site));
     };
 
     // Handle special @-rule selectors.
@@ -218,21 +305,14 @@ fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<
         return generate_special_selector(f, &head.value, iter);
     }
 
-    // Join the selectors togeher.
-    write!(f, "{} ", head.value)?;
-    for selector in selectors {
-        write!(f, "{} ", selector.value)?;
-    }
-    writeln!(f, "{{")?;
+    writeln!(f, "{selector} {{")?;
 
-    let properties = iter.skip(prop_i - 1);
-
-    for property in properties {
-        let ParseNode::Attribute { ref node, ref keyword, .. } = property else {
+    for property in nodes {
+        let ParseNode::Attribute { node, keyword, .. } = property else {
             return Err(GenerationError::new("CSS",
                 "CSS property-value pairs must be in the \
                  form of attributes, i.e. `:property value`.",
-                 &property.site()));
+                 property.site()));
         };
         writeln!(f, "  {}: {};", keyword, css_value(keyword, node)?)?;
     }
@@ -240,8 +320,8 @@ fn generate_css_rule<'a>(f: Formatter, iter: Iter<'a, ParseNode<'a>>) -> Result<
     Ok(())
 }
 
-impl<'a> MarkupFormatter for CSSFormatter<'a> {
-    fn document(&self) -> Result<String, GenerationError> {
+impl<'a> MarkupFormatter<'a> for CSSFormatter<'a> {
+    fn document(&self) -> Result<String, GenerationError<'a>> {
         let mut doc = String::new();
         if self.tree.is_empty() {
             return Ok(String::from(DEFAULT));
@@ -251,34 +331,7 @@ impl<'a> MarkupFormatter for CSSFormatter<'a> {
     }
 
     fn generate(&self, f: Formatter)
-    -> Result<(), GenerationError> {
-        let mut tree_iter = self.tree.iter().peekable();
-        while let Some(node) = tree_iter.next() {
-            match node {
-                ParseNode::List { nodes: list, leading_whitespace, .. } => {
-                    write!(f, "{}", leading_whitespace)?;
-                    generate_css_rule(f, list.into_iter())?;
-                },
-                ParseNode::Attribute { site, .. }  => {
-                    return Err(GenerationError::new("CSS",
-                        "Attribute not expected here, CSS documents \
-                         are supposed to be a series of selectors \
-                         and property-value pairs, wrapped in parentheses.",
-                         &site.to_owned()));
-                },
-                ParseNode::Symbol(node)
-                | ParseNode::Number(node)
-                | ParseNode::String(node)
-                | ParseNode::Raw(node) => {
-                    let site = node.site.to_owned();
-                    return Err(GenerationError::new("CSS",
-                        "Symbolic node not expected here, CSS documents \
-                         are supposed to be a series of selectors \
-                         and property-value pairs, wrapped in parentheses.",
-                         &site));
-                }
-            }
-        }
-        Ok(())
+    -> Result<(), GenerationError<'a>> {
+        Self::generate_nodes(f, &self.tree)
     }
 }

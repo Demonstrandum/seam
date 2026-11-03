@@ -1,0 +1,16 @@
+;; Every tag, with the posts tagged with it.
+(%include "site.sex")
+
+(%define all-tags
+  (%sort (%unique (%list (%for post in %posts (%splat (%get tags %post)))))))
+
+(%with (:title Tags)
+  (%page
+    (h1 Tags)
+    (%for tag in %all-tags
+      (section :id %tag
+        (h2 %tag)
+        (ul
+          (%for post in %posts
+            (%if (%contains %tag (%get tags %post))
+              (li (a :href (%post-url (%get slug %post)) (%get title %post))))))))))

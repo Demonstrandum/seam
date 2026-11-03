@@ -1,0 +1,7 @@
+;; A single post, rendered by `build.sex` with the post's details
+;; (`%title`, `%date`, `%file`, ...) given by `%with`.
+(%page
+  (article
+    (h1 %title)
+    (%post-meta %date %minutes %tags)
+    (%markdown :only content (%embed %file))))

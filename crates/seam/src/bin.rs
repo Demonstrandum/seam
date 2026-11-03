@@ -1,4 +1,3 @@
-use seam;
 use seam::assemble::MarkupFormatter;
 
 use std::collections::BTreeSet;
@@ -6,7 +5,7 @@ use std::{io, env};
 use std::path::PathBuf;
 use std::error::Error;
 
-use colored::*;
+use colored::Colorize;
 
 fn argument_fatal(msg: impl std::fmt::Display) -> ! {
     eprintln!("{} {}",
@@ -18,34 +17,39 @@ fn argument_fatal(msg: impl std::fmt::Display) -> ! {
 const SUPPORTED_TARGETS: [&str; 5] = ["text", "sexp", "html", "xml", "css"];
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = env::args();
+    let mut args = env::args().peekable();
     let _ = args.next();  // Discard.
+
+    // `seam run file.sex` expands a file only for its side effects
+    // (`%write`, `%exec`, ...), which are reported on STDOUT instead.
+    let run = args.next_if(|arg| arg == "run").is_some();
 
     // Command line flags and options.
     let mut files = Vec::new();
-    let mut target = String::from("");
-    let mut include_dirs: BTreeSet<PathBuf> = Default::default();
+    let mut target = String::new();
+    let mut include_dirs: BTreeSet<PathBuf> = BTreeSet::default();
     let mut from_stdin = false;
     let mut is_doc = true;
+    let mut literate = false;
 
     for arg in args {
-        if arg.chars().nth(0) == Some('-') {
+        if arg.starts_with('-') {
             if let Some(opt) = arg.split("--").nth(1) {
                 if SUPPORTED_TARGETS.contains(&opt) {
-                    target = opt.to_owned();
+                    opt.clone_into(&mut target);
                     continue;
                 }
                 match opt {
                    "nodocument" | "nodoc" => is_doc = false,
+                   "literate" => literate = true,
                    _ => argument_fatal(
-                       format!("Unknown argument: `--{}'.", opt))
+                       format!("Unknown argument: `--{opt}'."))
                 }
-            } else if let Some(opt) = arg.split("-").nth(1) {
+            } else if let Some(opt) = arg.split('-').nth(1) {
                 match opt.as_bytes() {
                     [b'v'] => {
                         let (major, minor, tiny) = seam::VERSION;
-                        eprintln!("{}", format!("SEAM v{}.{}.{}",
-                            major, minor, tiny).bold());
+                        eprintln!("{}", format!("SEAM v{major}.{minor}.{tiny}").bold());
                         std::process::exit(0);
                     },
                     [b'I', ..] => {
@@ -57,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         from_stdin = true;
                     },
                     _ => argument_fatal(
-                        format!("Unknown argument: `-{}'.", opt))
+                        format!("Unknown argument: `-{opt}'."))
                 }
             }
         } else {
@@ -74,32 +78,47 @@ fn main() -> Result<(), Box<dyn Error>> {
     if files.is_empty() {
         from_stdin = true;
     }
-    if target.is_empty() {
+    if run {
+        if !target.is_empty() {
+            argument_fatal(format!("`seam run' takes no target format, but `--{target}' was given."));
+        }
+    } else if target.is_empty() {
         argument_fatal("No such target format exists / \
                         no target format given.");
     }
 
     if from_stdin {
         let mut stdin = io::stdin();
-        let mut builder = seam::tree_builder_stream(&mut stdin)?;
+        let context = seam::Context::new();
+        let builder = seam::tree_builder_stream(&context, &mut stdin, literate)?;
         builder.add_includes(include_dirs.iter());
-        generate_and_print(&builder, &target, is_doc);
+        if run { execute(builder) } else { generate_and_print(builder, &target, is_doc) }
     }
 
     for file in files {
-        let mut builder = seam::tree_builder_file(&file)?;
+        let context = seam::Context::new();
+        let builder = seam::tree_builder_file(&context, &file, literate)?;
         builder.add_includes(include_dirs.iter());
-        generate_and_print(&builder, &target, is_doc);
+        if run { execute(builder) } else { generate_and_print(builder, &target, is_doc) }
     }
 
     Ok(())
 }
 
-fn generate_and_print<'a>(expander: &'a seam::parse::expander::Expander<'a>, target: &str, is_doc: bool) {
+/// Expand a file only for its side effects, discarding the document.
+fn execute(expander: seam::parse::expander::Expander) {
+    expander.set_echo(true);
+    if let Err(e) = expander.expand() {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+}
+
+fn generate_and_print(expander: seam::parse::expander::Expander, target: &str, is_doc: bool) {
     let tree = match expander.expand() {
         Ok(tree) => tree,
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -114,7 +133,7 @@ fn generate_and_print<'a>(expander: &'a seam::parse::expander::Expander<'a>, tar
                 unreachable!("bug: target `{}' is not covered", target);
             }
             argument_fatal(
-                format!("Target `{}', does not exist.", target))
+                format!("Target `{target}', does not exist."))
         }
     };
     let result = if is_doc {
@@ -124,9 +143,9 @@ fn generate_and_print<'a>(expander: &'a seam::parse::expander::Expander<'a>, tar
     };
 
     match result {
-        Ok(generated) => println!("{}", generated),
+        Ok(generated) => println!("{generated}"),
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1)
         }
     }

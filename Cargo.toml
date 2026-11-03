@@ -1,4 +1,17 @@
 [workspace]
 members = ["crates/seam", "crates/seam_argparse_proc_macro"]
 resolver = "2"
-package.edition = "2021"
+package.edition = "2024"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Every expansion/generation function returns a `Result` with a descriptive
+# error message, so documenting `# Errors` on each would just repeat it.
+missing_errors_doc = "allow"
+# The built-in macro implementations are long but linear.
+too_many_lines = "allow"
+# Small helper types are declared next to the code that uses them.
+items_after_statements = "allow"

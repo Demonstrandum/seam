@@ -1,67 +1,75 @@
 //! Output expanded source-code as identical looking to the original
 //! hand-written code as possible.
-use std::cell::RefCell;
 
-use super::{MarkupFormatter, GenerationError, Formatter};
+use super::{child_whitespace, MarkupFormatter, GenerationError, Formatter};
 use crate::parse::parser::{ParseNode, ParseTree};
 
 #[derive(Debug, Clone)]
 pub struct SExpFormatter<'a> {
     pub tree: ParseTree<'a>,
-    formatters: RefCell<Vec<Box<dyn MarkupFormatter + 'a>>>,
 }
 
 impl<'a> SExpFormatter<'a> {
+    #[must_use]
     pub fn new(tree: ParseTree<'a>) -> Self {
         Self {
-            tree,
-            formatters: Default::default()
+            tree
         }
     }
 
-    fn register_formatter<Fmt: MarkupFormatter + 'a>(&self, formatter: Fmt) -> &'a Box<dyn MarkupFormatter + 'a> {
-        let fmts = self.formatters.as_ptr();
-        unsafe {
-            (*fmts).push(Box::new(formatter));
-            (*fmts).last().unwrap()
+    /// Generate a sequence of nodes.
+    pub fn generate_nodes(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for (index, node) in nodes.iter().enumerate() {
+            let leading = node.leading_whitespace();
+            // Expanded nodes may lack whitespace, which would join adjacent atoms.
+            let separate = leading.is_empty() && index > 0
+                && !node.is_list() && !nodes[index - 1].is_list();
+            Self::generate_node(f, node, if separate { " " } else { leading })?;
         }
+        Ok(())
     }
 
-    fn generate_node(&self, f: Formatter, node: &ParseNode<'a>) -> Result<(), GenerationError<'a>> {
+    /// Generate the children of an element (see [`child_whitespace`]).
+    pub fn generate_children(f: Formatter, nodes: &[ParseNode<'a>]) -> Result<(), GenerationError<'a>> {
+        for (index, node) in nodes.iter().enumerate() {
+            Self::generate_node(f, node, child_whitespace(index, node))?;
+        }
+        Ok(())
+    }
+
+    fn generate_node(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
         match node {
             ParseNode::Symbol(node)
           | ParseNode::Number(node) => {
-                write!(f, "{}", node.leading_whitespace)?;
+                write!(f, "{leading}")?;
                 write!(f, "{}", node.value)?;
             },
             ParseNode::String(node) => {
                 // We actually don't want the rendered string with the escpaes
                 // that we parsed, so we send it to the debug view to get a string
                 // with quotes and escaped special characters.
-                write!(f, "{}", node.leading_whitespace)?;
+                write!(f, "{leading}")?;
                 write!(f, "{:?}", node.value)?;
             },
             ParseNode::Raw(node) => {
                 // This is the only place we can't really expand
                 // the `(%raw ...)` macro. It is meaningful.
-                write!(f, "{}", node.leading_whitespace)?;
+                write!(f, "{leading}")?;
                 write!(f, "(%raw {:?})", node.value)?;
             },
-            ParseNode::List { nodes, leading_whitespace, end_token, .. } => {
-                write!(f, "{}", leading_whitespace)?;
+            ParseNode::List { nodes, end_token, .. } => {
+                write!(f, "{leading}")?;
                 write!(f, "(")?;
-                let tree = nodes.to_vec();
-                let sexp_fmt = SExpFormatter::new(tree.into_boxed_slice());
-                let sexp_fmt = self.register_formatter(sexp_fmt);
-                sexp_fmt.generate(f)?;
+                Self::generate_nodes(f, nodes)?;
                 write!(f, "{}", end_token.leading_whitespace)?;
                 write!(f, ")")?;
 
             },
-            ParseNode::Attribute { keyword, node, leading_whitespace, .. } => {
-                write!(f, "{}", leading_whitespace)?;
-                write!(f, ":{}", keyword)?;
-                self.generate_node(f, node)?;
+            ParseNode::Attribute { keyword, node, .. } => {
+                write!(f, "{leading}")?;
+                write!(f, ":{keyword}")?;
+                let leading = node.leading_whitespace();
+                Self::generate_node(f, node, if leading.is_empty() { " " } else { leading })?;
             },
         }
         Ok(())
@@ -69,16 +77,12 @@ impl<'a> SExpFormatter<'a> {
 
 }
 
-impl<'a> MarkupFormatter for SExpFormatter<'a> {
-    fn document(&self) -> Result<String, GenerationError> {
+impl<'a> MarkupFormatter<'a> for SExpFormatter<'a> {
+    fn document(&self) -> Result<String, GenerationError<'a>> {
         self.display()
     }
 
-    fn generate(&self, f: Formatter) -> Result<(), GenerationError> {
-        let mut tree_iter = self.tree.iter().peekable();
-        while let Some(node) = tree_iter.next() {
-            self.generate_node(f, node)?;
-        }
-        Ok(())
+    fn generate(&self, f: Formatter) -> Result<(), GenerationError<'a>> {
+        Self::generate_nodes(f, &self.tree)
     }
 }

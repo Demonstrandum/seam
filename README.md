@@ -89,25 +89,36 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
 #stdout:
 #   (hello world)
 ```
+To run a file only for what its macros do, such as writing files with
+`%write`, use `seam run`, which reports each action like `make` does:
+```sh
+seam run build.sex
+#stdout:
+#   write public/index.html
+#   ...
+```
 
 ## Checklist
- - [ ] Literate mode for parser+lexer, where string nodes are not escaped and parentheses are converted to symbols.
+ - [x] Literate mode for parser+lexer, where string nodes are not escaped and parentheses are converted to symbols.
        The only time strings are escaped and parentheses make lists is inside a `(%` and `)` pair, i.e. when calling a macro.
        So `hello world (earth) (%do (p letter "\x61")) "\x61"` turns in to (in HTML mode)
        `hello world <earth></earth> <p>hi a</p> a` normally, but in *literate* (HTML) mode turns into
        `hello world (earth) <p>letter a</p> "\x61"`. Parentheses and quotes have been preserved.
        Markdown source in `(%markdown ...)` should be parsed as literate files by default.
        Provide command line `--literate` option; `%include` and `%embed` should also have options for enabling literate mode.
- - [ ] Way to match on unknown keywords in attributes, examples when `(%define dict (:a 1 :b 2 :c 3))`:
+ - [x] Way to match on unknown keywords in attributes, examples when `(%define dict (:a 1 :b 2 :c 3))`:
        - `(%for (kw val) in (%items  %dict) (%log %kw = %val))`
        - `(%for  kw      in (%keys   %dict) (%log %kw = (%get %kw %dict)))`
        - `(%for     val  in (%values %dict) (%log ___ = %val))`
- - [ ] Extend `%get` to work with slicing `(%get (1 3) (a b c d e))` becomes `b c d`; negative indices `(%get -1 (a b c))` becomes `c`.
- - [ ] Shell-style `${var:...}` string manipulation.
- - [ ] `%while`, `%take`, `%drop`, `%split` on symbols in lists, `%intercalate`.
- - [ ] `(%basename :suffix "txt" /path/file.txt)` (-> `file`), `(%dirname /path/file.txt)` (-> `/path`) and `(%extension /path/file.txt)` (-> `txt`), macros for paths.
- - [ ] Math operators: `+`, `-`, `*`, `/`, `mod`, `pow`, `exp`, `sqrt`, `log`, `ln`, `hypot`.
- - [ ] User `(%error msg)` macro for aborting compilation.
+ - [x] Extend `%get` to work with slicing `(%get (1 3) (a b c d e))` becomes `b c d`; negative indices `(%get -1 (a b c))` becomes `c`.
+ - [x] Shell-style `${var:...}` string manipulation, written `%{var:...}`.
+ - [x] `%while`, `%take`, `%drop`, `%split` on symbols in lists, `%intercalate`.
+ - [x] `(%basename :suffix "txt" /path/file.txt)` (-> `file`), `(%dirname /path/file.txt)` (-> `/path`) and `(%extension /path/file.txt)` (-> `txt`), macros for paths.
+ - [x] `%path/...` macros: `cwd`, `this`, `here`, `join`, `split`, `stem`, `with-extension`, `normalise`, `canonical`, `absolute`, `relative`, `exists`, `is-file` and `is-directory`.
+ - [x] `seam run file.sex`, running a file for its side effects (`%write`, `%exec`), reported on STDOUT like `make`.
+ - [x] Math operators: `+`, `-`, `*`, `/`, `mod`, `pow`, `exp`, `sqrt`, `ln`, `log2`, `log10`, `hypot` (`%log` already logs),
+       along with comparisons, `%if`, `%and`, `%or`, `%not` and `%range`.
+ - [x] User `(%error msg)` macro for aborting compilation.
  - [x] List reverse macro `(%reverse (...))`.
  - [x] Literal/atomic conversion macros: `(%symbol lit)`, `(%number lit)`, `(%string lit)`, `(%raw lit)`.
  - [x] Sorting macro `(%sort (...))` which sorts alphanumerically on literals.
@@ -123,7 +134,7 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] `(%yaml "...")`, `(%toml "...")` and `(%json "...")` converts
        whichever config-lang definition into a seam `%define`-definition.
  - [x] `(%do ...)` which just expands to the `...`; the identity function.
- - [ ] Catch expansion errors: `(%try :catch index-error (%do code-to-try) :error the-error (%do caught-error %the-error))`.
+ - [x] Catch expansion errors: `(%try (%do code-to-try) :error the-error (%do caught-error %the-error))`.
  - [x] Implement `(%strip ...)` which evaluates to the `...` without any of the leading whitespace.
  - [x] Implement *splat* operation: `(%splat (a b c))` becomes `a b c`.
  - [x] `(%define x %body)` evaluates `%body` eagerly (at definition),
@@ -134,7 +145,8 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] Command line `-I` include directory.
  - [x] First argument in a macro invocation should have its whitespace stripped.
  - [x] `(%os/env ENV_VAR)` environment variable macro.
- - [ ] Lazy evaluation for *user* macros (like in `ifdef`) with use of new `(%eval ...)` macro.
+ - [x] Lazy evaluation for *user* macros (like in `ifdef`): `~param` parameters are expanded where they are used.
+       Code can also be kept as data with `(%quote ...)`, and expanded with `(%eval ...)`.
  - [x] `(%apply name x y z)` macro which is equivalent to `(%name x y z)`.
  - [x] `(%lambda (x y) ...)` macro which just evaluates to an secret symbol, e.g. `__lambda0`.
        used by applying `%apply`, e.g. `(%apply (%lambda (a b) b a) x y)` becomes `y x`
@@ -143,20 +155,23 @@ seam --sexp <<< '(hello (%define subject world) %subject)'
  - [x] Add options to `%glob` for sorting by type, date(s), name, etc.
  - [x] `(%format "{}")` macro with Rust's `format` syntax. e.g. `(%format "Hello {}, age {age:0>2}" "Sam" :age 9)`
  - [x] Add `(%raw ...)` macro which takes a string and leaves it unchanged in the final output.
- - [ ] `(%formatter/text ...)` can take any seam (sexp) source code, for which it just embeds the expanded code (plain-text formatter).
- - [ ] `(%formatter/html ...)` etc. which call the respective available formatters.
- - [ ] Implement lexical scope by letting macros store a copy of the scope they were defined in (or a reference?).
+ - [x] `(%formatter/text ...)` can take any seam (sexp) source code, for which it just embeds the expanded code (plain-text formatter).
+ - [x] `(%formatter/html ...)` etc. which call the respective available formatters.
+ - [x] Implement lexical scope by letting macros store a reference to the scope they were defined in.
+ - [x] `(%with (:name value ...) ...)` dynamically overrides top-level definitions within its body,
+       e.g. for passing page metadata through to a shared layout macro.
  - [x] `(%embed "/path")` macro, like `%include`, but just returns the file contents as a string.
  - [x] Variadic arguments via `&rest` syntax.
- - [ ] Type-checking facilities for user macros.
+ - [x] Type-checking facilities for user macros.
  - [x] `%list` macro which expands from `(%list %a %b %c)` to `( %a %b %c )` but *without* calling `%a` as a macro with `%b` and `%c` as argument.
  - [x] `%for`-loop macro, iterating over `%list`s.
  - [x] `%glob` which returns a list of files/directories matching a glob.
  - [x] `%markdown` renders Markdown given to it as `%raw` html-string.
  - [x] Add keyword macro arguments.
  - [ ] Caching or checking time-stamps as to not regenerate unmodified source files.
- - [ ] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
+ - [x] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
  - [ ] Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
- - [ ] Allow for arbitrary embedding of code with their REPLs, that can be run by
+ - [x] Allow for arbitrary embedding of code with their REPLs, that can be run by
    a LISP interpreter (or any other language), for example.  (e.g. `(%chez (+ 1 2))` executes
    `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source (i.e. `3`).
+   Done with `%exec`: `(%define (chez ~&code) (%exec scheme --quiet :stdin (%formatter/sexp %code)))`.
