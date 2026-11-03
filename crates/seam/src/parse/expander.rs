@@ -42,12 +42,13 @@ impl<'a> fmt::Display for ExpansionError<'a> {
         let ExpansionError(msg, site) = self;
         let line_prefix = format!("  {} |", site.line);
         let line_view = site.line_slice();
+        writeln!(f, "")?;
         writeln!(f, "{} {}", line_prefix, line_view)?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=site.line_column() - 1,
             length=site.width())?;
-        write!(f, "[{}] Error Expanding Macro {}: {}",
+        writeln!(f, "[{}] Error Expanding Macro {}: {}",
             "**".red().bold(), site, msg)
     }
 }
@@ -602,7 +603,7 @@ impl<'a> Expander<'a> {
             format!("{}", error), site.to_owned());
         let mut parser: Result<Parser, ExpansionError> = Err(
             include_error(Box::new("No path tested.")));
-        // Try all include directories until one is succesful.
+        // Try all include directories until one is successful.
         for include_dir in &self.includes {
             let path = include_dir.join(path);
             parser = super::parser_for_file(&path)
@@ -698,6 +699,7 @@ impl<'a> Expander<'a> {
             mandatory(1): string,
             optional("only"): literal["frontmatter", "content"],
             optional("separator"): literal,
+            optional("allow-html"): literal["true", "false"],
         }?;
         // Parse the makdown content only, the frontmatter only, or do both.
         #[derive(Clone, Copy, PartialEq, Eq)]
@@ -711,9 +713,11 @@ impl<'a> Expander<'a> {
         });
         // Default to using the '/' namespace separator for frontmatter definitions.
         let sep = args.separator.map_or(String::from("/"), |sep| sep.value);
+        // Embedded HTML is passed through by default, `:allow-html false` escapes it.
+        let allow_html = args.allow_html.map_or(true, |option| option.value == "true");
         // Live dangerously / trust the author:
         let danger = markdown::CompileOptions {
-          allow_dangerous_html: true,
+          allow_dangerous_html: allow_html,
           allow_dangerous_protocol: true,
           ..markdown::CompileOptions::default()
         };

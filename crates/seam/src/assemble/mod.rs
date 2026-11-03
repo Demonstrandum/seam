@@ -29,12 +29,13 @@ impl<'a> fmt::Display for GenerationError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let line_prefix = format!("  {} |", self.site.line);
         let line_view = self.site.line_slice();
+        writeln!(f, "")?;
         writeln!(f, "{} {}", line_prefix, line_view)?;
         writeln!(f, "{:>prefix_offset$} {:~>text_offset$}{:^>length$}", "|", "", "",
             prefix_offset=UnicodeWidthStr::width(line_prefix.as_str()),
             text_offset=self.site.line_column() - 1,
             length=self.site.width())?;
-        write!(f, "{}: {}",
+        writeln!(f, "{}: {}",
             format!("[{}] Error Generating {} ({}:{}:{})",
                 "**".red().bold(),
                 self.markup.bold(),
