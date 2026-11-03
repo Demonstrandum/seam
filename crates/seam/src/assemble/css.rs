@@ -236,18 +236,57 @@ fn generate_special_selector<'b, 'a>(f: Formatter,
     Ok(())
 }
 
+/// The argument to a selector function, e.g. `(+ 2n 1)` -> `2n + 1`.
+fn selector_argument<'a>(node: &ParseNode<'a>) -> Result<String, GenerationError<'a>> {
+    if let ParseNode::List { nodes, .. } = node
+    && let [head, tail@..] = &**nodes
+    && let Some(op) = head.atomic().filter(|op| BINARY_OPERATORS.contains(&op.value.as_ref())) {
+        // Unlike in values, an+b syntax may not be parenthesised.
+        let tail = tail.iter().map(convert_value).collect::<Result<Vec<_>, _>>()?;
+        return Ok(tail.join(&format!(" {} ", op.value)));
+    }
+    convert_value(node)
+}
+
 fn generate_css_rule<'a>(f: Formatter, iter: Iter<'_, ParseNode<'a>>) -> Result<(), GenerationError<'a>> {
-    let mut prop_i = 0; // Index of first property.
-    // TODO: Selector functions such as nth-child(...), etc.
-    // e.g. (ul li(:nth-child (+ 2n 1))) -> ul li:nth-child(2n + 1).
-    let mut selectors = iter.clone()
-        .take_while(|n| { prop_i += 1; n.atomic().is_some() })
-        .map(|n| n.atomic().unwrap()) // We've checked.
-        .peekable();
+    // Collect the selectors: symbols, along with selector functions written
+    // as a list of attributes, e.g. `(ul li(:nth-child (+ 2n 1)))` -> `ul li:nth-child(2n + 1)`.
+    let mut nodes = iter.as_slice();
+    let mut selector = String::new();
+    let mut head = None;
+    while let Some((node, rest)) = nodes.split_first() {
+        match node {
+            ParseNode::List { nodes: functions, leading_whitespace, .. } if head.is_some()
+                && !functions.is_empty()
+                && functions.iter().all(|function| matches!(function, ParseNode::Attribute { .. })) => {
+                // Written apart from the preceding selector, it selects descendants.
+                if !leading_whitespace.is_empty() {
+                    selector.push(' ');
+                }
+                for function in functions {
+                    let ParseNode::Attribute { keyword, node, .. } = function else { unreachable!() };
+                    selector += ":";
+                    selector += keyword;
+                    selector += "(";
+                    selector += &selector_argument(node)?;
+                    selector += ")";
+                }
+            },
+            _ => {
+                let Some(atom) = node.atomic() else { break };
+                if head.is_some() {
+                    selector.push(' ');
+                }
+                head.get_or_insert(atom);
+                selector += &atom.value;
+            },
+        }
+        nodes = rest;
+    }
 
     // Check we were actually provided with
     // some selectors.
-    let Some(head) = selectors.next() else {
+    let Some(head) = head else {
         // Point at the rule's first (non-selector) node, if there is one.
         let site = iter.clone().next().map_or_else(Site::unknown, ParseNode::owned_site);
         return Err(GenerationError::new("CSS",
@@ -263,16 +302,9 @@ fn generate_css_rule<'a>(f: Formatter, iter: Iter<'_, ParseNode<'a>>) -> Result<
         return generate_special_selector(f, &head.value, iter);
     }
 
-    // Join the selectors togeher.
-    write!(f, "{} ", head.value)?;
-    for selector in selectors {
-        write!(f, "{} ", selector.value)?;
-    }
-    writeln!(f, "{{")?;
+    writeln!(f, "{selector} {{")?;
 
-    let properties = iter.skip(prop_i - 1);
-
-    for property in properties {
+    for property in nodes {
         let ParseNode::Attribute { node, keyword, .. } = property else {
             return Err(GenerationError::new("CSS",
                 "CSS property-value pairs must be in the \

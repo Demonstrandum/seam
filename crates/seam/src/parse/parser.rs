@@ -1,4 +1,4 @@
-use std::{borrow::Cow, error::Error, fmt, str::FromStr};
+use std::{borrow::Cow, error::Error, fmt};
 use unicode_width::UnicodeWidthStr;
 use descape::UnescapeExt;
 
@@ -319,50 +319,6 @@ impl<'p, 'a> TryFrom<&'p ParseNode<'a>> for &'p [ParseNode<'a>] {
     }
 }
 
-/// Trait determining if a [`ParseNode`] can be converted into
-/// a value of a given (usually inferred) type.
-pub trait IntoValue<'a, T>: Sized {
-    fn to_value(&'a self) -> Option<T> { None }
-}
-
-/// A number type.
-trait Num<Rhs = Self, Output = Self>:
-    std::ops::Add<Rhs, Output = Output>
-  + std::ops::Sub<Rhs, Output = Output>
-  + std::ops::Mul<Rhs, Output = Output>
-  + std::ops::Div<Rhs, Output = Output>
-  + std::ops::Rem<Rhs, Output = Output> { }
-impl Num for usize { }
-impl Num for isize { }
-impl Num for u32 { }
-impl Num for i32 { }
-impl Num for u64 { }
-impl Num for i64 { }
-impl Num for f32 { }
-impl Num for f64 { }
-
-/// Convert parse-node into value if said value is a number type.
-impl<'a, T: Num + FromStr> IntoValue<'a, T> for ParseNode<'a> {
-    fn to_value(&self) -> Option<T> {
-        match self {
-            ParseNode::Number(node) => node.value.parse().ok(),
-            _ => None,
-        }
-    }
-}
-
-/// Convert parse-node into value if said value is a symbol/string type.
-impl<'a> IntoValue<'a, &'a str> for ParseNode<'a> {
-    fn to_value(&'a self) -> Option<&'a str> {
-        match self {
-            ParseNode::Symbol(node)
-          | ParseNode::String(node)
-          | ParseNode::Raw(node) => Some(node.value.as_ref()),
-            _ => None,
-        }
-    }
-}
-
 /// An array of parse nodes, like in a [`ParseNode::List`], never grows.
 /// Hence we prefer the `Box<[...]>` representation over a `Vec<...>`.
 pub type ParseTree<'a> = Box<[ParseNode<'a>]>;
@@ -450,7 +406,6 @@ impl<'a> Parser {
                 token.site))?,
             Kind::Keyword => self.parse_keyword(),
             Kind::Symbol => Ok(ParseNode::Symbol(self.parse_atomic()?)),
-            // TODO: Parse (escpae) string-literals.
             Kind::String => Ok(ParseNode::String(self.parse_atomic()?)),
             Kind::Number => Ok(ParseNode::Number(self.parse_atomic()?)),
         }
@@ -559,101 +514,6 @@ fn escape_string<'a>(string: &'a str, site: &Site<'a>) -> Result<Cow<'a, str>, L
                     string.chars().nth(invalid.index).unwrap_or('?'), invalid.index),
                 *site)
         })
-}
-
-pub trait SearchTree<'a> {
-    /// Search the parse-tree for a specific node with a specific value.
-    fn search_node(&'a self, kind: SearchType,
-                   value: &str,
-                   case_insensitive: bool,
-                   level: usize) -> Option<&'a ParseNode<'a>>;
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum SearchType {
-    ListHead, ListMember,
-    Symbol, Number, String,
-    Attribute,
-    Any,
-}
-
-impl SearchType {
-    #[must_use]
-    pub fn is_a(self, kind: SearchType) -> bool {
-        self == SearchType::Any || self == kind
-    }
-}
-
-impl<'a> SearchTree<'a> for ParseNode<'a> {
-    fn search_node(&'a self, kind: SearchType, value: &str,
-                   insensitive: bool, level: usize) -> Option<&'a ParseNode<'a>> {
-        if level == 0 {
-            return None;
-        }
-
-        let is_equal = |string: &str| if insensitive {
-            string.to_lowercase() == value.to_lowercase()
-        } else {
-            string == value
-        };
-
-        match self {
-            ParseNode::List { nodes, .. } => {
-                if kind.is_a(SearchType::ListHead)
-                    && let Some(Some(caller)) = nodes.first().map(ParseNode::atomic)
-                        && is_equal(&caller.value) {
-                            return Some(self);
-                        }
-                nodes.search_node(kind, value, insensitive, level - 1)
-            },
-            ParseNode::Symbol(name) => {
-                if kind.is_a(SearchType::Symbol) && is_equal(&name.value) {
-                    Some(self)
-                } else {
-                    None
-                }
-            },
-            ParseNode::String(name) | ParseNode::Raw(name) => {
-                if kind.is_a(SearchType::String) && is_equal(&name.value) {
-                    Some(self)
-                } else {
-                    None
-                }
-            },
-            ParseNode::Number(name) => {
-                if kind.is_a(SearchType::Number) && is_equal(&name.value) {
-                    Some(self)
-                } else {
-                    None
-                }
-            },
-            ParseNode::Attribute { node, keyword, .. } => {
-                if kind.is_a(SearchType::Attribute)
-                    && is_equal(keyword) {
-                        return Some(node);
-                    }
-                node.search_node(kind, value, insensitive, level - 1)
-            },
-        }
-    }
-}
-
-impl<'a> SearchTree<'a> for ParseTree<'a> {
-    fn search_node(&'a self, kind: SearchType, value: &str,
-                   insensitive: bool, level: usize) -> Option<&'a ParseNode<'a>> {
-        if level == 0 {
-            return None;
-        }
-
-        for node in self {
-            let found = node.search_node(kind, value, insensitive, level);
-            if found.is_some() {
-                return found;
-            }
-        }
-
-        None
-    }
 }
 
 /// Pretty printing for parse nodes.

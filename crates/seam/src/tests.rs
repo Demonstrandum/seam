@@ -33,6 +33,15 @@ fn literate_html(source: &str) -> Result<String, String> {
     assemble::html::HTMLFormatter::new(tree).display().map_err(|err| err.message)
 }
 
+/// Expand source and render it as CSS.
+fn css(source: &str) -> Result<String, String> {
+    use assemble::MarkupFormatter;
+    let context = Context::new();
+    let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
+    let tree = expander.expand().map_err(|err| format!("{err}"))?;
+    assemble::css::CSSFormatter::new(tree).document().map_err(|err| err.message)
+}
+
 fn assert_literate_eq(input: &str, expect: &str) {
     assert_eq!(literate_html(input).as_deref(), Ok(expect));
 }
@@ -319,6 +328,59 @@ mod cases {
             "(%define name Sam) (%markdown (%embed \"tests/fixtures/front.md\"))",
             " \"<h1>Hello Sam</h1>\\n\""
         );
+    }
+
+    #[test]
+    fn test_format_lists() {
+        // lists are formatted as s-expressions.
+        assert_output_eq(
+            "(%format \"{} and {x}\" (a \"b\" (c)) :x (d))",
+            "\"(a \\\"b\\\" (c)) and (d)\""
+        );
+    }
+
+    #[test]
+    fn test_css_selector_functions() {
+        assert_eq!(css("(ul li(:nth-child (+ 2n 1)) a :color red)").as_deref(),
+            Ok("ul li:nth-child(2n + 1) a {\n  color: red;\n}"));
+        // apart from the preceding selector, it selects descendants.
+        assert_eq!(css("(p (:not .x) :margin 0)").as_deref(),
+            Ok("p :not(.x) {\n  margin: 0;\n}"));
+    }
+
+    #[test]
+    fn test_arguments_schema() {
+        use crate::parse::{expander::ExpansionError, lexer::Lexer, parser::{ParseNode, Parser}};
+        use seam_argparse_proc_macro::arguments;
+        fn describe<'a>(node: &ParseNode<'a>, params: &[ParseNode<'a>]) -> Result<String, ExpansionError<'a>> {
+            let args = arguments! { node, params;
+                mandatory(1..=2): symbol,
+                optional(3): number fn(n: &ParseNode<'t>) {
+                    match n.atomic().map(|n| n.value.parse::<u32>()) {
+                        Some(Ok(n)) if n % 2 == 0 => Ok(()),
+                        _ => Err(ExpansionError::new("Integer must be even.", n.site())),
+                    }
+                },
+                optional("mode"): literal["fast", "slow"],
+                rest: any,
+            }?;
+            Ok(format!("{} {} {:?} {:?} {}",
+                args.number.1.value, args.number.2.value,
+                args.number.3.map(|n| &n.value), args.mode.map(|n| &n.value),
+                args.rest.len()))
+        }
+        let check = |source: &str| {
+            let parser = Parser::new(Lexer::new("<test>".into(), source.into()));
+            let tree = parser.parse().unwrap();
+            describe(&tree[0], &tree).map_err(|error| error.0)
+        };
+        assert_eq!(check("a b").as_deref(), Ok("a b None None 0"));
+        assert_eq!(check("a b 4 :mode fast x :y z").as_deref(), Ok("a b Some(\"4\") Some(\"fast\") 2"));
+        assert_eq!(check("a"), Err("Missing argument in position 2.".to_owned()));
+        assert_eq!(check("a b 3"), Err("Integer must be even.".to_owned()));
+        assert_eq!(check("a 1"), Err("Expected a symbol node, got a number instead.".to_owned()));
+        assert_eq!(check("a b :mode quick"), Err("This argument's value must be one of: `fast', `slow'.".to_owned()));
+        assert_eq!(check("a b :mode fast :mode slow"), Err("Named argument `:mode' is given more than once.".to_owned()));
     }
 
     #[test]
