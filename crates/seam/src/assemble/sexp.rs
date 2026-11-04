@@ -37,7 +37,7 @@ impl<'a> SExpFormatter<'a> {
         Ok(())
     }
 
-    fn generate_node(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
+    pub fn generate_node(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
         match node {
             ParseNode::Symbol(node)
           | ParseNode::Number(node) => {

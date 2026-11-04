@@ -168,3 +168,5 @@ pub mod xml;
 pub mod css;
 /// HTML5 HTML generation.
 pub mod html;
+/// JSON generation.
+pub mod json;

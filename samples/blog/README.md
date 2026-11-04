@@ -1,7 +1,7 @@
 # A blog in seam
 
 A small but complete blog, built from the ideas in [`../blog-concept`](../blog-concept):
-a shared layout, posts listed on an index by date, a tags page and an RSS feed.
+a shared layout, posts listed on an index by date, a tags page, and both an RSS and a JSON feed.
 
 ```sh
 cd samples/blog
@@ -16,6 +16,9 @@ seam run build.sex     # Writes the site into public/.
 - `index.sex`, `tags.sex` and `feed.sex` are pages, which can each be rendered
   alone (`seam --html index.sex`, `seam --xml feed.sex`), while `post.sex`
   renders a post given its details by `%with`.
+- `feed.json.sex` is a [JSON Feed](https://jsonfeed.org), written as
+  s-expressions: a list of `:key value` attributes is an object, and any other
+  list an array (`seam --json feed.json.sex`).
 - `build.sex` renders every page with a formatter macro
   (`%formatter/html :document true ...`) and saves it with `%write`, giving
   the files each page is made `:from`, so a page is only made again when one

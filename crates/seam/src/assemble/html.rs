@@ -186,8 +186,15 @@ impl<'a> HTMLFormatter<'a> {
                     },
                     "script" => {
                         // TODO: Generating JavaScript from S-expressions is not implemented.
-                        // For now, just treat it as a completely source-code preserving.
-                        SExpFormatter::generate_children(f, rest)?;
+                        // For now, just treat it as a completely source-code preserving,
+                        // except raw text (e.g. from `%formatter/json`) is written as is.
+                        for (index, node) in rest.iter().enumerate() {
+                            let leading = child_whitespace(index, node);
+                            match node {
+                                ParseNode::Raw(raw) => write!(f, "{leading}{}", raw.value)?,
+                                _ => SExpFormatter::generate_node(f, node, leading)?,
+                            }
+                        }
                     },
                     "math" | "svg" => {  // <math> and <svg> are subsets of XML.
                         XMLFormatter::generate_children(f, rest)?;

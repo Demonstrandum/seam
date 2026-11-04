@@ -409,6 +409,44 @@ mod cases {
         assert_eq!(sexp(input).as_deref(), Ok(expect), "{input}");
     }
 
+    /// Expand source to compact JSON.
+    fn json(source: &str) -> Result<String, String> {
+        use assemble::MarkupFormatter;
+        let context = Context::new();
+        let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
+        let tree = expander.expand().map_err(|err| format!("{err}"))?;
+        assemble::json::JSONFormatter::new(tree).display().map_err(|err| err.message)
+    }
+
+    #[test]
+    fn test_json_formatter() {
+        let check = |source: &str, expect: &str| assert_eq!(json(source).as_deref(), Ok(expect), "{source}");
+        check("(:name \"Sam\" :age 9 :tags (a \"b c\" 1.5) :ok true :none null)",
+            r#"{"name":"Sam","age":9,"tags":["a","b c",1.5],"ok":true,"none":null}"#);
+        check("1 0x10 +5 -2.5", "[1,16,5,-2.5]");
+        check(":a 1 :b ()", r#"{"a":1,"b":[]}"#);
+        check("\"quote \\\" back \\\\ \\n </script>\"", r#""quote \" back \\ \n <\/script>""#);
+        check("(%raw \"{}\")", "{}");
+        assert!(json("(:a 1 b)").unwrap_err().contains("cannot also have plain items"));
+        assert!(json("(b :a 1)").unwrap_err().contains("cannot also have keyword attributes"));
+        // Reading JSON in and writing it out again gives the same JSON.
+        let original = r#"{"a":[1,{"b":null,"c":false}],"d":"2","e":1.5}"#;
+        check(&format!("(%json {original:?})"), original);
+        // Pretty-printed as a document.
+        assert_sexp_eq("(%string (%formatter/json :document true (:a (1) :b ())))",
+            "\"{\\n  \\\"a\\\": [\\n    1\\n  ],\\n  \\\"b\\\": []\\n}\"");
+        // Raw text, like JSON, is written as is inside a script.
+        assert_eq!(literate_html("(%do (script x = (%formatter/json (1 \"x\"))))").as_deref(),
+            Ok(r#"<script>x = [1,"x"]</script>"#));
+    }
+
+    #[test]
+    fn test_config_scalar_types() {
+        assert_sexp_eq("(%yaml \"a: 1\\nb: '1'\\nc: true\\nd: ~\\ne: 2.5\\nf: text\")",
+            "(:a 1 :b \"1\" :c true :d null :e 2.5 :f \"text\")");
+        assert_sexp_eq("(%json \"[1, \\\"1\\\", null]\")", "(1 \"1\" null)");
+    }
+
     #[test]
     fn test_math() {
         assert_sexp_eq("(%+ 1 2 3) (%- 10 4 1) (%- 5) (%* 2 3.5) (%/ 6 3) (%/ 7 2)", "6 5 -5 7 2 3.5");

@@ -34,6 +34,8 @@
 
 (%write (%path/join %public feed.xml) :from (%list %shared (%source feed.sex) %posts/files)
   (%formatter/xml :document true (%include "feed.sex")))
+(%write (%path/join %public feed.json) :from (%list %shared (%source feed.json.sex) %posts/files)
+  (%formatter/json :document true (%include "feed.json.sex")))
 (%write (%path/join %public style.css) :from (%list (%source style.sex))
   (%formatter/css (%include "style.sex")))
 
