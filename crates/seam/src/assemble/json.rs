@@ -94,8 +94,8 @@ fn newline(f: Formatter, indent: Option<usize>) -> std::fmt::Result {
     }
 }
 
-/// Write a JSON string literal.
-fn write_string(f: Formatter, text: &str) -> std::fmt::Result {
+/// Write a JSON string literal (which is also a JavaScript string literal).
+pub fn write_string(f: Formatter, text: &str) -> std::fmt::Result {
     write!(f, "\"")?;
     let mut previous = '\0';
     for c in text.chars() {

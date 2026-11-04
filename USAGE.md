@@ -237,10 +237,21 @@ So `(%json "{\"a\": [1, \"2\", null]}")` reads as `(:a (1 "2" null))`, which
 is written out as `{"a":[1,"2",null]}` again. A file's top level is written as
 one value if it is a single value, or else as the items of a list. A document
 is indented, one item per line, while `%formatter/json` is compact unless given
-`:document true`. JSON is raw text, so it can be given to a script as it is:
+`:document true`.
+
+JSON is raw text, so it is written as it is, and it can be given to a page's
+scripts as a data block (strings containing `</` are written `<\/`, so the
+data cannot end the `script` tag):
 ```lisp
-(script const posts = (%formatter/json %posts))
+(script :type application/json :id posts (%formatter/json %posts))
+(script """
+  const posts = JSON.parse(document.getElementById("posts").textContent);
+""")
 ```
+JavaScript itself is best written as a single string, as above, which is
+written as it is. Otherwise, a script's contents are kept as written, with
+strings written as JavaScript strings, but seam's syntax still applies: `;`
+starts a comment, for instance.
 
 #### Shell-style variables
 `%{name...}` manipulates a variable's text, as `${name...}` does in a shell:

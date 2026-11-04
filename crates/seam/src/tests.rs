@@ -246,7 +246,7 @@ mod cases {
             "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<p>Hello World</p>\n</body>\n</html>");
         // loose metadata goes in the head, until the first content.
         assert_html_document_eq("(title T) (p hi) (script \"x()\")",
-            "<!DOCTYPE html>\n<html>\n<head>\n<title>T</title>\n</head>\n<body>\n<p>hi</p> <script>\"x()\"</script>\n</body>\n</html>");
+            "<!DOCTYPE html>\n<html>\n<head>\n<title>T</title>\n</head>\n<body>\n<p>hi</p> <script>x()</script>\n</body>\n</html>");
         // an explicit head stays a head, rather than ending up in the body.
         assert_html_document_eq("(head (title T)) (p hi)",
             "<!DOCTYPE html>\n<html>\n<head><title>T</title></head>\n<body>\n<p>hi</p>\n</body>\n</html>");
@@ -436,8 +436,14 @@ mod cases {
         assert_sexp_eq("(%string (%formatter/json :document true (:a (1) :b ())))",
             "\"{\\n  \\\"a\\\": [\\n    1\\n  ],\\n  \\\"b\\\": []\\n}\"");
         // Raw text, like JSON, is written as is inside a script.
-        assert_eq!(literate_html("(%do (script x = (%formatter/json (1 \"x\"))))").as_deref(),
-            Ok(r#"<script>x = [1,"x"]</script>"#));
+        assert_eq!(literate_html("(%do (script :type application/json (%formatter/json (1 \"</x>\"))))").as_deref(),
+            Ok(r#"<script type="application/json">[1,"<\/x>"]</script>"#));
+        // A script given as a single string is written as is,
+        // and otherwise its strings are JavaScript strings.
+        assert_eq!(literate_html("(%do (script \"let a = 1; f(a)\"))").as_deref(),
+            Ok("<script>let a = 1; f(a)</script>"));
+        assert_eq!(literate_html(r#"(%do (script f("é\n\"")))"#).as_deref(),
+            Ok(r#"<script>f("é\n\"")</script>"#));
     }
 
     #[test]
