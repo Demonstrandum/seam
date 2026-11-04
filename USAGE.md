@@ -219,9 +219,9 @@ Lists made by `%range`, `%take`, `%drop`, `%get` (slices), `%reverse` and
 
 #### Formatters
 - `(%formatter/html ...)`, `(%formatter/xml ...)`, `(%formatter/css ...)`,
-  `(%formatter/json ...)`, `(%formatter/text ...)` and `(%formatter/sexp ...)`
-  generate their arguments with that formatter, as text. Markup and JSON are
-  kept as they are (raw), while text and s-expressions are escaped in the
+  `(%formatter/json ...)`, `(%formatter/js ...)`, `(%formatter/text ...)` and
+  `(%formatter/sexp ...)` generate their arguments with that formatter, as
+  text. Markup, JSON and JavaScript are kept as they are (raw), while text and s-expressions are escaped in the
   output. `:document true` generates a whole document, e.g.
   `(%write "out/index.html" (%formatter/html :document true ...))`.
 
@@ -251,7 +251,39 @@ data cannot end the `script` tag):
 JavaScript itself is best written as a single string, as above, which is
 written as it is. Otherwise, a script's contents are kept as written, with
 strings written as JavaScript strings, but seam's syntax still applies: `;`
-starts a comment, for instance.
+starts a comment, for instance. To write JavaScript as s-expressions instead,
+use the JavaScript formatter.
+
+#### JavaScript
+The JavaScript formatter (`--js`, or `%formatter/js`) writes s-expressions as
+JavaScript, so a script can use macros, and seam's comments and strings, safely:
+```lisp
+(script (%formatter/js
+  (const posts (%formatter/json %posts))
+  (for post of posts
+    (console.log (. post title) "—" (. post date)))))
+```
+- A list is a call, `(f a b)` → `f(a, b)`, and `((. a b) 1)` → `a.b(1)`.
+  Symbols are written as they are, so `(console.log x)` works too.
+- Operators start a list: `(+ a b c)` → `a + b + c`, `(- a)` → `-a`, and the
+  same for comparisons, `&&`, `||`, `??`, `!`, `typeof`, `await` and
+  assignments (`=`, `+=`, ...). Nested operations are put in parentheses.
+- `(. a b "c-d" 0)` → `a.b["c-d"][0]`, `(at a i)` → `a[i]`,
+  `(new Map)` → `new Map()`, `(? c a b)` → `c ? a : b`.
+- `(array 1 2)` → `[1, 2]`, and a list of attributes is an object,
+  `(:a 1 :b-c 2)` → `{a: 1, "b-c": 2}`.
+- `(const x 1)` (and `let`, `var`), `(if c then else)` (use `(do ...)` for
+  several statements), `(for x of xs ...)`, `(for k in o ...)`,
+  `(while c ...)`, `(return x)`, `(throw x)`, `(break)` and `(continue)`.
+- `(=> (x (= y 1)) (+ x y))` → `(x, y = 1) => x + y`, and
+  `(function name (params...) body...)`. A function returns its last
+  expression.
+- `(import { a } from "./a.js")` is written word for word, and
+  `(export (const x 1))` and `(export default x)` export.
+
+A document is indented, one statement per line, while `%formatter/js` is
+compact unless given `:document true`. The generated JavaScript is raw text,
+so a `script` containing just that is written as it is.
 
 #### Shell-style variables
 `%{name...}` manipulates a variable's text, as `${name...}` does in a shell:

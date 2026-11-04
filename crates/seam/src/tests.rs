@@ -446,6 +446,40 @@ mod cases {
             Ok(r#"<script>f("é\n\"")</script>"#));
     }
 
+    /// Expand source to JavaScript, compact or as a document.
+    fn js(source: &str, document: bool) -> Result<String, String> {
+        use assemble::MarkupFormatter;
+        let context = Context::new();
+        let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
+        let tree = expander.expand().map_err(|err| format!("{err}"))?;
+        let formatter = assemble::js::JSFormatter::new(tree);
+        if document { formatter.document() } else { formatter.display() }.map_err(|err| err.message)
+    }
+
+    #[test]
+    fn test_js_formatter() {
+        let check = |source: &str, expect: &str| assert_eq!(js(source, false).as_deref(), Ok(expect), "{source}");
+        check("(f a \"b\\n\") ((. a b c) 1) (sketch.scale 30 -30)", r#"f(a, "b\n"); a.b.c(1); sketch.scale(30, -30);"#);
+        check("(const x (+ 1 (* 2 3) (- y)))", "const x = 1 + (2 * 3) + (-y);");
+        check("(let n) (= (. o \"a-b\" 0) (? (! ok) (array) (:a 1 :b-c 2)))",
+            r#"let n; o["a-b"][0] = ((!ok) ? [] : {a: 1, "b-c": 2});"#);
+        check("(const f (=> (x (= y 1)) (+ x y))) (const g (=> () (:a 1)))",
+            "const f = (x, y = 1) => x + y; const g = () => ({a: 1});");
+        check("(import { a } from \"./a.js\") (export default (new Map)) (export (const k 1))",
+            r#"import { a } from "./a.js"; export default new Map(); export const k = 1;"#);
+        check("(while (< i 3) (+= i 1) (await (tick)))", "while (i < 3) { i += 1; await tick(); }");
+        check("(if a (f) (if b (g) (do (h) (return))))", "if (a) { f(); } else if (b) { g(); } else { h(); return; }");
+        assert_eq!(js("(function add (a b) (const c (+ a b)) (* c 2)) (for x of xs (log x))", true).as_deref(),
+            Ok("function add(a, b) {\n  const c = a + b;\n  return c * 2;\n}\nfor (const x of xs) {\n  log(x);\n}"));
+        assert!(js("(f (const x 1))", false).unwrap_err().contains("is a statement"));
+        assert!(js("(f (if a b))", false).unwrap_err().contains("use `(? condition then else)'"));
+        assert!(js("(* a)", false).unwrap_err().contains("Wrong number of operands"));
+        assert!(js("(f ())", false).unwrap_err().contains("use `(array)'"));
+        // Generated JavaScript is raw text, written as it is inside a script.
+        assert_eq!(literate_html("(%do (script (%formatter/js (console.log \"</script>\"))))").as_deref(),
+            Ok(r#"<script>console.log("<\/script>");</script>"#));
+    }
+
     #[test]
     fn test_config_scalar_types() {
         assert_sexp_eq("(%yaml \"a: 1\\nb: '1'\\nc: true\\nd: ~\\ne: 2.5\\nf: text\")",

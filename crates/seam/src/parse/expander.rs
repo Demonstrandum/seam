@@ -2467,12 +2467,12 @@ impl<'a> Expander<'a> {
         })
     }
 
-    /// `(%formatter/html ...)` (and `text`, `xml`, `css`, `json`, `sexp`) generates its
+    /// `(%formatter/html ...)` (and `text`, `xml`, `css`, `json`, `js`, `sexp`) generates its
     /// arguments with that formatter, giving the result as text. With
     /// `:document true`, a whole document is generated.
     fn expand_formatter_macro(&self, format: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        use crate::assemble::{MarkupFormatter, css::CSSFormatter, json::JSONFormatter, text::PlainTextFormatter, xml::XMLFormatter};
+        use crate::assemble::{MarkupFormatter, css::CSSFormatter, js::JSFormatter, json::JSONFormatter, text::PlainTextFormatter, xml::XMLFormatter};
         let params = self.expand_nodes(params)?;
         let mut document = false;
         let mut content = Vec::with_capacity(params.len());
@@ -2493,6 +2493,7 @@ impl<'a> Expander<'a> {
             "xml" => Box::new(XMLFormatter::new(tree)),
             "css" => Box::new(CSSFormatter::new(tree)),
             "json" => Box::new(JSONFormatter::new(tree)),
+            "js" => Box::new(JSFormatter::new(tree)),
             "text" => Box::new(PlainTextFormatter::new(tree)),
             "sexp" => Box::new(SExpFormatter::new(tree)),
             _ => return Err(ExpansionError(format!("No such formatter, `{format}`."), node.owned_site())),

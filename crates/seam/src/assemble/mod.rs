@@ -170,3 +170,5 @@ pub mod css;
 pub mod html;
 /// JSON generation.
 pub mod json;
+/// JavaScript generation.
+pub mod js;
