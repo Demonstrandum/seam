@@ -14,6 +14,21 @@ pub struct Node<'a> {
     pub leading_whitespace: Cow<'a, str>,
 }
 
+impl Node<'_> {
+    /// Whether the atom was written starting with an escape, as in `\%`.
+    #[must_use]
+    pub fn is_escaped(&self) -> bool {
+        self.site.view().starts_with('\\')
+    }
+
+    /// The name of the macro this symbol calls, `name` for `%name`.
+    /// A symbol written with an escape, `\%`, is not a macro.
+    #[must_use]
+    pub fn macro_name(&self) -> Option<&str> {
+        self.value.strip_prefix('%').filter(|_| !self.is_escaped())
+    }
+}
+
 impl PartialEq for Node<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
@@ -483,7 +498,7 @@ impl<'a> Parser {
         // The first argument of a macro call `(%name ...)` has its leading
         // whitespace removed, unless it starts on a new line.
         if let [ParseNode::Symbol(head), first, ..] = elements.as_mut_slice()
-            && head.value.starts_with('%')
+            && head.macro_name().is_some()
             && !first.leading_whitespace().contains('\n') {
             first.set_leading_whitespace("");
         }
@@ -502,9 +517,10 @@ fn escape_sanitize(string: &str) -> Cow<'_, str> {
         return Cow::Borrowed(string);
     }
     let mut builder = String::with_capacity(string.len());
-    let chars = string.chars();
-    for c in chars {
-        if c == '\\' { continue; }
+    let mut chars = string.chars();
+    while let Some(c) = chars.next() {
+        // `\c` is `c`, whatever it is, so `\\` is a backslash.
+        let c = if c == '\\' { chars.next().unwrap_or(c) } else { c };
         builder.push(c);
     }
     Cow::Owned(builder)

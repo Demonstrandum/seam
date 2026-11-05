@@ -465,8 +465,23 @@ mod cases {
             r#"let n; o["a-b"][0] = ((!ok) ? [] : {a: 1, "b-c": 2});"#);
         check("(const f (=> (x (= y 1)) (+ x y))) (const g (=> () (:a 1)))",
             "const f = (x, y = 1) => x + y; const g = () => ({a: 1});");
-        check("(import { a } from \"./a.js\") (export default (new Map)) (export (const k 1))",
-            r#"import { a } from "./a.js"; export default new Map(); export const k = 1;"#);
+        check("(import D (a (as b c)) from \"./a.js\" :with (:type \"json\")) (import (as * ns) from \"x\") (import \"y\")",
+            r#"import D, {a, b as c} from "./a.js" with {type: "json"}; import * as ns from "x"; import "y";"#);
+        check("(export default (new Map)) (export (const k 1)) (export (a (as b default))) (export * from \"x\")",
+            r#"export default new Map(); export const k = 1; export {a, b as default}; export * from "x";"#);
+        check("(const xs (array 1 () (... ys) ())) (let (a 1) (b)) (const (object a :b c (= d 1)) o)",
+            "const xs = [1, , ...ys, ,]; let a = 1, b; const {a, b: c, d = 1} = o;");
+        check("([] a i j) (?. a b ([] i)) (f?. x) (\\% a b) (\\array 1) (++post i) (regex \"a/b c\" g)",
+            "a[i][j]; a?.b?.[i]; f?.(x); a % b; array(1); i++; /a\\/b c/g;");
+        check("(object :a 1 b (key k 2) (m (x) x) (get g () 1)) ((function () 1))",
+            "({a: 1, b, [k]: 2, m(x) { return x; }, get g() { return 1; }}); (function() { return 1; })();");
+        check("(` :tag t \"a`${\" x)", r"t`a\`\${${x}`;");
+        check("(class A :extends B :x 1 (field y) (static :n 0) (constructor () (super)) (* g () (yield 1)))",
+            "class A extends B { x = 1; y; static n = 0; constructor() { super(); } *g() { yield 1; } }");
+        check("(outer: (for (let i 0) () () (break outer))) (switch x (case 1) (default (f)))",
+            "outer: for (let i = 0;;) { break outer; } switch (x) { case 1: default: f(); }");
+        check("(try (f) (catch () (g)) (finally (h))) (do-while (c) (f))",
+            "try { f(); } catch { g(); } finally { h(); } do { f(); } while (c());");
         check("(while (< i 3) (+= i 1) (await (tick)))", "while (i < 3) { i += 1; await tick(); }");
         check("(if a (f) (if b (g) (do (h) (return))))", "if (a) { f(); } else if (b) { g(); } else { h(); return; }");
         assert_eq!(js("(function add (a b) (const c (+ a b)) (* c 2)) (for x of xs (log x))", true).as_deref(),
@@ -478,6 +493,13 @@ mod cases {
         // Generated JavaScript is raw text, written as it is inside a script.
         assert_eq!(literate_html("(%do (script (%formatter/js (console.log \"</script>\"))))").as_deref(),
             Ok(r#"<script>console.log("<\/script>");</script>"#));
+    }
+
+    #[test]
+    fn test_escaped_symbols() {
+        // An escaped `%` is not a macro, and `\\` is a backslash.
+        assert_eq!(js("(\\% a b) (\\%= a b)", false).as_deref(), Ok("a % b; a %= b;"));
+        assert_eq!(js("(f a\\ b \\\\ \\;)", false).as_deref(), Ok("f(a b, \\, ;);"));
     }
 
     #[test]

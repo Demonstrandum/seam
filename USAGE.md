@@ -267,19 +267,24 @@ JavaScript, so a script can use macros, and seam's comments and strings, safely:
   Symbols are written as they are, so `(console.log x)` works too.
 - Operators start a list: `(+ a b c)` → `a + b + c`, `(- a)` → `-a`, and the
   same for comparisons, `&&`, `||`, `??`, `!`, `typeof`, `await` and
-  assignments (`=`, `+=`, ...). Nested operations are put in parentheses.
-- `(. a b "c-d" 0)` → `a.b["c-d"][0]`, `(at a i)` → `a[i]`,
-  `(new Map)` → `new Map()`, `(? c a b)` → `c ? a : b`.
-- `(array 1 2)` → `[1, 2]`, and a list of attributes is an object,
-  `(:a 1 :b-c 2)` → `{a: 1, "b-c": 2}`.
-- `(const x 1)` (and `let`, `var`), `(if c then else)` (use `(do ...)` for
-  several statements), `(for x of xs ...)`, `(for k in o ...)`,
-  `(while c ...)`, `(return x)`, `(throw x)`, `(break)` and `(continue)`.
-- `(=> (x (= y 1)) (+ x y))` → `(x, y = 1) => x + y`, and
-  `(function name (params...) body...)`. A function returns its last
-  expression.
-- `(import { a } from "./a.js")` is written word for word, and
-  `(export (const x 1))` and `(export default x)` export.
+  assignments (`=`, `+=`, ...). Nested operations are always put in
+  parentheses, so precedence never matters. `%` is escaped, `(\% a b)`.
+- `(. a b "c-d" 0)` → `a.b["c-d"][0]`, `([] a i)` → `a[i]`, `(?. a b)` →
+  `a?.b`, `(f?. x)` → `f?.(x)`, `(new Map)` → `new Map()`, `(? c a b)` → `c ? a : b`.
+- `(array 1 (... xs))` → `[1, ...xs]`, `(object a :b 1)` → `{a, b: 1}`, and a
+  list of attributes is an object too, `(:a 1 :b-c 2)` → `{a: 1, "b-c": 2}`.
+  These are also destructuring patterns, `(const (object a b) o)`.
+- Declarations `(const x 1)` and `(let (a 1) (b 2))`; statements
+  `(if c then else)` (use `(do ...)` for several), `(for x of xs ...)`,
+  `(for (let i 0) (< i n) (++ i) ...)`, `while`, `do-while`, `switch`, `try`
+  and labels; `(=> (x (= y 1)) (+ x y))`, `(function name (params...) body...)`,
+  `async`, generators and `(class Name :extends Base members...)`. A function
+  returns its last expression.
+- `(import D (a (as b c)) from "./a.js")` → `import D, {a, b as c} from "./a.js"`,
+  and `(export (const x 1))`, `(export default x)`, `(export (a b))`.
+- To call a function named like one of these forms, escape it: `(\array 1)`.
+
+All of JavaScript's syntax is covered; see [docs/javascript.md](docs/javascript.md).
 
 A document is indented, one statement per line, while `%formatter/js` is
 compact unless given `:document true`. The generated JavaScript is raw text,

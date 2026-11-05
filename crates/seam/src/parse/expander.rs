@@ -2902,11 +2902,12 @@ impl<'a> Expander<'a> {
         let start = out.len();
         match node {
             // Symbols starting with %... are replaced with their defined value.
-            ParseNode::Symbol(sym) if sym.value.starts_with("%{") && sym.value.ends_with('}') => {
+            ParseNode::Symbol(sym) if sym.macro_name().is_some_and(|name| name.starts_with('{'))
+                && sym.value.ends_with('}') => {
                 out.push(self.expand_shell(sym)?);
             },
-            ParseNode::Symbol(sym) if sym.value.starts_with('%') => {
-                let name = &sym.value[1..];
+            ParseNode::Symbol(sym) if sym.macro_name().is_some() => {
+                let name = sym.macro_name().unwrap_or_default();
                 let lazy = self.lookup(name, |definition| match definition {
                     Definition::Value(value) => {
                         out.extend_from_slice(value);
@@ -2934,7 +2935,7 @@ impl<'a> Expander<'a> {
                 // Pathway: (%_ _ _) macro invocation.
                 if let Some(name) = nodes.first()
                     .and_then(ParseNode::symbol)
-                    .and_then(|symbol| symbol.value.strip_prefix('%')) {
+                    .and_then(|symbol| symbol.macro_name()) {
                     out.extend(self.expand_invocation(name, node, &nodes[1..])?);
                 } else {
                     // Otherwise, if not a macro, just expand child nodes incase they are macros.
