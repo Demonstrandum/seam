@@ -703,10 +703,12 @@ fn expression<'a>(f: Formatter, node: &ParseNode<'a>, indent: Option<usize>) -> 
                 parts => parts,
             };
             write!(f, "`")?;
+            // Neighbouring strings are written together, so `previous`
+            // carries over from one to the next.
+            let mut previous = '\0';
             for part in parts {
                 if let ParseNode::String(text) = part {
                     let mut chars = text.value.chars().peekable();
-                    let mut previous = '\0';
                     while let Some(c) = chars.next() {
                         match c {
                             '`' | '\\' => write!(f, "\\{c}")?,
@@ -721,6 +723,7 @@ fn expression<'a>(f: Formatter, node: &ParseNode<'a>, indent: Option<usize>) -> 
                     write!(f, "${{")?;
                     expression(f, part, indent)?;
                     write!(f, "}}")?;
+                    previous = '}';
                 }
             }
             write!(f, "`")?;

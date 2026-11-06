@@ -485,6 +485,7 @@ mod cases {
         // Text that could end a script is escaped, and numbers are not misread.
         check("(` \"</script>\") (regex \"[</]\") (/* \"</script>\")",
             r"`<\/script>`; /[<\/]/; /* <\/script> */");
+        check("(` \"<\" \"/script>\" x \"<\" y \"/\")", r"`<\/script>${x}<${y}/`;");
         check("(. 1 toString) (- -5) (new (getClass) 1)", "(1).toString; -(-5); new (getClass())(1);");
         assert!(js("(export (async (=> () 1)))", false).unwrap_err().contains("Only a declaration"));
         assert!(js("(export (function () 1))", false).unwrap_err().contains("Only a declaration"));
