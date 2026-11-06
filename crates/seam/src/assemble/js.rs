@@ -349,7 +349,8 @@ fn statement<'a>(f: Formatter, node: &ParseNode<'a>, indent: Option<usize>) -> R
             }
         },
         ("//" | "/*", text) => {
-            let text = text.iter().map(text_of).collect::<Vec<_>>().join(" ");
+            // So `</script>` cannot end a script.
+            let text = text.iter().map(text_of).collect::<Vec<_>>().join(" ").replace("</", "<\\/");
             if keyword == "//" {
                 for (index, line) in text.lines().enumerate() {
                     if index > 0 {
@@ -386,6 +387,11 @@ fn statement<'a>(f: Formatter, node: &ParseNode<'a>, indent: Option<usize>) -> R
             }
         },
         ("export", [declaration_]) if head(declaration_).is_some_and(|head| DECLARATIONS.contains(&head)) => {
+            // Only a named function or class is a declaration, not an expression.
+            if !(is_statement(declaration_) || matches!(head(declaration_), Some("const" | "let" | "var" | "using" | "await-using"))) {
+                return Err(error("Only a declaration, or a named function or class, can be exported; \
+                                  use `(export default value)' to export a value.", declaration_));
+            }
             write!(f, "export ")?;
             statement(f, declaration_, indent)?;
         },
@@ -619,7 +625,14 @@ fn expression<'a>(f: Formatter, node: &ParseNode<'a>, indent: Option<usize>) -> 
     match (keyword, args) {
         ("." | "?.", [object, keys @ ..]) if !keys.is_empty() => {
             let dot = if keyword == "." { "." } else { "?." };
-            operand(f, object, indent)?;
+            // `1.x` would read as the number `1.`, so it is `(1).x`.
+            if matches!(object, ParseNode::Number(_)) {
+                write!(f, "(")?;
+                expression(f, object, indent)?;
+                write!(f, ")")?;
+            } else {
+                operand(f, object, indent)?;
+            }
             for key in keys {
                 match (key, computed(key)) {
                     (ParseNode::Symbol(name), _) if is_identifier(&name.value) || name.value.starts_with('#') =>
@@ -665,17 +678,14 @@ fn expression<'a>(f: Formatter, node: &ParseNode<'a>, indent: Option<usize>) -> 
             if pattern.is_empty() {
                 write!(f, "(?:)")?;
             }
+            // Every `/` is escaped, even in a class, so `</` cannot end a script.
             let mut escaped = false;
-            let mut class = false;
             for c in pattern.chars() {
                 match c {
                     '\n' => write!(f, "\\n")?,
                     '\r' => write!(f, "\\r")?,
-                    '/' if !escaped && !class => write!(f, "\\/")?,
+                    '/' if !escaped => write!(f, "\\/")?,
                     c => write!(f, "{c}")?,
-                }
-                if !escaped {
-                    class = match c { '[' => true, ']' => false, _ => class };
                 }
                 escaped = c == '\\' && !escaped;
             }
@@ -696,12 +706,16 @@ fn expression<'a>(f: Formatter, node: &ParseNode<'a>, indent: Option<usize>) -> 
             for part in parts {
                 if let ParseNode::String(text) = part {
                     let mut chars = text.value.chars().peekable();
+                    let mut previous = '\0';
                     while let Some(c) = chars.next() {
                         match c {
                             '`' | '\\' => write!(f, "\\{c}")?,
                             '$' if chars.peek() == Some(&'{') => write!(f, "\\$")?,
+                            // So `</script>` cannot end a script.
+                            '/' if previous == '<' => write!(f, "\\/")?,
                             c => write!(f, "{c}")?,
                         }
+                        previous = c;
                     }
                 } else {
                     write!(f, "${{")?;

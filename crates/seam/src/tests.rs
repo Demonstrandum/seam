@@ -482,6 +482,12 @@ mod cases {
             "outer: for (let i = 0;;) { break outer; } switch (x) { case 1: default: f(); }");
         check("(try (f) (catch () (g)) (finally (h))) (do-while (c) (f))",
             "try { f(); } catch { g(); } finally { h(); } do { f(); } while (c());");
+        // Text that could end a script is escaped, and numbers are not misread.
+        check("(` \"</script>\") (regex \"[</]\") (/* \"</script>\")",
+            r"`<\/script>`; /[<\/]/; /* <\/script> */");
+        check("(. 1 toString) (- -5) (new (getClass) 1)", "(1).toString; -(-5); new (getClass())(1);");
+        assert!(js("(export (async (=> () 1)))", false).unwrap_err().contains("Only a declaration"));
+        assert!(js("(export (function () 1))", false).unwrap_err().contains("Only a declaration"));
         check("(while (< i 3) (+= i 1) (await (tick)))", "while (i < 3) { i += 1; await tick(); }");
         check("(if a (f) (if b (g) (do (h) (return))))", "if (a) { f(); } else if (b) { g(); } else { h(); return; }");
         assert_eq!(js("(function add (a b) (const c (+ a b)) (* c 2)) (for x of xs (log x))", true).as_deref(),
