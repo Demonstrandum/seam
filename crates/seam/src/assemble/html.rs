@@ -3,8 +3,8 @@
 use super::{child_whitespace, write_escaped, Escaping, GenerationError, MarkupFormatter, Formatter};
 use super::{
     text::PlainTextFormatter,
-    sexp::SExpFormatter,
     xml::XMLFormatter,
+    json,
     css::{self, CSSFormatter},
 };
 
@@ -185,9 +185,16 @@ impl<'a> HTMLFormatter<'a> {
                         }
                     },
                     "script" => {
-                        // TODO: Generating JavaScript from S-expressions is not implemented.
-                        // For now, just treat it as a completely source-code preserving.
-                        SExpFormatter::generate_children(f, rest)?;
+                        // When just a string is passed, it is the script, written as is.
+                        if let [ParseNode::String(script) | ParseNode::Raw(script)] = rest {
+                            write!(f, "{}", script.value)?;
+                        } else {
+                            // TODO: Generating JavaScript from S-expressions is not implemented.
+                            // For now, the source is kept as written (see [`generate_script`]).
+                            for (index, node) in rest.iter().enumerate() {
+                                generate_script(f, node, child_whitespace(index, node))?;
+                            }
+                        }
                     },
                     "math" | "svg" => {  // <math> and <svg> are subsets of XML.
                         XMLFormatter::generate_children(f, rest)?;
@@ -238,6 +245,28 @@ const METADATA_ELEMENTS: [&str; 8] = [
 ];
 
 /// Lower-cased tag name of an element node, e.g. `(Body ...)` gives `body`.
+/// Write the source of a script as it was written, except that strings are
+/// JavaScript string literals, and raw text (e.g. JSON) is written as is.
+fn generate_script<'a>(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
+    write!(f, "{leading}")?;
+    match node {
+        ParseNode::Symbol(atom) | ParseNode::Number(atom) | ParseNode::Raw(atom) => write!(f, "{}", atom.value)?,
+        ParseNode::String(string) => json::write_string(f, &string.value)?,
+        ParseNode::List { nodes, end_token, .. } => {
+            write!(f, "(")?;
+            for node in nodes {
+                generate_script(f, node, node.leading_whitespace())?;
+            }
+            write!(f, "{})", end_token.leading_whitespace)?;
+        },
+        ParseNode::Attribute { keyword, node, .. } => {
+            write!(f, ":{keyword}")?;
+            generate_script(f, node, node.leading_whitespace())?;
+        },
+    }
+    Ok(())
+}
+
 fn tag_name(node: &ParseNode) -> Option<String> {
     match node {
         ParseNode::List { nodes, .. } => nodes.first()

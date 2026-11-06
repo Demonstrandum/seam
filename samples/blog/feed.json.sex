@@ -1,0 +1,19 @@
+;; A JSON Feed (https://jsonfeed.org) of the posts.
+;; Render it alone with `seam --json feed.json.sex`.
+;; A list of `:key value` attributes becomes an object, any other list an array.
+(%include "site.sex")
+
+(:version "https://jsonfeed.org/version/1.1"
+ :title %site-title
+ :home_page_url %site-url
+ :feed_url (%concat %site-url "feed.json")
+ :authors ((:name %author))
+ :items (%list (%for post in %posts
+   (%let (((:slug _ :title _ :date _ :tags _ :description _ &&_) %post)
+          (url (%concat %site-url "posts/" %slug ".html")))
+     (:id %url
+      :url %url
+      :title %title
+      :summary %description
+      :date_published (%concat %date "T00:00:00Z")
+      :tags %tags)))))

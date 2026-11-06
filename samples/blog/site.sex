@@ -60,7 +60,9 @@
       (title (%ifdef title (%concat %title " — " %site-title) %site-title))
       (link :rel stylesheet :href (%concat %root "style.css"))
       (link :rel alternate :type application/rss+xml
-            :title %site-title :href (%concat %root "feed.xml")))
+            :title %site-title :href (%concat %root "feed.xml"))
+      (link :rel alternate :type application/feed+json
+            :title %site-title :href (%concat %root "feed.json")))
     (body
       (%include "includes/header.sex")
       (main %body)

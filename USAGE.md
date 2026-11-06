@@ -219,10 +219,39 @@ Lists made by `%range`, `%take`, `%drop`, `%get` (slices), `%reverse` and
 
 #### Formatters
 - `(%formatter/html ...)`, `(%formatter/xml ...)`, `(%formatter/css ...)`,
-  `(%formatter/text ...)` and `(%formatter/sexp ...)` generate their arguments
-  with that formatter, as text. Markup is kept as it is (raw), while text and
-  s-expressions are escaped in the output. `:document true` generates a whole
-  document, e.g. `(%write "out/index.html" (%formatter/html :document true ...))`.
+  `(%formatter/json ...)`, `(%formatter/text ...)` and `(%formatter/sexp ...)`
+  generate their arguments with that formatter, as text. Markup and JSON are
+  kept as they are (raw), while text and s-expressions are escaped in the
+  output. `:document true` generates a whole document, e.g.
+  `(%write "out/index.html" (%formatter/html :document true ...))`.
+
+#### JSON, YAML and TOML
+`(%json "...")`, `(%yaml "...")` and `(%toml "...")` read data into
+s-expressions, defining each value under its path as well (e.g. `%a/0`), and
+the JSON formatter (`--json`, or `%formatter/json`) writes it back out:
+- a list of `:key value` attributes is an object, and any other list an array;
+- strings are strings, and numbers are numbers;
+- the symbols `true`, `false` and `null` are themselves, and other symbols are strings.
+
+So `(%json "{\"a\": [1, \"2\", null]}")` reads as `(:a (1 "2" null))`, which
+is written out as `{"a":[1,"2",null]}` again. A file's top level is written as
+one value if it is a single value, or else as the items of a list. A document
+is indented, one item per line, while `%formatter/json` is compact unless given
+`:document true`.
+
+JSON is raw text, so it is written as it is, and it can be given to a page's
+scripts as a data block (strings containing `</` are written `<\/`, so the
+data cannot end the `script` tag):
+```lisp
+(script :type application/json :id posts (%formatter/json %posts))
+(script """
+  const posts = JSON.parse(document.getElementById("posts").textContent);
+""")
+```
+JavaScript itself is best written as a single string, as above, which is
+written as it is. Otherwise, a script's contents are kept as written, with
+strings written as JavaScript strings, but seam's syntax still applies: `;`
+starts a comment, for instance.
 
 #### Shell-style variables
 `%{name...}` manipulates a variable's text, as `${name...}` does in a shell:

@@ -14,7 +14,7 @@ fn argument_fatal(msg: impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
-const SUPPORTED_TARGETS: [&str; 5] = ["text", "sexp", "html", "xml", "css"];
+const SUPPORTED_TARGETS: [&str; 6] = ["text", "sexp", "html", "xml", "css", "json"];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().peekable();
@@ -128,6 +128,7 @@ fn generate_and_print(expander: seam::parse::expander::Expander, target: &str, i
         "html" => Box::new(seam::assemble::html::HTMLFormatter::new(tree)),
         "xml"  => Box::new(seam::assemble::xml::XMLFormatter::new(tree)),
         "css"  => Box::new(seam::assemble::css::CSSFormatter::new(tree)),
+        "json" => Box::new(seam::assemble::json::JSONFormatter::new(tree)),
         _ => {
             if SUPPORTED_TARGETS.contains(&target) {
                 unreachable!("bug: target `{}' is not covered", target);

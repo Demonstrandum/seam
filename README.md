@@ -23,6 +23,7 @@ Read the [USAGE.md](USAGE.md) file for code examples and documentation.
  - XML (`--xml`; including: SVG, MathML)
  - HTML (`--html`; SGML)
  - CSS (`--css`)
+ - JSON (`--json`)
  - SExp (`--sexp`; S-expression, basically a macro expansion utility)
  - Plain Text (`--text`; renders escaped strings to text)
 
@@ -171,7 +172,8 @@ seam run build.sex
  - [x] Add keyword macro arguments.
  - [x] Caching or checking time-stamps as to not regenerate unmodified source files: `(%write path :from (sources...) ...)`, and unchanged files are not rewritten.
  - [x] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
- - [ ] Add more supported formats (`JSON`, `JS`, `TOML`, &c.).
+ - [x] JSON output (`--json`, `%formatter/json`), the reverse of `%json`.
+ - [ ] Add more supported formats (`JS`, `TOML`, &c.).
  - [x] Allow for arbitrary embedding of code with their REPLs, that can be run by
    a LISP interpreter (or any other language), for example.  (e.g. `(%chez (+ 1 2))` executes
    `(+ 1 2)` with Chez-Scheme LISP, and places the result in the source (i.e. `3`).

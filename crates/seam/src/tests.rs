@@ -246,7 +246,7 @@ mod cases {
             "<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<p>Hello World</p>\n</body>\n</html>");
         // loose metadata goes in the head, until the first content.
         assert_html_document_eq("(title T) (p hi) (script \"x()\")",
-            "<!DOCTYPE html>\n<html>\n<head>\n<title>T</title>\n</head>\n<body>\n<p>hi</p> <script>\"x()\"</script>\n</body>\n</html>");
+            "<!DOCTYPE html>\n<html>\n<head>\n<title>T</title>\n</head>\n<body>\n<p>hi</p> <script>x()</script>\n</body>\n</html>");
         // an explicit head stays a head, rather than ending up in the body.
         assert_html_document_eq("(head (title T)) (p hi)",
             "<!DOCTYPE html>\n<html>\n<head><title>T</title></head>\n<body>\n<p>hi</p>\n</body>\n</html>");
@@ -407,6 +407,50 @@ mod cases {
 
     fn assert_sexp_eq(input: &str, expect: &str) {
         assert_eq!(sexp(input).as_deref(), Ok(expect), "{input}");
+    }
+
+    /// Expand source to compact JSON.
+    fn json(source: &str) -> Result<String, String> {
+        use assemble::MarkupFormatter;
+        let context = Context::new();
+        let expander = tree_builder(&context, Some("<test>"), source.to_owned(), false);
+        let tree = expander.expand().map_err(|err| format!("{err}"))?;
+        assemble::json::JSONFormatter::new(tree).display().map_err(|err| err.message)
+    }
+
+    #[test]
+    fn test_json_formatter() {
+        let check = |source: &str, expect: &str| assert_eq!(json(source).as_deref(), Ok(expect), "{source}");
+        check("(:name \"Sam\" :age 9 :tags (a \"b c\" 1.5) :ok true :none null)",
+            r#"{"name":"Sam","age":9,"tags":["a","b c",1.5],"ok":true,"none":null}"#);
+        check("1 0x10 +5 -2.5", "[1,16,5,-2.5]");
+        check(":a 1 :b ()", r#"{"a":1,"b":[]}"#);
+        check("\"quote \\\" back \\\\ \\n </script>\"", r#""quote \" back \\ \n <\/script>""#);
+        check("(%raw \"{}\")", "{}");
+        assert!(json("(:a 1 b)").unwrap_err().contains("cannot also have plain items"));
+        assert!(json("(b :a 1)").unwrap_err().contains("cannot also have keyword attributes"));
+        // Reading JSON in and writing it out again gives the same JSON.
+        let original = r#"{"a":[1,{"b":null,"c":false}],"d":"2","e":1.5}"#;
+        check(&format!("(%json {original:?})"), original);
+        // Pretty-printed as a document.
+        assert_sexp_eq("(%string (%formatter/json :document true (:a (1) :b ())))",
+            "\"{\\n  \\\"a\\\": [\\n    1\\n  ],\\n  \\\"b\\\": []\\n}\"");
+        // Raw text, like JSON, is written as is inside a script.
+        assert_eq!(literate_html("(%do (script :type application/json (%formatter/json (1 \"</x>\"))))").as_deref(),
+            Ok(r#"<script type="application/json">[1,"<\/x>"]</script>"#));
+        // A script given as a single string is written as is,
+        // and otherwise its strings are JavaScript strings.
+        assert_eq!(literate_html("(%do (script \"let a = 1; f(a)\"))").as_deref(),
+            Ok("<script>let a = 1; f(a)</script>"));
+        assert_eq!(literate_html(r#"(%do (script f("é\n\"")))"#).as_deref(),
+            Ok(r#"<script>f("é\n\"")</script>"#));
+    }
+
+    #[test]
+    fn test_config_scalar_types() {
+        assert_sexp_eq("(%yaml \"a: 1\\nb: '1'\\nc: true\\nd: ~\\ne: 2.5\\nf: text\")",
+            "(:a 1 :b \"1\" :c true :d null :e 2.5 :f \"text\")");
+        assert_sexp_eq("(%json \"[1, \\\"1\\\", null]\")", "(1 \"1\" null)");
     }
 
     #[test]

@@ -2467,12 +2467,12 @@ impl<'a> Expander<'a> {
         })
     }
 
-    /// `(%formatter/html ...)` (and `text`, `xml`, `css`, `sexp`) generates its
+    /// `(%formatter/html ...)` (and `text`, `xml`, `css`, `json`, `sexp`) generates its
     /// arguments with that formatter, giving the result as text. With
     /// `:document true`, a whole document is generated.
     fn expand_formatter_macro(&self, format: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        use crate::assemble::{MarkupFormatter, css::CSSFormatter, text::PlainTextFormatter, xml::XMLFormatter};
+        use crate::assemble::{MarkupFormatter, css::CSSFormatter, json::JSONFormatter, text::PlainTextFormatter, xml::XMLFormatter};
         let params = self.expand_nodes(params)?;
         let mut document = false;
         let mut content = Vec::with_capacity(params.len());
@@ -2492,6 +2492,7 @@ impl<'a> Expander<'a> {
             "html" => Box::new(HTMLFormatter::new(tree)),
             "xml" => Box::new(XMLFormatter::new(tree)),
             "css" => Box::new(CSSFormatter::new(tree)),
+            "json" => Box::new(JSONFormatter::new(tree)),
             "text" => Box::new(PlainTextFormatter::new(tree)),
             "sexp" => Box::new(SExpFormatter::new(tree)),
             _ => return Err(ExpansionError(format!("No such formatter, `{format}`."), node.owned_site())),
@@ -3129,10 +3130,10 @@ fn list_index<'a>(index: &ParseNode<'a>, length: usize) -> Result<usize, Expansi
 
 /// A number, kept whole where possible.
 #[derive(Debug, Clone, Copy)]
-enum Number { Int(i64), Float(f64) }
+pub(crate) enum Number { Int(i64), Float(f64) }
 
 impl Number {
-    fn of(node: &ParseNode) -> Option<Self> {
+    pub(crate) fn of(node: &ParseNode) -> Option<Self> {
         let text: &str = &node.atomic()?.value;
         let (sign, digits) = match text.strip_prefix('-') {
             Some(digits) => (-1, digits),
@@ -3499,6 +3500,23 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
         site: Site<'a>,
     }
 
+    /// A scalar keeps its type: unquoted numbers, `true`, `false` and `null`
+    /// are numbers and symbols, and everything else is a string.
+    fn scalar<'a>(value: &str, style: yaml::scanner::TScalarStyle, site: Site<'a>) -> ParseNode<'a> {
+        let node = Node::new(value.to_owned(), &site, " ");
+        if style != yaml::scanner::TScalarStyle::Plain {
+            return ParseNode::String(node);
+        }
+        match yaml::Yaml::from_str(value) {
+            yaml::Yaml::Integer(int) => ParseNode::Number(Node { value: int.to_string().into(), ..node }),
+            yaml::Yaml::Real(real) if real.parse::<f64>().is_ok_and(f64::is_finite)
+                => ParseNode::Number(node),
+            yaml::Yaml::Boolean(boolean) => ParseNode::Symbol(Node { value: boolean.to_string().into(), ..node }),
+            yaml::Yaml::Null => ParseNode::Symbol(Node { value: "null".into(), ..node }),
+            _ => ParseNode::String(node),
+        }
+    }
+
     impl EventSink<'_, '_> {
         fn qualified(&self, name: &str) -> String {
             if self.prefix.is_empty() {
@@ -3518,12 +3536,8 @@ fn expand_yaml<'a>(context: &Expander<'a>, text: &str, sep: &str, site: &Site<'a
             );
             match event {
                 // Either defining a new variable or setting a variable to a string.
-                yaml::Event::Scalar(ref value, ..) => {
-                    let mut string = ParseNode::String(Node {
-                        value: value.clone().into(),
-                        site: self.site,
-                        leading_whitespace: String::from(" ").into(),
-                    });
+                yaml::Event::Scalar(ref value, style, ..) => {
+                    let mut string = scalar(value, style, self.site);
                     match self.defining {
                         Some(ref name) => {
                             // Define a variable under `name` with `value`.
