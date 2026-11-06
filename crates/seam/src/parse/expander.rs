@@ -2467,12 +2467,12 @@ impl<'a> Expander<'a> {
         })
     }
 
-    /// `(%formatter/html ...)` (and `text`, `xml`, `css`, `json`, `sexp`) generates its
+    /// `(%formatter/html ...)` (and `text`, `xml`, `css`, `json`, `js`, `sexp`) generates its
     /// arguments with that formatter, giving the result as text. With
     /// `:document true`, a whole document is generated.
     fn expand_formatter_macro(&self, format: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>])
     -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        use crate::assemble::{MarkupFormatter, css::CSSFormatter, json::JSONFormatter, text::PlainTextFormatter, xml::XMLFormatter};
+        use crate::assemble::{MarkupFormatter, css::CSSFormatter, js::JSFormatter, json::JSONFormatter, text::PlainTextFormatter, xml::XMLFormatter};
         let params = self.expand_nodes(params)?;
         let mut document = false;
         let mut content = Vec::with_capacity(params.len());
@@ -2493,6 +2493,7 @@ impl<'a> Expander<'a> {
             "xml" => Box::new(XMLFormatter::new(tree)),
             "css" => Box::new(CSSFormatter::new(tree)),
             "json" => Box::new(JSONFormatter::new(tree)),
+            "js" => Box::new(JSFormatter::new(tree)),
             "text" => Box::new(PlainTextFormatter::new(tree)),
             "sexp" => Box::new(SExpFormatter::new(tree)),
             _ => return Err(ExpansionError(format!("No such formatter, `{format}`."), node.owned_site())),
@@ -2901,11 +2902,12 @@ impl<'a> Expander<'a> {
         let start = out.len();
         match node {
             // Symbols starting with %... are replaced with their defined value.
-            ParseNode::Symbol(sym) if sym.value.starts_with("%{") && sym.value.ends_with('}') => {
+            ParseNode::Symbol(sym) if sym.macro_name().is_some_and(|name| name.starts_with('{'))
+                && sym.value.ends_with('}') => {
                 out.push(self.expand_shell(sym)?);
             },
-            ParseNode::Symbol(sym) if sym.value.starts_with('%') => {
-                let name = &sym.value[1..];
+            ParseNode::Symbol(sym) if sym.macro_name().is_some() => {
+                let name = sym.macro_name().unwrap_or_default();
                 let lazy = self.lookup(name, |definition| match definition {
                     Definition::Value(value) => {
                         out.extend_from_slice(value);
@@ -2933,7 +2935,7 @@ impl<'a> Expander<'a> {
                 // Pathway: (%_ _ _) macro invocation.
                 if let Some(name) = nodes.first()
                     .and_then(ParseNode::symbol)
-                    .and_then(|symbol| symbol.value.strip_prefix('%')) {
+                    .and_then(|symbol| symbol.macro_name()) {
                     out.extend(self.expand_invocation(name, node, &nodes[1..])?);
                 } else {
                     // Otherwise, if not a macro, just expand child nodes incase they are macros.
