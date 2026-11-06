@@ -168,6 +168,23 @@ will be treated as macros.
 - `(%concat (a b) (c))` gives `(a b c)`, as it joins text.
 - `%for` iterates over the items of the list its expression gives
   (or over all the nodes it gives), e.g. `(%for post in %posts ...)`.
+- `(%sort list)` sorts by value, or `:by f` (or `:key f`) by what a macro
+  gives for each item, `:order descending` to reverse it.
+
+Functions are given as a macro's name, or a `%lambda`:
+- `(%map f (a b c))` is the list of what `f` gives for each item, and
+  `(%filter f (a b c))` the items `f` is true for. Given the items directly,
+  `(%map f a b c)`, they give them without a list around them.
+- `(%fold f initial (a b c))` gives `(%f (%f (%f initial a) b) c)`, e.g.
+  `(%fold (%lambda (sum n) (%+ %sum %n)) 0 %numbers)`.
+- `(%find f list)` is the first item `f` is true for (or nothing), and
+  `(%any f list)` and `(%all f list)` are `true` or `false`.
+- `(%zip (a b) (1 2))` gives `((a 1) (b 2))`, and `(%enumerate (a b))` gives
+  `((0 a) (1 b))` (counting `:from` another number if given).
+- `(%flatten (a (b (c))))` gives `(a b c)` (or only `:depth n` levels deep).
+- `(%group-by f list)` groups the items by what `f` gives for them, as a
+  dictionary: `(%group-by (%lambda (post) (%get year %post)) %posts)` gives
+  `(:2025 (...) :2024 (...))`.
 
 Lists made by `%range`, `%take`, `%drop`, `%get` (slices), `%reverse` and
 `%concat` are made only as far as they are needed, so
@@ -214,8 +231,43 @@ Lists made by `%range`, `%take`, `%drop`, `%get` (slices), `%reverse` and
   fails, the fallback, with `%name` bound to the error message.
 
 #### Code as data
+Code is made of the same lists, symbols and strings as any other data, so
+macros can build, inspect and rewrite it.
 - `(%quote ...)` gives its arguments unexpanded; `(%eval ...)` expands its
   arguments, then expands the result: `(%eval (%quote (%+ 1 2)))` → `3`.
+- `(%quasi ...)` gives its arguments unexpanded too, except for
+  `(%unquote x)`, which is replaced by what `x` expands to, and
+  `(%splice xs)`, which is replaced by the items of the list `xs`:
+  `(%quasi (%+ (%unquote %x) (%splice %ys)))` → `(%+ 1 2 3)`, given `x` is `1`
+  and `ys` is `(2 3)`. Within a nested `%quasi`, an `%unquote` is only
+  expanded where there are as many of them as there are `%quasi`s.
+- `(%read "(a b)")` reads text as seam code (without expanding it).
+- `(%type x)` is `symbol`, `number`, `string`, `raw`, `list`, `attribute`, or
+  `nothing`, and `(%list? x)`, `(%symbol? x)`, `(%string? x)`,
+  `(%number? x)`, `(%raw? x)` and `(%attribute? x)` are `true` or `false`.
+- `(%attribute key value)` gives `:key value`, for a key worked out by a macro,
+  and `(%dict ((a 1) (b 2)))` gives `(:a 1 :b 2)`, the reverse of `%items`.
+- `(%walk f tree)` rebuilds a tree from the bottom up, replacing every node
+  with what `f` gives for it (attributes have their values replaced). Giving
+  nothing removes a node, and giving several nodes splices them in its place:
+  ```lisp
+  ; Load every image lazily.
+  (%walk (%lambda (node)
+           (%match %node
+             ((img &&attributes) (img :loading lazy %attributes))
+             (_ %node)))
+         %page)
+  ```
+- `(%select h2 tree)` is the list of every `(h2 ...)` within a tree, in order,
+  and `(%select (h2 h3) tree)` of every `h2` and `h3`. A table of contents:
+  `(ul (%splat (%map (%lambda (h) (li (%get 1 %h))) (%select h2 %page))))`.
+
+When writing macros:
+- `(%gensym)` (or `(%gensym name)`) gives a symbol unlike any other, for names
+  which must not clash with the caller's.
+- `(%defined name)` is `macro` or `value`, for what `name` is defined as, or `false`.
+- `(%macroexpand (%f a b))` shows one step of a macro's expansion: its body,
+  with the parameters replaced by the arguments, but nothing within it expanded.
 
 #### Formatters
 - `(%formatter/html ...)`, `(%formatter/xml ...)`, `(%formatter/css ...)`,

@@ -556,6 +556,66 @@ mod cases {
     }
 
     #[test]
+    fn test_quasiquote() {
+        assert_sexp_eq("(%define x 1) (%define xs (a b)) (%quasi (%+ (%unquote %x) 2) (l (%splice %xs) z) :k (%unquote %x))",
+            " (%+ 1 2) (l a b z) :k 1");
+        assert_sexp_eq("(%define x 1) (%eval (%quasi (%+ (%unquote %x) 2)))", " 3");
+        // Within a nested `%quasi`, only the innermost `%unquote` is expanded.
+        assert_sexp_eq("(%define y 5) (%quasi (%quasi (%unquote (%unquote %y)) (%unquote %z)))",
+            " (%quasi (%unquote 5) (%unquote %z))");
+        assert!(sexp("(%unquote 1)").unwrap_err().contains("only be used within `%quasi`"));
+        assert!(sexp("(%quasi (%splice a))").unwrap_err().contains("splices a list"));
+    }
+
+    #[test]
+    fn test_building_nodes() {
+        assert_sexp_eq("(%type a) (%type \"s\") (%type 1) (%type (a)) (%type :k v) (%type) (%list? (a)) (%symbol? 1)",
+            "symbol string number list attribute nothing true false");
+        assert_sexp_eq("(%define k title) (%attribute %k \"Hi\") (%dict ((a 1) (b (x y))))",
+            " :title \"Hi\" (:a 1 :b (x y))");
+        assert_sexp_eq("(%dict (%items (:a 1 :b 2)))", "(:a 1 :b 2)");
+        assert_sexp_eq("(%read \"(a (b %c) :d 1)\") (%eval (%read \"(%+ 1 2)\"))", "(a (b %c) :d 1) 3");
+        assert!(sexp("(%read \"(a\")").is_err());
+    }
+
+    #[test]
+    fn test_list_functions() {
+        assert_sexp_eq("(%map (%lambda (x) (%* %x 2)) (1 2 3)) (%map (%lambda (x) (%* %x 2)) 1 2 3)", "(2 4 6) 2 4 6");
+        assert_sexp_eq("(%filter (%lambda (x) (%> %x 1)) (1 2 3)) (%fold (%lambda (a b) (%+ %a %b)) 0 (1 2 3 4))", "(2 3) 10");
+        assert_sexp_eq("(%find (%lambda (x) (%> %x 1)) (1 2 3)) (%find (%lambda (x) (%> %x 5)) (1 2 3))", "2");
+        assert_sexp_eq("(%any (%lambda (x) (%> %x 2)) (1 2 3)) (%all (%lambda (x) (%> %x 2)) (1 2 3)) (%all (%lambda (x) x) ())",
+            "true false true");
+        assert_sexp_eq("(%zip (a b c) (1 2)) (%enumerate (a b)) (%enumerate (a b) :from 1)",
+            "((a 1) (b 2)) ((0 a) (1 b)) ((1 a) (2 b))");
+        assert_sexp_eq("(%flatten (a (b (c)))) (%flatten (a (b (c))) :depth 1)", "(a b c) (a b (c))");
+        assert_sexp_eq("(%group-by (%lambda (n) (%mod %n 2)) (1 2 3 4 5))", "(:1 (1 3 5) :0 (2 4))");
+        assert_sexp_eq("(%sort (3 1 2) :by do)", "(1 2 3)");
+    }
+
+    #[test]
+    fn test_walking_trees() {
+        assert_sexp_eq("(%walk (%lambda (n) (%if (%= %n b) B %n)) (a (b c (b)) :x b))", "(a (B c (B)) :x B)");
+        // Giving nothing removes a node.
+        assert_sexp_eq("(%walk (%lambda (n) (%if (%!= %n drop) %n)) (a (drop c) drop))", "(a (c))");
+        assert_sexp_eq("(%select h2 (body (h1 A) (section (h2 B) (div (h2 C))))) (%select (h1 h2) (body (h1 A) (h2 B)))",
+            "((h2 B) (h2 C)) ((h1 A) (h2 B))");
+        // A table of contents from a page's headings.
+        assert_sexp_eq("(%define page (%quote (body (h2 Intro) (p x) (h2 Usage)))) \
+                        (ul (%splat (%map (%lambda (h) (li (%get 1 %h))) (%select h2 %page))))",
+            " (ul (li Intro) (li Usage))");
+    }
+
+    #[test]
+    fn test_macro_tools() {
+        assert_sexp_eq("(%gensym) (%gensym tmp) (%= (%gensym) (%gensym))", "__gensym0 __tmp1 false");
+        assert_sexp_eq("(%define v 1) (%define (f) 1) (%defined v) (%defined f) (%defined nope)", " value macro false");
+        assert_sexp_eq("(%define (twice x) (%concat %x %x) (%upper %x)) (%macroexpand (%twice ab))",
+            " (%concat ab ab) (%upper ab)");
+        assert_sexp_eq("(%define c (%quote (%twice q))) (%define (twice x) (%concat %x %x)) (%macroexpand %c) (%macroexpand (%+ 1 2))",
+            " (%concat q q) 3");
+    }
+
+    #[test]
     fn test_lazy_lists() {
         // Lists from `%range`, `%take`, `%drop`, `%get`, `%reverse` and `%concat` are
         // made only as far as needed, so these finish at once despite their length.

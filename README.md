@@ -153,6 +153,12 @@ seam run build.sex
  - [x] `(%lambda (x y) ...)` macro which just evaluates to an secret symbol, e.g. `__lambda0`.
        used by applying `%apply`, e.g. `(%apply (%lambda (a b) b a) x y)` becomes `y x`
  - [x] `(%string ...)`, `(%join ...)`, `(%map ...)`, `(%filter ...)` macros.
+ - [x] Quasiquotation, `(%quasi (a (%unquote %x) (%splice %xs)))`, and `(%read "...")`.
+ - [x] Inspecting and building nodes: `%type`, `%list?` (etc.), `%attribute`, `%dict`.
+ - [x] List functions taking lambdas: `%map`, `%filter`, `%fold`, `%find`, `%any`, `%all`,
+       `%zip`, `%enumerate`, `%flatten`, `%group-by`, `(%sort :by ...)`.
+ - [x] Walking trees: `(%walk f tree)` and `(%select h2 tree)`.
+ - [x] Tools for writing macros: `%gensym`, `%defined` and `%macroexpand`.
  - [x] `(%concat ...)` which is just `(%join "" ...)`, or joins lists.
  - [x] Lazy lists, internally: ranges, slices, reversals and concatenations are made as needed, and `%for` never makes a whole list.
  - [x] Add options to `%glob` for sorting by type, date(s), name, etc.
