@@ -442,8 +442,18 @@ mod cases {
         // and otherwise its strings are JavaScript strings.
         assert_eq!(literate_html("(%do (script \"let a = 1; f(a)\"))").as_deref(),
             Ok("<script>let a = 1; f(a)</script>"));
-        assert_eq!(literate_html(r#"(%do (script f("é\n\"")))"#).as_deref(),
-            Ok(r#"<script>f("é\n\"")</script>"#));
+        // Otherwise, a script is written in the language of its `type`.
+        assert_eq!(literate_html(r#"(%do (script (const s "é\n\"</script>") (f s)))"#).as_deref(),
+            Ok(r#"<script>const s = "é\n\"<\/script>"; f(s);</script>"#));
+        assert_eq!(literate_html("(%do (script :type module (import (a) from \"./a.js\")))").as_deref(),
+            Ok(r#"<script type="module">import {a} from "./a.js";</script>"#));
+        assert_eq!(literate_html("(%do (script :type importmap (:imports (:a \"./a.js\"))))").as_deref(),
+            Ok(r#"<script type="importmap">{"imports":{"a":"./a.js"}}</script>"#));
+        assert_eq!(literate_html("(%do (script :type text/x-template (div \"x\")))").as_deref(),
+            Ok(r#"<script type="text/x-template">(div "x")</script>"#));
+        // Over several lines when the source is.
+        assert_eq!(literate_html("(%do (script\n  (const x 1)\n  (f x)))").as_deref(),
+            Ok("<script>\nconst x = 1;\nf(x);</script>"));
     }
 
     /// Expand source to JavaScript, compact or as a document.

@@ -296,24 +296,23 @@ scripts as a data block (strings containing `</` are written `<\/`, so the
 data cannot end the `script` tag):
 ```lisp
 (script :type application/json :id posts (%formatter/json %posts))
-(script """
-  const posts = JSON.parse(document.getElementById("posts").textContent);
-""")
 ```
-JavaScript itself is best written as a single string, as above, which is
-written as it is. Otherwise, a script's contents are kept as written, with
-strings written as JavaScript strings, but seam's syntax still applies: `;`
-starts a comment, for instance. To write JavaScript as s-expressions instead,
-use the JavaScript formatter.
+A `script` writes s-expressions in the language of its `type`, so the same
+data block can be written `(script :type application/json :id posts %posts)`.
+JSON types (`application/json`, `importmap`, `speculationrules`, `...+json`)
+use the JSON formatter, and JavaScript (no `type`, or `module`) uses the
+JavaScript formatter, below. Any other `type` is kept as written. A `script`
+given a single string is written as it is.
 
 #### JavaScript
-The JavaScript formatter (`--js`, or `%formatter/js`) writes s-expressions as
-JavaScript, so a script can use macros, and seam's comments and strings, safely:
+The JavaScript formatter (`--js`, `%formatter/js`, or the contents of a
+`script`) writes s-expressions as JavaScript, so a script can use macros, and
+seam's comments and strings, safely:
 ```lisp
-(script (%formatter/js
+(script
   (const posts (%formatter/json %posts))
   (for post of posts
-    (console.log (. post title) "—" (. post date)))))
+    (console.log (. post title) "—" (. post date))))
 ```
 - A list is a call, `(f a b)` → `f(a, b)`, and `((. a b) 1)` → `a.b(1)`.
   Symbols are written as they are, so `(console.log x)` works too.
@@ -338,7 +337,8 @@ JavaScript, so a script can use macros, and seam's comments and strings, safely:
 
 All of JavaScript's syntax is covered; see [docs/javascript.md](docs/javascript.md).
 
-A document is indented, one statement per line, while `%formatter/js` is
+A document is indented, one statement per line, as is a `script` whose
+contents start on a new line, while `%formatter/js` is
 compact unless given `:document true`. The generated JavaScript is raw text,
 so a `script` containing just that is written as it is.
 

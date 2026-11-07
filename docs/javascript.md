@@ -1,7 +1,7 @@
 # JavaScript in seam
 
 How all of JavaScript (ES2025, and the older constructs) is written as
-s-expressions, for `--js` and `%formatter/js`.
+s-expressions, for `--js`, `%formatter/js` and HTML `script` elements.
 
 ## Principles
 
