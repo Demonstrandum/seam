@@ -5,6 +5,7 @@ use super::{
     text::PlainTextFormatter,
     xml::XMLFormatter,
     json,
+    js::JSFormatter,
     css::{self, CSSFormatter},
 };
 
@@ -146,7 +147,7 @@ impl<'a> HTMLFormatter<'a> {
                 //   - <pre>, <textarea> and <title> contain raw text, not parsed as HTML;
                 //   - <pre> will display raw text found in source code;
                 //   - <textarea> and <title> however, are escapable (evaluate macros);
-                //   - <script> contains JavaScript, maybe we will parse this in the future!;
+                //   - <script> contains JavaScript or JSON, which we generate (see [`script_language`]);
                 //   - <style> contains CSS, which we have our own parser for already.
                 match tag.as_str() {
                     "pre" => {
@@ -188,11 +189,23 @@ impl<'a> HTMLFormatter<'a> {
                         // When just a string is passed, it is the script, written as is.
                         if let [ParseNode::String(script) | ParseNode::Raw(script)] = rest {
                             write!(f, "{}", script.value)?;
-                        } else {
-                            // TODO: Generating JavaScript from S-expressions is not implemented.
-                            // For now, the source is kept as written (see [`generate_script`]).
-                            for (index, node) in rest.iter().enumerate() {
-                                generate_script(f, node, child_whitespace(index, node))?;
+                        } else if !rest.is_empty() {
+                            // Otherwise, s-expressions are written in the language of the
+                            // script's `type`: JavaScript, JSON, or else kept as written.
+                            let tree: ParseTree<'a> = rest.to_vec().into_boxed_slice();
+                            let formatter: Option<Box<dyn MarkupFormatter<'a>>> = match script_language(list)? {
+                                ScriptLanguage::JavaScript => Some(Box::new(JSFormatter::new(tree))),
+                                ScriptLanguage::Json => Some(Box::new(json::JSONFormatter::new(tree))),
+                                ScriptLanguage::Other => None,
+                            };
+                            match formatter {
+                                // Written over several lines when the source is, else on one line.
+                                Some(formatter) if is_first_node_on_next_line =>
+                                    write!(f, "\n{}", formatter.document()?.trim_end())?,
+                                Some(formatter) => formatter.generate(f)?,
+                                None => for (index, node) in rest.iter().enumerate() {
+                                    generate_script(f, node, child_whitespace(index, node))?;
+                                },
                             }
                         }
                     },
@@ -244,7 +257,26 @@ const METADATA_ELEMENTS: [&str; 8] = [
     "title",
 ];
 
-/// Lower-cased tag name of an element node, e.g. `(Body ...)` gives `body`.
+/// The language that a script's contents are written in, from its `type`.
+enum ScriptLanguage { JavaScript, Json, Other }
+
+fn script_language<'a>(element: &[ParseNode<'a>]) -> Result<ScriptLanguage, GenerationError<'a>> {
+    let mut kind = None;
+    for node in element.iter().skip(1) {
+        let ParseNode::Attribute { keyword, node, .. } = node else { break };
+        if keyword.eq_ignore_ascii_case("type") {
+            kind = Some(attribute_value(node)?.trim().to_ascii_lowercase());
+        }
+    }
+    Ok(match kind.as_deref() {
+        None | Some("" | "module" | "text/javascript" | "application/javascript"
+            | "text/ecmascript" | "application/ecmascript") => ScriptLanguage::JavaScript,
+        Some("importmap" | "speculationrules" | "application/json" | "text/json") => ScriptLanguage::Json,
+        Some(kind) if kind.ends_with("+json") => ScriptLanguage::Json,
+        Some(_) => ScriptLanguage::Other,
+    })
+}
+
 /// Write the source of a script as it was written, except that strings are
 /// JavaScript string literals, and raw text (e.g. JSON) is written as is.
 fn generate_script<'a>(f: Formatter, node: &ParseNode<'a>, leading: &str) -> Result<(), GenerationError<'a>> {
