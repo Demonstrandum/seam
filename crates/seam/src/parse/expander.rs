@@ -8,7 +8,7 @@ use crate::assemble::{html::HTMLFormatter, sexp::SExpFormatter};
 use std::{
     fmt,
     cell::{Cell, RefCell},
-    path::PathBuf,
+    path::{Path, PathBuf},
     ffi::OsString,
     error::Error,
     collections::{
@@ -125,9 +125,39 @@ pub struct Context<'a> {
     /// Whether macros with side effects (`%write`, `%exec`, `%log`)
     /// report what they do on `STDOUT`, as when running a build script.
     echo: Cell<bool>,
+    /// Files read (included, embedded, or `%write`'s sources), the glob
+    /// patterns searched, and the files written, so a build can be redone
+    /// when what it was made from changes (see `seam --watch`).
+    reads: RefCell<BTreeSet<PathBuf>>,
+    globs: RefCell<BTreeSet<String>>,
+    writes: RefCell<BTreeSet<PathBuf>>,
 }
 
 impl Context<'_> {
+    /// The files read while expanding.
+    #[must_use]
+    pub fn files_read(&self) -> BTreeSet<PathBuf> {
+        self.reads.borrow().clone()
+    }
+
+    /// The glob patterns searched (by `%glob`) while expanding.
+    #[must_use]
+    pub fn globs_searched(&self) -> BTreeSet<String> {
+        self.globs.borrow().clone()
+    }
+
+    /// The files written (by `%write`) while expanding.
+    #[must_use]
+    pub fn files_written(&self) -> BTreeSet<PathBuf> {
+        self.writes.borrow().clone()
+    }
+
+    fn record_read(&self, path: &Path) {
+        if path.is_file() {
+            self.reads.borrow_mut().insert(path.to_path_buf());
+        }
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -139,6 +169,9 @@ impl Context<'_> {
             lambdas: Cell::new(0),
             dynamic: RefCell::new(Vec::new()),
             echo: Cell::new(false),
+            reads: RefCell::new(BTreeSet::new()),
+            globs: RefCell::new(BTreeSet::new()),
+            writes: RefCell::new(BTreeSet::new()),
         }
     }
 }
@@ -241,6 +274,8 @@ impl<'a> Expander<'a> {
 
     /// Hand a parser over to the context, which keeps it alive for `'a`.
     fn register_parser(&self, parser: Parser) -> &'a Parser {
+        // Parsers of files (rather than of text) are files that were read.
+        self.context.record_read(Path::new(parser.file().path.as_ref()));
         self.context.parsers.alloc(parser)
     }
 
@@ -1388,6 +1423,7 @@ impl<'a> Expander<'a> {
         let is_ascending_order = args.order.is_none_or(|node| node.value == "ascending");
 
         let pattern: &str = args.number.1.value.as_ref();
+        self.context.globs.borrow_mut().insert(pattern.to_owned());
         let paths = match glob(pattern) {
             Ok(paths) => paths,
             Err(err) => return Err(ExpansionError(
@@ -2518,6 +2554,7 @@ impl<'a> Expander<'a> {
                 let Some(source) = source.atomic() else {
                     return Err(ExpansionError::new("`:from` expects paths.", source.site()));
                 };
+                self.context.record_read(std::path::Path::new(source.value.as_ref()));
                 // A source that cannot be read always counts as newer.
                 let source = std::fs::metadata(source.value.as_ref()).and_then(|metadata| metadata.modified());
                 fresh &= source.is_ok_and(|source| source <= modified);
@@ -2551,6 +2588,7 @@ impl<'a> Expander<'a> {
             std::fs::create_dir_all(parent).map_err(failed)?;
         }
         std::fs::write(path, text).map_err(failed)?;
+        self.context.writes.borrow_mut().insert(path.to_path_buf());
         Ok(Box::new([]))
     }
 

@@ -181,6 +181,7 @@ seam run build.sex
  - [x] HTML object `style="..."` object should handle s-expressions well, (e.g. `(p :style (:color red :border none) Hello World)`)
  - [x] JSON output (`--json`, `%formatter/json`), the reverse of `%json`.
  - [x] JavaScript output (`--js`, `%formatter/js`), written as s-expressions: `(const f (=> (x) (* x x)))`.
+ - [x] `seam --watch` rebuilds whenever a file a build read (or globbed) changes; `seam --help`.
  - [ ] Add more supported formats (`TOML`, &c.).
  - [x] Allow for arbitrary embedding of code with their REPLs, that can be run by
    a LISP interpreter (or any other language), for example.  (e.g. `(%chez (+ 1 2))` executes
