@@ -153,6 +153,27 @@ will be treated as macros.
   `(%/ 6 3)` is `2`, `(%/ 7 2)` is `3.5`. (`%log` already logs to STDERR,
   hence `%ln`, `%log2` and `%log10`.)
 - `(%range first last step)`, the numbers from first to last inclusive.
+- `(%cond (test body...) ...)` expands the body of the first true test (and
+  nothing else), e.g. `(%cond ((%< %n 3) small) ((%< %n 10) medium) (true large))`.
+
+#### Text
+Each of these keeps the kind of text it is given: a symbol stays a symbol.
+- `(%upper s)`, `(%lower s)`, `(%capitalize s)` (the first letter) and
+  `(%trim s)` (whitespace at either end).
+- `(%slugify "Hello, World!")` → `"hello-world"`, for ids and URLs.
+- `(%replace "a" "o" "banana")` → `"bonono"`, replacing every occurrence.
+- `(%starts-with "ba" s)` and `(%ends-with ".md" s)` are `true` or `false`.
+- `(%slice 1 3 "hello")` → `"el"`, and `(%slice -3 "hello")` → `"llo"`:
+  the characters from a start up to an (optional) end, counting from the end
+  when negative. Lists are sliced the same way.
+- Regular expressions (Rust's [regex](https://docs.rs/regex) syntax). A `\`
+  in a pattern is written `\\` in a seam string, as with any string:
+  - `(%regex/matches "\\d+" s)` is `true` or `false`.
+  - `(%regex/find "\\d+" "a1 b22")` → `("1" "22")`, every match.
+  - `(%regex/captures "(\\d+)-(\\d+)" "2024-05")` → `("2024-05" "2024" "05")`,
+    the first match and its groups (or nothing).
+  - `(%regex/replace "(\\w+)@(\\w+)" "$2 at $1" s)` replaces every match.
+  - `(%regex/split "\\s*,\\s*" "a , b,c")` → `("a" "b" "c")`.
 
 #### Lists
 - `(%get 1 list)`, `(%get -1 list)` (from the end), `(%get key dict)`,
@@ -165,6 +186,11 @@ will be treated as macros.
 - `(%unique list)` drops repeated items; `(%contains item list)` tests membership.
 - `(%items dict)`, `(%keys dict)` and `(%values dict)` for keyword lists:
   `(%for (key value) in (%items (:a 1 :b 2)) ...)`.
+- `(%set :title X :draft false %page)` sets keys of a dictionary (in place if
+  already there), `(%remove draft %page)` removes them, and
+  `(%merge %defaults %page)` combines dictionaries, later values winning.
+- `(%chunk 10 %posts)` splits a list into lists of 10 (for pages, or rows).
+- `(%sum (1 2 3))` → `6`, and `(%index-of c (a b c))` → `2` (or nothing).
 - `(%concat (a b) (c))` gives `(a b c)`, as it joins text.
 - `%for` iterates over the items of the list its expression gives
   (or over all the nodes it gives), e.g. `(%for post in %posts ...)`.
@@ -182,6 +208,8 @@ Functions are given as a macro's name, or a `%lambda`:
 - `(%zip (a b) (1 2))` gives `((a 1) (b 2))`, and `(%enumerate (a b))` gives
   `((0 a) (1 b))` (counting `:from` another number if given).
 - `(%flatten (a (b (c))))` gives `(a b c)` (or only `:depth n` levels deep).
+- `(%partition f list)` gives `((yes...) (no...))`: the items `f` is true
+  for, and the rest.
 - `(%group-by f list)` groups the items by what `f` gives for them, as a
   dictionary: `(%group-by (%lambda (post) (%get year %post)) %posts)` gives
   `(:2025 (...) :2024 (...))`.

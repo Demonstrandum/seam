@@ -8,7 +8,7 @@ use crate::parse::parser::{Node, ParseNode, ParseTree, Parser};
 
 type Expansion<'a> = Result<ParseTree<'a>, ExpansionError<'a>>;
 
-fn error<'a>(message: impl Into<String>, node: &ParseNode<'a>) -> ExpansionError<'a> {
+pub(super) fn error<'a>(message: impl Into<String>, node: &ParseNode<'a>) -> ExpansionError<'a> {
     ExpansionError::new(message, node.site())
 }
 
@@ -22,7 +22,7 @@ fn called<'n>(node: &'n ParseNode) -> Option<&'n str> {
 }
 
 /// The single node a macro's argument expanded to.
-fn single<'a>(nodes: ParseTree<'a>, what: &str, node: &ParseNode<'a>) -> Result<ParseNode<'a>, ExpansionError<'a>> {
+pub(super) fn single<'a>(nodes: ParseTree<'a>, what: &str, node: &ParseNode<'a>) -> Result<ParseNode<'a>, ExpansionError<'a>> {
     match <Box<[_; 1]>>::try_from(nodes) {
         Ok(single) => { let [single] = *single; Ok(single) },
         Err(nodes) => Err(error(format!("{what} must be a single value, but got {} values.", nodes.len()), node)),
@@ -30,7 +30,7 @@ fn single<'a>(nodes: ParseTree<'a>, what: &str, node: &ParseNode<'a>) -> Result<
 }
 
 /// The nodes of a list argument.
-fn list_of<'a>(argument: &ParseNode<'a>, call: &ParseNode<'a>, what: &str) -> Result<Vec<ParseNode<'a>>, ExpansionError<'a>> {
+pub(super) fn list_of<'a>(argument: &ParseNode<'a>, call: &ParseNode<'a>, what: &str) -> Result<Vec<ParseNode<'a>>, ExpansionError<'a>> {
     match argument {
         ParseNode::List { nodes, .. } => Ok(nodes.items().collect()),
         other => Err(error(format!("{what} must be a list, but got a {}.", other.node_type()), call)),
@@ -39,7 +39,7 @@ fn list_of<'a>(argument: &ParseNode<'a>, call: &ParseNode<'a>, what: &str) -> Re
 
 impl<'a> Expander<'a> {
     /// Call a function (a macro's name, as `%lambda` gives) with arguments.
-    fn call(&self, function: &ParseNode<'a>, node: &ParseNode<'a>, arguments: &[ParseNode<'a>]) -> Expansion<'a> {
+    pub(super) fn call(&self, function: &ParseNode<'a>, node: &ParseNode<'a>, arguments: &[ParseNode<'a>]) -> Expansion<'a> {
         let Some(name) = function.symbol() else {
             return Err(error(format!("Expected a macro (its name, or a `%lambda`), but got a {}.",
                 function.node_type()), function));
@@ -49,7 +49,7 @@ impl<'a> Expander<'a> {
 
     /// Call a function and give its result as one node: the node itself,
     /// or a list of the nodes it gave if not exactly one.
-    fn call_one(&self, function: &ParseNode<'a>, node: &ParseNode<'a>, arguments: &[ParseNode<'a>]) -> Result<ParseNode<'a>, ExpansionError<'a>> {
+    pub(super) fn call_one(&self, function: &ParseNode<'a>, node: &ParseNode<'a>, arguments: &[ParseNode<'a>]) -> Result<ParseNode<'a>, ExpansionError<'a>> {
         let mut result = self.call(function, node, arguments)?.into_vec();
         Ok(if result.len() == 1 { result.swap_remove(0) } else { list_node(node, spaced(result)) })
     }
