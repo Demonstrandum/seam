@@ -159,6 +159,9 @@ seam run build.sex
        `%zip`, `%enumerate`, `%flatten`, `%group-by`, `(%sort :by ...)`.
  - [x] Walking trees: `(%walk f tree)` and `(%select h2 tree)`.
  - [x] Tools for writing macros: `%gensym`, `%defined` and `%macroexpand`.
+ - [x] Text: `%upper`, `%lower`, `%capitalize`, `%trim`, `%slugify`, `%replace`,
+       `%starts-with`, `%ends-with`, `%slice`, and `%regex/matches` (`find`, `captures`, `replace`, `split`).
+ - [x] Dictionaries and lists: `%set`, `%remove`, `%merge`, `%chunk`, `%sum`, `%index-of`, `%partition`; and `%cond`.
  - [x] `(%concat ...)` which is just `(%join "" ...)`, or joins lists.
  - [x] Lazy lists, internally: ranges, slices, reversals and concatenations are made as needed, and `%for` never makes a whole list.
  - [x] Add options to `%glob` for sorting by type, date(s), name, etc.

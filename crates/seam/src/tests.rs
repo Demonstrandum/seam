@@ -597,6 +597,41 @@ mod cases {
     }
 
     #[test]
+    fn test_text_macros() {
+        assert_sexp_eq(r#"(%upper hello) (%lower "ABC") (%capitalize "hi there") (%trim "  x  ") (%slugify "Hello, World! Ça va?")"#,
+            r#"HELLO "abc" "Hi there" "x" "hello-world-ça-va""#);
+        assert_sexp_eq(r#"(%replace "a" "o" "banana") (%starts-with "ba" banana) (%ends-with "x" banana)"#,
+            r#""bonono" true false"#);
+        assert_sexp_eq(r#"(%slice 1 3 "hello") (%slice -3 "hello") (%slice 1 -1 (a b c d)) (%slice 3 1 "abc")"#,
+            r#""el" "llo" (b c) """#);
+        assert!(sexp("(%upper (a))").is_err());
+        assert!(sexp(r#"(%replace "" "x" "abc")"#).is_err());
+    }
+
+    #[test]
+    fn test_regex_macros() {
+        assert_sexp_eq(r#"(%regex/matches "\\d+" "ab12") (%regex/find "\\d+" "a1 b22 c333") (%regex/captures "(\\d+)-(\\d+)" "2024-05")"#,
+            r#"true ("1" "22" "333") ("2024-05" "2024" "05")"#);
+        assert_sexp_eq(r#"(%regex/captures x y) (%regex/replace "(\\w+)@(\\w+)" "$2 at $1" "me@host") (%regex/split "\\s*,\\s*" "a , b,c")"#,
+            r#" "host at me" ("a" "b" "c")"#);
+        assert!(sexp(r#"(%regex/matches "(" "x")"#).unwrap_err().contains("Invalid regular expression"));
+    }
+
+    #[test]
+    fn test_data_macros() {
+        assert_sexp_eq("(%set :title X :new 1 (:title A :draft true)) (%remove draft (:title A :draft true)) (%merge (:a 1 :b 2) (:b 3 :c 4))",
+            "(:title X :draft true :new 1) (:title A) (:a 1 :b 3 :c 4)");
+        assert_sexp_eq("(%set :a 1 ()) (%get title (%set :title Y (:title A)))", "(:a 1) Y");
+        assert_sexp_eq("(%chunk 2 (a b c d e)) (%sum (1 2 3.5)) (%sum ()) (%index-of c (a b c)) (%index-of z (a b))",
+            "((a b) (c d) (e)) 6.5 0 2");
+        assert_sexp_eq("(%partition (%lambda (x) (%> %x 2)) (1 2 3 4))", "((3 4) (1 2))");
+        assert!(sexp("(%chunk 0 (a))").is_err());
+        // `%cond` expands only the first true clause.
+        assert_sexp_eq("(%define n 5) (%cond ((%< %n 3) small) ((%< %n 10) medium big) (true (%error never)))", " medium big");
+        assert_sexp_eq("(%cond (false a))", "");
+    }
+
+    #[test]
     fn test_walking_trees() {
         assert_sexp_eq("(%walk (%lambda (n) (%if (%= %n b) B %n)) (a (b c (b)) :x b))", "(a (B c (B)) :x B)");
         // Giving nothing removes a node.

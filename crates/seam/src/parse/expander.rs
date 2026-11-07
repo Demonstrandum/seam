@@ -32,6 +32,7 @@ use markdown;
 use seam_argparse_proc_macro::arguments;
 
 mod code;
+mod data;
 
 /// Error type for errors while expanding macros.
 #[derive(Debug, Clone)]
@@ -2851,6 +2852,19 @@ impl<'a> Expander<'a> {
             "gensym"    => self.expand_gensym_macro(node, params),
             "defined"   => self.expand_defined_macro(node, params),
             "macroexpand" => self.expand_macroexpand_macro(node, params),
+            "upper" | "lower" | "capitalize" | "capitalise" | "trim" | "slugify"
+                        => self.expand_text_macro(name, node, params),
+            "replace"   => self.expand_replace_macro(node, params),
+            "starts-with" | "ends-with" => self.expand_affix_macro(name, node, params),
+            "slice"     => self.expand_slice_macro(node, params),
+            "set"       => self.expand_set_macro(node, params),
+            "remove"    => self.expand_remove_macro(node, params),
+            "merge"     => self.expand_merge_macro(node, params),
+            "chunk"     => self.expand_chunk_macro(node, params),
+            "sum"       => self.expand_sum_macro(node, params),
+            "index-of"  => self.expand_index_of_macro(node, params),
+            "partition" => self.expand_partition_macro(node, params),
+            "cond"      => self.expand_cond_macro(node, params),
             "eval"      => self.expand_eval_macro(node, params),
             "let"       => self.expand_let_macro(node, params),
             "if"        => self.expand_if_macro(node, params),
@@ -2876,6 +2890,8 @@ impl<'a> Expander<'a> {
             "contains"  => self.expand_contains_macro(node, params),
             "items" | "keys" | "values" => self.expand_dictionary_macro(name, node, params),
             "basename" | "dirname" | "extension" => self.expand_path_macro(name, node, params),
+            _ if name.starts_with("regex/")
+                => self.expand_regex_macro(&name["regex/".len()..], node, params),
             _ if name.starts_with("path/")
                 => self.expand_path_macro(&name["path/".len()..], node, params),
             "write"     => self.expand_write_macro(node, params),
