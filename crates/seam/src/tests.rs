@@ -574,6 +574,9 @@ mod cases {
         assert_sexp_eq("(%define k title) (%attribute %k \"Hi\") (%dict ((a 1) (b (x y))))",
             " :title \"Hi\" (:a 1 :b (x y))");
         assert_sexp_eq("(%dict (%items (:a 1 :b 2)))", "(:a 1 :b 2)");
+        // Raw text is not a string, and nothing is no kind of node.
+        assert_sexp_eq("(%string? (%raw \"x\")) (%raw? (%raw \"x\")) (%string? \"x\") (%list? (%find (%lambda (x) false) (a)))",
+            "false true true false");
         assert_sexp_eq("(%read \"(a (b %c) :d 1)\") (%eval (%read \"(%+ 1 2)\"))", "(a (b %c) :d 1) 3");
         assert!(sexp("(%read \"(a\")").is_err());
     }
@@ -588,6 +591,7 @@ mod cases {
         assert_sexp_eq("(%zip (a b c) (1 2)) (%enumerate (a b)) (%enumerate (a b) :from 1)",
             "((a 1) (b 2)) ((0 a) (1 b)) ((1 a) (2 b))");
         assert_sexp_eq("(%flatten (a (b (c)))) (%flatten (a (b (c))) :depth 1)", "(a b c) (a b (c))");
+        assert_sexp_eq("(%enumerate :from 1 (a b)) (%flatten :depth 1 (a (b (c))))", "((1 a) (2 b)) (a b (c))");
         assert_sexp_eq("(%group-by (%lambda (n) (%mod %n 2)) (1 2 3 4 5))", "(:1 (1 3 5) :0 (2 4))");
         assert_sexp_eq("(%sort (3 1 2) :by do)", "(1 2 3)");
     }
@@ -613,6 +617,7 @@ mod cases {
             " (%concat ab ab) (%upper ab)");
         assert_sexp_eq("(%define c (%quote (%twice q))) (%define (twice x) (%concat %x %x)) (%macroexpand %c) (%macroexpand (%+ 1 2))",
             " (%concat q q) 3");
+        assert_sexp_eq("(%define (f &xs) (p :class %xs)) (%macroexpand (%f a b))", " (p :class a b)");
     }
 
     #[test]

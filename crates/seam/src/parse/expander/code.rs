@@ -140,13 +140,15 @@ impl<'a> Expander<'a> {
     /// `(%list? x)`, `(%symbol? x)`, ..., whether `x` is that kind of node.
     pub(super) fn expand_type_predicate_macro(&self, kind: &str, node: &ParseNode<'a>, params: &[ParseNode<'a>]) -> Expansion<'a> {
         let value = self.expand_nodes(params)?;
-        let [value] = &*value else {
-            return Err(error(format!("`%{kind}?` takes a single value."), node));
+        let value = match &*value {
+            [] => return Ok(Box::new([bool_node(node, false)])),
+            [value] => value,
+            _ => return Err(error(format!("`%{kind}?` takes a single value."), node)),
         };
         let is = match kind {
             "symbol" => value.is_symbol(),
             "number" => value.is_number(),
-            "string" => value.is_string(),
+            "string" => matches!(value, ParseNode::String(_)),
             "raw" => matches!(value, ParseNode::Raw(_)),
             "list" => value.is_list(),
             "attribute" => value.is_attribute(),
@@ -328,7 +330,8 @@ impl<'a> Expander<'a> {
         let params = self.expand_nodes(params)?;
         let (list, from) = match &*params {
             [list] => (list, 0),
-            [list, ParseNode::Attribute { keyword, node: from, .. }] if keyword == "from" => {
+            [list, ParseNode::Attribute { keyword, node: from, .. }]
+            | [ParseNode::Attribute { keyword, node: from, .. }, list] if keyword == "from" => {
                 let Some(from) = from.atomic().and_then(|from| from.value.parse::<i64>().ok()) else {
                     return Err(error("`:from` must be a whole number.", node));
                 };
@@ -351,7 +354,8 @@ impl<'a> Expander<'a> {
         let params = self.expand_nodes(params)?;
         let (list, depth) = match &*params {
             [list] => (list, usize::MAX),
-            [list, ParseNode::Attribute { keyword, node: depth, .. }] if keyword == "depth" => {
+            [list, ParseNode::Attribute { keyword, node: depth, .. }]
+            | [ParseNode::Attribute { keyword, node: depth, .. }, list] if keyword == "depth" => {
                 let Some(depth) = depth.atomic().and_then(|depth| depth.value.parse::<usize>().ok()) else {
                     return Err(error("`:depth` must be a whole number.", node));
                 };
@@ -579,15 +583,20 @@ fn substitute<'a>(node: &ParseNode<'a>, lookup: &dyn Fn(&str) -> Option<ParseTre
             out.push(list_node(node, items));
         },
         ParseNode::Attribute { keyword, node: value, site, leading_whitespace } => {
+            // As when expanding, the attribute takes the first node of its
+            // value and any others follow it. With no nodes, the value is
+            // left as it was, since expanding it would be an error.
             let mut values = vec![];
             substitute(value, lookup, &mut values);
-            let value = if values.len() == 1 { values.swap_remove(0) } else { (**value).clone() };
+            let mut values = values.into_iter();
+            let first = values.next();
             out.push(ParseNode::Attribute {
                 keyword: keyword.clone(),
-                node: Box::new(value),
+                node: Box::new(first.unwrap_or_else(|| (**value).clone())),
                 site: *site,
                 leading_whitespace: leading_whitespace.clone(),
             });
+            out.extend(values);
         },
         atom => out.push(atom.clone()),
     }
