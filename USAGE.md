@@ -115,6 +115,25 @@ not written), and `fresh` one that was newer than everything it is made
 `:from` (so was not even made).
 No target format is given, and the other options (`-I`, `--literate`) work as usual.
 
+### Watching for changes
+
+`--watch` (or `-w`) expands the files again whenever something they were
+made from changes, until stopped with Ctrl-C:
+```sh
+seam run --watch build.sex
+#stderr:
+#   [watch] Built in 6ms; watching 4 files.
+#   [watch] Changed: posts/hello-world.sex.
+```
+What is watched is what the last build read: the files themselves, files
+`%include`d and `%embed`ded, the sources of each `%write ... :from`, and
+every `%glob` pattern, so a new or deleted file it matches is noticed too.
+Files written by `%write` are not watched, so a build never sets itself off
+again. A build that fails is reported, and is tried again on the next change.
+`--watch` works with a target format too, printing the document each time.
+
+`seam --help` lists every option.
+
 ## Macros
 
 In addition to the basic syntax, *symbols* prepended with a ‘`%`’ character,
