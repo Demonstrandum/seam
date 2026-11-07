@@ -31,6 +31,8 @@ use markdown;
 // proc macros for generating macros.
 use seam_argparse_proc_macro::arguments;
 
+mod code;
+
 /// Error type for errors while expanding macros.
 #[derive(Debug, Clone)]
 pub struct ExpansionError<'a>(pub String, pub Site<'a>);
@@ -1589,11 +1591,14 @@ impl<'a> Expander<'a> {
             mandatory(1): any,
             optional("order"): literal["ascending", "descending"],
             optional("key"): symbol,
+            optional("by"): symbol,
         }?;
 
         let call_node = node;
-        let key_fn_site = args.key.map_or(call_node.owned_site(), |key_fn| key_fn.site);
-        let key_fn: &str = args.key.map_or("do", |key| &key.value);
+        // `:by` is another name for `:key`.
+        let key = args.key.or(args.by);
+        let key_fn_site = key.map_or(call_node.owned_site(), |key_fn| key_fn.site);
+        let key_fn: &str = key.map_or("do", |key| &key.value);
         let ascending = args.order.is_none_or(|order| order.value == "ascending");
 
         /// Keeps track of nodes and the key by which to sort them by.
@@ -1728,41 +1733,6 @@ impl<'a> Expander<'a> {
                 leading_whitespace: node.leading_whitespace().clone(),
             })
         ]))
-    }
-
-    fn expand_map_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
-    -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let params = self.expand_nodes(params)?; // Eager.
-        let args = arguments! { node, &params;
-            mandatory(1): symbol,
-            rest: any,
-        }?;
-
-        let mut expanded = vec![];
-        for arg in args.rest {
-            expanded.extend(self.expand_invocation(args.number.1.value.as_ref(), node, std::slice::from_ref(arg))?);
-        }
-        Ok(expanded.into_boxed_slice())
-    }
-
-    /// Filters all null nodes (`()`-nodes) out of the list.
-    fn expand_filter_macro(&self, node: &ParseNode<'a>, params: &[ParseNode<'a>])
-    -> Result<ParseTree<'a>, ExpansionError<'a>> {
-        let params = self.expand_nodes(params)?; // Eager.
-        let args = arguments! { node, &params;
-            mandatory(1): symbol,
-            rest: any,
-        }?;
-
-        let mut expanded = vec![];
-        for arg in args.rest {
-            let nodes = self.expand_invocation(args.number.1.value.as_ref(), node, std::slice::from_ref(arg))?;
-            match &*nodes {
-                [node,] if node.null() => {},
-                _ => expanded.extend(nodes),
-            }
-        }
-        Ok(expanded.into_boxed_slice())
     }
 
     fn expand_splat_macro(&self, _node: &ParseNode<'a>, params: &[ParseNode<'a>])
@@ -2861,6 +2831,26 @@ impl<'a> Expander<'a> {
             "os/env"    => self.expand_os_env_macro(node, params),
             // `(%quote ...)` gives its arguments unexpanded, as code to `%eval` later.
             "quote"     => Ok(params.into()),
+            "quasi"     => self.expand_quasi_macro(node, params),
+            "unquote" | "splice" => Err(ExpansionError::new(
+                format!("`%{name}` can only be used within `%quasi`."), node.site())),
+            "type"      => self.expand_type_macro(node, params),
+            "symbol?" | "number?" | "string?" | "raw?" | "list?" | "attribute?"
+                => self.expand_type_predicate_macro(&name[..name.len() - 1], node, params),
+            "attribute" => self.expand_attribute_macro(node, params),
+            "dict"      => self.expand_dict_macro(node, params),
+            "read"      => self.expand_read_macro(node, params),
+            "fold"      => self.expand_fold_macro(node, params),
+            "find" | "any" | "all" => self.expand_find_macro(name, node, params),
+            "zip"       => self.expand_zip_macro(node, params),
+            "enumerate" => self.expand_enumerate_macro(node, params),
+            "flatten"   => self.expand_flatten_macro(node, params),
+            "group-by"  => self.expand_group_by_macro(node, params),
+            "walk"      => self.expand_walk_macro(node, params),
+            "select"    => self.expand_select_macro(node, params),
+            "gensym"    => self.expand_gensym_macro(node, params),
+            "defined"   => self.expand_defined_macro(node, params),
+            "macroexpand" => self.expand_macroexpand_macro(node, params),
             "eval"      => self.expand_eval_macro(node, params),
             "let"       => self.expand_let_macro(node, params),
             "if"        => self.expand_if_macro(node, params),
